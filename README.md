@@ -1,22 +1,25 @@
 # X-FAIS
 
-[![GitHub stars](https://img.shields.io/github/stars/ICCAS-EPlab-PMP/XFAIS?style=flat-square)](https://github.com/ICCAS-EPlab-PMP/XFAIS/stargazers)
-[![GitHub forks](https://img.shields.io/github/forks/ICCAS-EPlab-PMP/XFAIS?style=flat-square)](https://github.com/ICCAS-EPlab-PMP/XFAIS/network/members)
-[![GitHub issues](https://img.shields.io/github/issues/ICCAS-EPlab-PMP/XFAIS?style=flat-square)](https://github.com/ICCAS-EPlab-PMP/XFAIS/issues)
-[![GitHub license](https://img.shields.io/github/license/ICCAS-EPlab-PMP/XFAIS?style=flat-square)](https://github.com/ICCAS-EPlab-PMP/XFAIS/blob/main/LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python)](https://www.python.org/)
 [![Vue.js](https://img.shields.io/badge/Vue.js-3-green?style=flat-square&logo=vue.js)](https://vuejs.org/)
 [![Electron](https://img.shields.io/badge/Electron-35-lightgrey?style=flat-square&logo=electron)](https://www.electronjs.org/)
 
-**基于 [pyFAI](https://github.com/silx-kit/pyFAI) 和 [fabIO](https://github.com/silx-kit/fabIO) 构建**
+**本程序基于 [pyFAI](https://github.com/silx-kit/pyFAI) 和 [fabIO](https://github.com/silx-kit/fabIO) 构建**
 
-X-FAIS (X-ray Fiber Analysis and Integration Software) - 用于 X 射线纤维衍射数据分析和集成的桌面应用程序。
+X-FAIS (X-ray FAI (pyFAI) Scattering & Diffraction Suite) - 用于 X 射线纤维衍射数据分析和集成的桌面应用程序。
 
-## 功能特性
+本程序基于pyFAI和FabIO两个主要项目中常见功能项进行基础构建。主要是将原本需要编程的过程改编为常用GUI界面，以节省用户学习成本，更快上手WAXS/SAXS/GIWAXS的构建。
 
+程序由ai-agent进行全栈开发。人工进行数据测试。感谢AI-Agent 制作： opencode、 oh-my-openagent、 Reasonix
+
+使用编程模型： GLM-5.1 / DeepSeek V4 / MiniMax 2.7 / Qwen 3.6 Plus / MiMo V2.5
+
+## 当前功能特性
+
+常用积分模块
 - 1D 积分 (Integrate 1D)
 - 方位角积分 (Integrate Azimuth)
-- 蛋糕形积分 (Integrate Cake)
+- CAKE积分 (Integrate Cake)
 - 纤维积分 (Integrate Fiber)
 - H5 文件转换 (H5 Convert)
 - H5 文件提取 (H5 Extract)
