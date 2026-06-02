@@ -1,0 +1,12 @@
+numpy
+matplotlib
+pyFAI
+fabio
+h5py
+Pillow
+pandas
+scipy
+tifffile
+psutil
+pytest
+websockets

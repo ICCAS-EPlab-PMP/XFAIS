@@ -1,0 +1,53 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-electron/
+dist-electron-builder/
+
+# TypeScript build info
+*.tsbuildinfo
+
+# Playwright / E2E tests
+playwright-report/
+test-results/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.python-runtime/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Sisyphus AI workspace
+.sisyphus/
+
+# Reference code artifacts (ref/ dir contains reference projects)
+ref/frontend/node_modules/
+ref/frontend/dist/
+ref/frontend/package-lock.json
+ref/streamlit_app/__pycache__/
+ref/streamlit_app/python-*.exe
+ref/streamlit_app/.sisyphus/
+
+# Root-level build artifact (moved from parent project)
+index.js
+
+# Python runtime installer
+python-*.exe

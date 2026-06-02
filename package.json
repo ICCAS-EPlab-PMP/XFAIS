@@ -1,0 +1,105 @@
+{
+  "name": "x-fais-electron",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist-electron/main/index.js",
+  "scripts": {
+    "dev": "run-p dev:renderer dev:electron:build dev:electron",
+    "dev:renderer": "vite --host 127.0.0.1 --strictPort --port 5173",
+    "dev:electron:build": "run-p dev:electron:build:main dev:electron:build:preload",
+    "dev:electron:build:main": "vite build --watch --config vite.electron.main.config.ts",
+    "dev:electron:build:preload": "vite build --watch --config vite.electron.preload.config.ts",
+    "dev:electron": "wait-on tcp:127.0.0.1:5173 file:dist-electron/main/index.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
+    "build": "run-s build:renderer build:electron",
+    "build:pack": "npm run build && electron-builder --win",
+    "build:renderer": "vite build",
+    "build:electron": "run-s build:electron:main build:electron:preload",
+    "build:electron:main": "vite build --config vite.electron.main.config.ts",
+    "build:electron:preload": "vite build --config vite.electron.preload.config.ts",
+    "python:health": "npm run build:electron && node dist-electron/tools/python-health.js",
+    "lint": "eslint .",
+    "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
+    "test:unit": "vitest run",
+    "test:python": "npm run python:health -- --quiet && \".python-runtime/python-3.11.9-win32-x64/python.exe\" -m pytest python/tests",
+    "e2e": "npm run build && playwright test",
+    "build:web": "vite build --mode web"
+  },
+  "dependencies": {
+    "plotly.js-dist-min": "^3.5.0",
+    "vue": "^3.5.13",
+    "vue-i18n": "^9.14.5",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.25.1",
+    "@playwright/test": "^1.52.0",
+    "@types/node": "^22.15.3",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "@vue/test-utils": "^2.4.9",
+    "cross-env": "^7.0.3",
+    "electron": "^35.2.1",
+    "electron-builder": "^26.8.1",
+    "eslint": "^9.25.1",
+    "eslint-plugin-vue": "^10.0.0",
+    "globals": "^16.0.0",
+    "happy-dom": "^20.9.0",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^5.8.3",
+    "typescript-eslint": "^8.30.1",
+    "vite": "^6.3.5",
+    "vitest": "^3.2.4",
+    "vue-eslint-parser": "^10.1.3",
+    "vue-tsc": "^2.2.10",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.iccas.x-fais",
+    "productName": "X-FAIS",
+    "directories": {
+      "buildResources": "resources",
+      "output": "dist-electron-builder"
+    },
+    "icon": "ICON/icon.ico",
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".python-runtime",
+        "to": "python-runtime",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "python",
+        "to": "python"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "artifactName": "${productName}-${version}-setup-${arch}.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
+    }
+  }
+}
