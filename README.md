@@ -1,5 +1,15 @@
 # X-FAIS
 
+[![GitHub stars](https://img.shields.io/github/stars/ICCAS-EPlab-PMP/XFAIS?style=flat-square)](https://github.com/ICCAS-EPlab-PMP/XFAIS/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/ICCAS-EPlab-PMP/XFAIS?style=flat-square)](https://github.com/ICCAS-EPlab-PMP/XFAIS/network/members)
+[![GitHub issues](https://img.shields.io/github/issues/ICCAS-EPlab-PMP/XFAIS?style=flat-square)](https://github.com/ICCAS-EPlab-PMP/XFAIS/issues)
+[![GitHub license](https://img.shields.io/github/license/ICCAS-EPlab-PMP/XFAIS?style=flat-square)](https://github.com/ICCAS-EPlab-PMP/XFAIS/blob/main/LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python)](https://www.python.org/)
+[![Vue.js](https://img.shields.io/badge/Vue.js-3-green?style=flat-square&logo=vue.js)](https://vuejs.org/)
+[![Electron](https://img.shields.io/badge/Electron-35-lightgrey?style=flat-square&logo=electron)](https://www.electronjs.org/)
+
+**基于 [pyFAI](https://github.com/silx-kit/pyFAI) 和 [fabIO](https://github.com/silx-kit/fabIO) 构建**
+
 X-FAIS (X-ray Fiber Analysis and Integration Software) - 用于 X 射线纤维衍射数据分析和集成的桌面应用程序。
 
 ## 功能特性
