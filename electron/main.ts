@@ -1,11 +1,12 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { execSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APP_NAME, APP_VERSION, IPC_CHANNELS } from './constants'
 import { PythonServiceManager, type PythonServiceStatus } from './python/manager'
+import { PYTHON_RUNTIME_SUFFIX, PYTHON_EXECUTABLE } from './python/runtime'
 import type {
   ClientMessage,
   DialogOpenFileOptions,
@@ -23,6 +24,10 @@ import { normalizeTaskParams, adaptTaskResult } from '../src/lib/task-adapter'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+
+const isWindows = process.platform === 'win32'
+const isDarwin = process.platform === 'darwin'
+const DEV_NULL = isWindows ? '2>nul' : '2>/dev/null'
 
 let mainWindow: BrowserWindow | null = null
 let pythonManager: PythonServiceManager | null = null
@@ -149,7 +154,7 @@ const activeTasks = new Map<string, PendingTask>()
 
 const getEmbeddedPythonRoot = (): string => {
   const appRoot = app.getAppPath()
-  const embeddedDir = 'python-3.11.9-win32-x64'
+  const embeddedDir = `python-3.11.9-${PYTHON_RUNTIME_SUFFIX}`
   if (app.isPackaged) {
     return path.join(process.resourcesPath, 'python-runtime', embeddedDir)
   }
@@ -157,11 +162,18 @@ const getEmbeddedPythonRoot = (): string => {
 }
 
 const getEmbeddedPythonScriptsDir = (): string => {
-  return path.join(getEmbeddedPythonRoot(), 'Scripts')
+  // On macOS, pip-installed scripts go to bin/; on Windows to Scripts/
+  const pythonRoot = getEmbeddedPythonRoot()
+  return isDarwin
+    ? path.join(pythonRoot, 'bin')
+    : path.join(pythonRoot, 'Scripts')
 }
 
 const getEmbeddedPythonExe = (): string => {
-  return path.join(getEmbeddedPythonRoot(), 'python.exe')
+  const pythonRoot = getEmbeddedPythonRoot()
+  return isDarwin
+    ? path.join(pythonRoot, 'bin', PYTHON_EXECUTABLE)
+    : path.join(pythonRoot, PYTHON_EXECUTABLE)
 }
 
 interface PyfaiCheckResult {
@@ -171,19 +183,20 @@ interface PyfaiCheckResult {
 }
 
 const checkQtBindingAvailable = (pythonExe: string): boolean => {
+  const shellOpts = isWindows ? { windowsHide: true as const } : {}
   try {
-    execSync(`"${pythonExe}" -c "from PySide6 import QtWidgets; print('ok')" 2>nul`, {
+    execSync(`"${pythonExe}" -c "from PySide6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
       timeout: 8000,
       encoding: 'utf-8',
-      windowsHide: true
+      ...shellOpts
     })
     return true
   } catch {
     try {
-      execSync(`"${pythonExe}" -c "from PyQt6 import QtWidgets; print('ok')" 2>nul`, {
+      execSync(`"${pythonExe}" -c "from PyQt6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
         timeout: 8000,
         encoding: 'utf-8',
-        windowsHide: true
+        ...shellOpts
       })
       return true
     } catch {
@@ -194,16 +207,18 @@ const checkQtBindingAvailable = (pythonExe: string): boolean => {
 
 const checkPyfaiEmbedded = (): { available: boolean; version: string | null; calib2Path: string | null; hasQtBinding: boolean } => {
   const scriptsDir = getEmbeddedPythonScriptsDir()
-  const calib2Exe = path.join(scriptsDir, 'pyFAI-calib2.exe')
+  const calib2Name = isWindows ? 'pyFAI-calib2.exe' : 'pyFAI-calib2'
+  const calib2Exe = path.join(scriptsDir, calib2Name)
   const calib2Path = existsSync(calib2Exe) ? calib2Exe : null
 
   const pythonExe = getEmbeddedPythonExe()
   let version: string | null = null
+  const shellOpts = isWindows ? { windowsHide: true as const } : {}
   try {
     const output = execSync(`"${pythonExe}" -c "import pyFAI; print(pyFAI.version)"`, {
       timeout: 10000,
       encoding: 'utf-8',
-      windowsHide: true
+      ...shellOpts
     }).trim()
     version = output || null
   } catch {
@@ -217,100 +232,129 @@ const checkPyfaiEmbedded = (): { available: boolean; version: string | null; cal
 
 const checkPyfaiSystem = (): { available: boolean; version: string | null; calib2Path: string | null; hasQtBinding: boolean } => {
   let calib2Path: string | null = null
+  const shellOpts = isWindows ? { windowsHide: true as const } : {}
+  const calib2Name = isWindows ? 'pyFAI-calib2.exe' : 'pyFAI-calib2'
+  const findCmd = isWindows ? 'where' : 'which'
+  const pythonCmds = isWindows ? ['python', 'py'] : ['python3', 'python']
 
-  // Method 1: 在 PATH 中查找 calib2 exe
+  // Method 1: Find calib2 in PATH
   try {
-    const output = execSync('where pyFAI-calib2.exe 2>nul', {
-      timeout: 5000, encoding: 'utf-8', windowsHide: true
+    const output = execSync(`${findCmd} ${calib2Name} ${DEV_NULL}`, {
+      timeout: 5000, encoding: 'utf-8', ...shellOpts
     }).trim()
     if (output) calib2Path = output.split('\n')[0].trim()
   } catch { /* not on PATH */ }
 
-  // Method 2: 通过 python 获取版本并搜索 Scripts 目录
+  // Method 2: Try to import pyFAI via python and search Scripts directories
   let version: string | null = null
-  try {
-    const output = execSync('python -c "import pyFAI; print(pyFAI.version)" 2>nul', {
-      timeout: 10000, encoding: 'utf-8', windowsHide: true
-    }).trim()
-    if (output) version = output
-  } catch { /* not importable via python */ }
+  for (const pyCmd of pythonCmds) {
+    try {
+      const output = execSync(`${pyCmd} -c "import pyFAI; print(pyFAI.version)" ${DEV_NULL}`, {
+        timeout: 10000, encoding: 'utf-8', ...shellOpts
+      }).trim()
+      if (output) { version = output; break }
+    } catch { /* not importable via this python */ }
+  }
 
-  // 如果版本找到了但没找到 exe，通过 Python 定位 Scripts 目录
+  // If version found but no exe, locate Scripts directory via Python
   if (version && !calib2Path) {
-    for (const pyCmd of ['python', 'py']) {
+    for (const pyCmd of pythonCmds) {
       try {
         const userBase = execSync(
-          `${pyCmd} -c "import site; print(site.getuserbase())" 2>nul`,
-          { timeout: 5000, encoding: 'utf-8', windowsHide: true }
+          `${pyCmd} -c "import site; print(site.getuserbase())" ${DEV_NULL}`,
+          { timeout: 5000, encoding: 'utf-8', ...shellOpts }
         ).trim()
         if (userBase) {
-          // Try Python{sys.version}\Scripts pattern
-          const verStr = execSync(
-            `${pyCmd} -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" 2>nul`,
-            { timeout: 5000, encoding: 'utf-8', windowsHide: true }
-          ).trim()
-          const candidate = path.join(userBase, `Python${verStr}`, 'Scripts', 'pyFAI-calib2.exe')
-          if (existsSync(candidate)) { calib2Path = candidate; break }
+          if (isWindows) {
+            const verStr = execSync(
+              `${pyCmd} -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" ${DEV_NULL}`,
+              { timeout: 5000, encoding: 'utf-8', ...shellOpts }
+            ).trim()
+            const candidate = path.join(userBase, `Python${verStr}`, 'Scripts', calib2Name)
+            if (existsSync(candidate)) { calib2Path = candidate; break }
+          } else {
+            const candidate = path.join(userBase, 'bin', calib2Name)
+            if (existsSync(candidate)) { calib2Path = candidate; break }
+          }
         }
       } catch { /* continue */ }
 
       try {
         const prefix = execSync(
-          `${pyCmd} -c "import sys; print(sys.prefix)" 2>nul`,
-          { timeout: 5000, encoding: 'utf-8', windowsHide: true }
+          `${pyCmd} -c "import sys; print(sys.prefix)" ${DEV_NULL}`,
+          { timeout: 5000, encoding: 'utf-8', ...shellOpts }
         ).trim()
-        const candidate = path.join(prefix, 'Scripts', 'pyFAI-calib2.exe')
+        const scriptsDir = isWindows ? 'Scripts' : 'bin'
+        const candidate = path.join(prefix, scriptsDir, calib2Name)
         if (existsSync(candidate)) { calib2Path = candidate; break }
       } catch { /* continue */ }
     }
   }
 
-  // Method 3: 尝试 py launcher（若 python 命令未找到 pyFAI）
-  if (!version) {
-    try {
-      const output = execSync('py -c "import pyFAI; print(pyFAI.version)" 2>nul', {
-        timeout: 10000, encoding: 'utf-8', windowsHide: true
-      }).trim()
-      if (output) version = output
-    } catch { /* py launcher not available */ }
-  }
-
-  // Method 4: 全局 Python 安装目录搜索
+  // Method 3: Platform-specific Python installation search
   if (!calib2Path) {
-    try {
-      const localAppData = process.env.LOCALAPPDATA
-      if (localAppData) {
-        const dirOutput = execSync(
-          `dir /b /ad "${localAppData}\\Programs\\Python\\Python*" 2>nul`,
-          { timeout: 5000, encoding: 'utf-8', windowsHide: true }
-        ).trim()
-        if (dirOutput) {
-          for (const d of dirOutput.split('\n')) {
-            const dirName = d.trim()
-            if (!dirName) continue
-            const candidate = path.join(localAppData, 'Programs', 'Python', dirName, 'Scripts', 'pyFAI-calib2.exe')
-            if (existsSync(candidate)) { calib2Path = candidate; break }
+    if (isWindows) {
+      try {
+        const localAppData = process.env.LOCALAPPDATA
+        if (localAppData) {
+          const dirOutput = execSync(
+            `dir /b /ad "${localAppData}\\Programs\\Python\\Python*" ${DEV_NULL}`,
+            { timeout: 5000, encoding: 'utf-8', ...shellOpts }
+          ).trim()
+          if (dirOutput) {
+            for (const d of dirOutput.split('\n')) {
+              const dirName = d.trim()
+              if (!dirName) continue
+              const candidate = path.join(localAppData, 'Programs', 'Python', dirName, 'Scripts', calib2Name)
+              if (existsSync(candidate)) { calib2Path = candidate; break }
+            }
           }
         }
+      } catch { /* not found */ }
+    } else if (isDarwin) {
+      // macOS: Check common Python framework locations
+      const macSearchPaths = [
+        '/Library/Frameworks/Python.framework/Versions',
+        path.join(process.env.HOME ?? '', 'Library', 'Python'),
+        '/usr/local/opt/python',
+        '/opt/homebrew/opt/python'
+      ]
+      for (const searchPath of macSearchPaths) {
+        if (!existsSync(searchPath)) continue
+        try {
+          const entries = readdirSync(searchPath)
+          for (const entry of entries) {
+            const candidate = path.join(searchPath, entry, 'bin', calib2Name)
+            if (existsSync(candidate)) { calib2Path = candidate; break }
+            // Framework layout: Versions/X.Y/bin/
+            const fwCandidate = path.join(searchPath, entry, 'bin', calib2Name)
+            if (existsSync(fwCandidate)) { calib2Path = fwCandidate; break }
+          }
+        } catch { /* continue */ }
+        if (calib2Path) break
       }
-    } catch { /* not found */ }
+    }
   }
 
   let hasQtBinding = false
   if (calib2Path) {
-    try {
-      execSync('python -c "from PySide6 import QtWidgets; print(\'ok\')" 2>nul', {
-        timeout: 8000, encoding: 'utf-8', windowsHide: true
-      })
-      hasQtBinding = true
-    } catch {
+    for (const pyCmd of pythonCmds) {
       try {
-        execSync('python -c "from PyQt6 import QtWidgets; print(\'ok\')" 2>nul', {
-          timeout: 8000, encoding: 'utf-8', windowsHide: true
+        execSync(`${pyCmd} -c "from PySide6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
+          timeout: 8000, encoding: 'utf-8', ...shellOpts
         })
         hasQtBinding = true
+        break
       } catch {
-        // continue
+        try {
+          execSync(`${pyCmd} -c "from PyQt6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
+            timeout: 8000, encoding: 'utf-8', ...shellOpts
+          })
+          hasQtBinding = true
+          break
+        } catch {
+          // continue
+        }
       }
     }
   }
@@ -363,9 +407,12 @@ const registerPyfaiHandlers = (): void => {
     }
 
     try {
+      const spawnOpts = isWindows
+        ? { detached: true, stdio: ['ignore' as const, 'pipe' as const, 'pipe' as const], windowsHide: false }
+        : { detached: true, stdio: ['ignore' as const, 'pipe' as const, 'pipe' as const] }
       const child = exePath
-        ? spawn(exePath, [], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false })
-        : spawn(pythonCmd!, ['-m', 'pyFAI.app.calib2'], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: false })
+        ? spawn(exePath, [], spawnOpts)
+        : spawn(pythonCmd!, ['-m', 'pyFAI.app.calib2'], spawnOpts)
 
       let startupFailed = false
       let startupError = ''
@@ -411,16 +458,17 @@ const registerPyfaiHandlers = (): void => {
   })
 
   ipcMain.handle('pyfai:exportBat', async (): Promise<{ success: boolean; error?: string }> => {
-    const batContent = generateBatScript()
+    const scriptContent = isWindows ? generateBatScript() : generateShellScript()
+    const defaultFileName = isWindows ? 'pyFAI-calib2-launcher.bat' : 'pyFAI-calib2-launcher.sh'
+    const fileFilters = isWindows
+      ? [{ name: '批处理脚本', extensions: ['bat'] }, { name: '所有文件', extensions: ['*'] }]
+      : [{ name: 'Shell 脚本', extensions: ['sh'] }, { name: '所有文件', extensions: ['*'] }]
 
     const win = BrowserWindow.getFocusedWindow()
     const { canceled, filePath } = await dialog.showSaveDialog(win ?? undefined!, {
       title: '导出 pyFAI-calib2 启动脚本',
-      defaultPath: 'pyFAI-calib2-launcher.bat',
-      filters: [
-        { name: '批处理脚本', extensions: ['bat'] },
-        { name: '所有文件', extensions: ['*'] }
-      ]
+      defaultPath: defaultFileName,
+      filters: fileFilters
     })
 
     if (canceled || !filePath) {
@@ -429,7 +477,11 @@ const registerPyfaiHandlers = (): void => {
 
     try {
       const fs = await import('node:fs/promises')
-      await fs.writeFile(filePath, batContent, 'utf-8')
+      await fs.writeFile(filePath, scriptContent, 'utf-8')
+      // On macOS, make the script executable
+      if (!isWindows) {
+        await fs.chmod(filePath, 0o755)
+      }
       return { success: true }
     } catch (err) {
       return { success: false, error: `导出失败: ${(err as Error).message}` }
@@ -558,6 +610,93 @@ if "%CALIB2_PATH:~0,6%"=="python" (
 )
 
 endlocal
+`
+}
+
+const generateShellScript = (): string => {
+  return `#!/usr/bin/env bash
+# pyFAI-calib2 启动器 / Launcher (macOS)
+
+echo "============================================"
+echo "  pyFAI-calib2 启动器 / Launcher"
+echo "============================================"
+echo ""
+
+# 检查 Python 是否可用
+if ! command -v python3 &>/dev/null; then
+    echo "[错误] 未找到 Python 3，请先安装"
+    echo "下载地址: https://www.python.org/downloads/"
+    echo ""
+    read -p "按回车键退出..."
+    exit 1
+fi
+
+PYTHON_VERSION=$(python3 --version 2>&1)
+echo "[信息] $PYTHON_VERSION"
+
+# 检查 pyFAI 是否安装
+if ! python3 -c "import pyFAI" 2>/dev/null; then
+    echo "[错误] 未安装 pyFAI"
+    echo ""
+    echo "请运行以下命令安装:"
+    echo "  pip3 install pyFAI fabio"
+    echo ""
+    read -p "按回车键退出..."
+    exit 1
+fi
+
+PYFAI_VERSION=$(python3 -c "import pyFAI; print(pyFAI.version)" 2>/dev/null)
+echo "[信息] pyFAI 版本: $PYFAI_VERSION"
+
+# 检查 Qt 绑定
+QT_BINDING="none"
+if python3 -c "from PySide6 import QtWidgets; print('PySide6')" 2>/dev/null; then
+    QT_BINDING="PySide6"
+elif python3 -c "from PyQt6 import QtWidgets; print('PyQt6')" 2>/dev/null; then
+    QT_BINDING="PyQt6"
+elif python3 -c "from PyQt5 import QtWidgets; print('PyQt5')" 2>/dev/null; then
+    QT_BINDING="PyQt5"
+fi
+
+if [ "$QT_BINDING" = "none" ]; then
+    echo ""
+    echo "[警告] 未找到 Qt 绑定，pyFAI-calib2 需要以下任一库:"
+    echo "  - PySide6  (推荐)"
+    echo "  - PyQt6"
+    echo "  - PyQt5"
+    echo ""
+    echo "请运行以下命令安装 PySide6:"
+    echo "  pip3 install PySide6"
+    echo ""
+    read -p "按回车键退出..."
+    exit 1
+fi
+
+echo "[信息] Qt 绑定: $QT_BINDING"
+echo ""
+
+# 查找 pyFAI-calib2 可执行文件
+CALIB2_PATH=""
+
+if command -v pyFAI-calib2 &>/dev/null; then
+    CALIB2_PATH=$(which pyFAI-calib2)
+fi
+
+if [ -z "$CALIB2_PATH" ]; then
+    PYTHON_PREFIX=$(python3 -c "import sys; print(sys.prefix)" 2>/dev/null)
+    if [ -x "$PYTHON_PREFIX/bin/pyFAI-calib2" ]; then
+        CALIB2_PATH="$PYTHON_PREFIX/bin/pyFAI-calib2"
+    fi
+fi
+
+echo "[信息] 启动 pyFAI-calib2..."
+echo ""
+
+if [ -n "$CALIB2_PATH" ]; then
+    "$CALIB2_PATH" &
+else
+    python3 -m pyFAI.app.calib2 &
+fi
 `
 }
 
@@ -837,11 +976,16 @@ const submitTaskToPython = async (taskId: string, request: TaskSubmitRequest): P
       return
     }
 
+    const normalized = normalizeTaskParams(request.command, request.params)
+    // Signal to Python backend that this is a desktop (Electron) connection.
+    // This relaxes security checks that only apply to web mode (e.g. session tmp dir restrictions).
+    normalized._is_desktop = true
+
     const message: ClientMessage = {
       type: 'task_submit',
       task_id: taskId,
       route,
-      payload: normalizeTaskParams(request.command, request.params)
+      payload: normalized
     }
     socket.send(JSON.stringify(message))
   } catch (error) {

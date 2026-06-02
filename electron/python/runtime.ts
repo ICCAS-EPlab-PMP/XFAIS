@@ -6,8 +6,19 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const EMBEDDED_PYTHON_VERSION = '3.11.9'
-export const EMBEDDED_PYTHON_RUNTIME_DIR = `python-${EMBEDDED_PYTHON_VERSION}-win32-x64`
-export const EMBEDDED_PYTHON_INSTALLER = `python-${EMBEDDED_PYTHON_VERSION}-amd64.exe`
+
+const isWindows = process.platform === 'win32'
+const isDarwin = process.platform === 'darwin'
+
+export const PYTHON_RUNTIME_SUFFIX = isDarwin
+  ? (process.arch === 'arm64' ? 'macos-arm64' : 'macos-x64')
+  : 'win32-x64'
+export const EMBEDDED_PYTHON_RUNTIME_DIR = `python-${EMBEDDED_PYTHON_VERSION}-${PYTHON_RUNTIME_SUFFIX}`
+export const PYTHON_EXECUTABLE = isWindows ? 'python.exe' : 'python3'
+
+export const EMBEDDED_PYTHON_INSTALLER = isWindows
+  ? `python-${EMBEDDED_PYTHON_VERSION}-amd64.exe`
+  : `python-${EMBEDDED_PYTHON_VERSION}-macos.pkg`
 
 export type PythonDependencyStatus = 'ready' | 'missing' | 'outdated'
 
@@ -25,6 +36,7 @@ export interface PythonPaths {
   appRoot: string
   isPackaged: boolean
   installerPath: string
+  pythonExecutable: string
   requirementsInputPath: string
   requirementsLockPath: string
   resourcesPath: string
@@ -158,26 +170,61 @@ const installEmbeddedPython = async (pythonPaths: PythonPaths): Promise<void> =>
 
   await mkdir(pythonPaths.runtimeRoot, { recursive: true })
 
-  const result = await runProcess(
-    pythonPaths.installerPath,
-    [
-      '/quiet',
-      'InstallAllUsers=0',
-      'AssociateFiles=0',
-      'CompileAll=0',
-      'Include_doc=0',
-      'Include_launcher=0',
-      'Include_pip=1',
-      'Include_test=0',
-      'PrependPath=0',
-      'Shortcuts=0',
-      `TargetDir=${pythonPaths.runtimeRoot}`
-    ],
-    { windowsHide: true }
-  )
+  if (isWindows) {
+    const result = await runProcess(
+      pythonPaths.installerPath,
+      [
+        '/quiet',
+        'InstallAllUsers=0',
+        'AssociateFiles=0',
+        'CompileAll=0',
+        'Include_doc=0',
+        'Include_launcher=0',
+        'Include_pip=1',
+        'Include_test=0',
+        'PrependPath=0',
+        'Shortcuts=0',
+        `TargetDir=${pythonPaths.runtimeRoot}`
+      ],
+      { windowsHide: true }
+    )
 
-  if (result.code !== 0) {
-    throw new Error(result.stderr || 'Embedded Python installer failed.')
+    if (result.code !== 0) {
+      throw new Error(result.stderr || 'Embedded Python installer failed.')
+    }
+  } else if (isDarwin) {
+    // macOS: Use the Python.org framework installer or extract standalone build
+    // The .pkg installer places Python in /Library/Frameworks/Python.framework
+    // For embedded use, we expect a pre-built standalone Python in the runtime directory.
+    // You can create one using: https://github.com/gregneagle/relocatable-python
+    // or use python-build-standalone: https://github.com/indygreg/python-build-standalone
+    //
+    // If using a tarball approach (recommended for embedded):
+    const result = await runProcess(
+      'tar',
+      ['-xzf', pythonPaths.installerPath, '-C', pythonPaths.runtimeRoot, '--strip-components=1'],
+      {}
+    )
+
+    if (result.code !== 0) {
+      // Fallback: try pkgutil for .pkg files
+      const pkgResult = await runProcess(
+        '/usr/sbin/installer',
+        ['-pkg', pythonPaths.installerPath, '-target', pythonPaths.runtimeRoot],
+        {}
+      )
+      if (pkgResult.code !== 0) {
+        throw new Error(pkgResult.stderr || 'Embedded Python installer failed on macOS.')
+      }
+    }
+
+    // Ensure python3 is executable
+    const pythonExe = path.join(pythonPaths.runtimeRoot, 'bin', PYTHON_EXECUTABLE)
+    if (await fileExists(pythonExe)) {
+      await runProcess('chmod', ['+x', pythonExe], {})
+    }
+  } else {
+    throw new Error(`Unsupported platform: ${process.platform}`)
   }
 }
 
@@ -237,10 +284,16 @@ export const resolvePythonPaths = (options: EnsurePythonRuntimeOptions = {}): Py
     isPackaged ? packagedPythonAssets : developmentPythonAssets
   )
 
+  // On macOS, Python framework places the executable in bin/; on Windows it's at root
+  const pythonExecutable = isDarwin
+    ? path.join(isPackaged ? packagedRuntimeRoot : developmentRuntimeRoot, 'bin', PYTHON_EXECUTABLE)
+    : path.join(isPackaged ? packagedRuntimeRoot : developmentRuntimeRoot, PYTHON_EXECUTABLE)
+
   return {
     appRoot: projectRoot,
     isPackaged,
     installerPath: isPackaged ? packagedInstallerPath : developmentInstallerPath,
+    pythonExecutable,
     requirementsInputPath: path.join(assetsRoot, 'requirements.in'),
     requirementsLockPath: path.join(assetsRoot, 'requirements.lock.txt'),
     resourcesPath,
@@ -251,7 +304,7 @@ export const resolvePythonPaths = (options: EnsurePythonRuntimeOptions = {}): Py
 }
 
 export const readPythonHealth = async (pythonPaths: PythonPaths, pythonExecutable?: string): Promise<PythonHealthReport> => {
-  const activePython = pythonExecutable ?? path.join(pythonPaths.runtimeRoot, 'python.exe')
+  const activePython = pythonExecutable ?? pythonPaths.pythonExecutable
   const result = await runProcess(activePython, [
     pythonPaths.serviceScriptPath,
     'health',
@@ -270,7 +323,7 @@ export const readPythonHealth = async (pythonPaths: PythonPaths, pythonExecutabl
 
 export const ensureEmbeddedPython = async (options: EnsurePythonRuntimeOptions = {}): Promise<{ health: PythonHealthReport; paths: PythonPaths }> => {
   const pythonPaths = resolvePythonPaths(options)
-  const pythonExecutable = path.join(pythonPaths.runtimeRoot, 'python.exe')
+  const pythonExecutable = pythonPaths.pythonExecutable
   const runtimeReady = await fileExists(pythonExecutable)
 
   if (!runtimeReady) {

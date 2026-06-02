@@ -68,6 +68,43 @@
           </div>
         </fieldset>
 
+        <!-- Azimuth range / 方位角范围 -->
+        <fieldset class="az-fieldset">
+          <legend class="az-legend">{{ t('integrateAzimuth.azimuthRange.title') }}</legend>
+          <p class="az-fieldset-hint">{{ t('integrateAzimuth.azimuthRange.hint') }}</p>
+          <div class="az-grid">
+            <label class="az-field">
+              <span class="az-field-label">{{ t('integrateAzimuth.azimuthRange.min') }}</span>
+              <input
+                type="number"
+                class="az-input"
+                min="-360"
+                max="360"
+                step="5"
+                :value="azimuthMin"
+                :data-testid="testIds.azimuthAzimuthMin"
+                @input="onAzimuthInput('min', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <label class="az-field">
+              <span class="az-field-label">{{ t('integrateAzimuth.azimuthRange.max') }}</span>
+              <input
+                type="number"
+                class="az-input"
+                min="-360"
+                max="360"
+                step="5"
+                :value="azimuthMax"
+                :data-testid="testIds.azimuthAzimuthMax"
+                @input="onAzimuthInput('max', ($event.target as HTMLInputElement).value)"
+              />
+            </label>
+            <p v-if="azimuthValidationError" class="az-error">
+              {{ azimuthValidationError }}
+            </p>
+          </div>
+        </fieldset>
+
         <!-- Chi output unit / 方位角输出单位 -->
         <fieldset class="az-fieldset">
           <legend class="az-legend">{{ t('integrateAzimuth.chiUnit.title') }}</legend>
@@ -291,8 +328,8 @@
         </div>
 
         <!-- Validation message / 校验消息 -->
-        <p v-if="radialValidationError" class="az-error-main">
-          {{ radialValidationError }}
+        <p v-if="radialValidationError || azimuthValidationError" class="az-error-main">
+          {{ radialValidationError || azimuthValidationError }}
         </p>
 
         <!-- Run button / 运行按钮 -->
@@ -300,7 +337,7 @@
           <button
             type="button"
             class="az-run-btn"
-            :disabled="isRunning || !!radialValidationError || files.length === 0"
+            :disabled="isRunning || !!radialValidationError || !!azimuthValidationError || files.length === 0"
             :data-testid="testIds.azimuthRunBtn"
             @click="handleRun"
           >
@@ -457,6 +494,9 @@ const radialMax = ref(20.0)
 const chiUnit = ref<'chi_deg' | 'chi_rad'>('chi_deg')
 const npt = ref(360)
 const nptRad = ref(100)
+/** Azimuth integration range in degrees. Default -180..180 = full 360°. */
+const azimuthMin = ref(-180)
+const azimuthMax = ref(180)
 
 const filePath = ref<string | null>(null)
 
@@ -565,6 +605,13 @@ let cleanupPreviewError: (() => void) | null = null
 const radialValidationError = computed<string | null>(() => {
   if (radialMin.value >= radialMax.value) {
     return t('integrateAzimuth.errors.radialRange')
+  }
+  return null
+})
+
+const azimuthValidationError = computed<string | null>(() => {
+  if (azimuthMin.value >= azimuthMax.value) {
+    return t('integrateAzimuth.azimuthRange.errorMinMax')
   }
   return null
 })
@@ -939,9 +986,17 @@ function onRadialInput(field: 'min' | 'max', raw: string): void {
   else radialMax.value = num
 }
 
+function onAzimuthInput(field: 'min' | 'max', raw: string): void {
+  const num = parseFloat(raw)
+  if (isNaN(num)) return
+  if (field === 'min') azimuthMin.value = num
+  else azimuthMax.value = num
+}
+
 async function handleRun(): Promise<void> {
   if (!activeFilePath.value) return
   if (radialValidationError.value) return
+  if (azimuthValidationError.value) return
 
   isRunning.value = true
   progress.value = 0
@@ -960,6 +1015,8 @@ async function handleRun(): Promise<void> {
       radialUnit: radialUnit.value,
       radialMin: radialMin.value,
       radialMax: radialMax.value,
+      azimuthMin: azimuthMin.value,
+      azimuthMax: azimuthMax.value,
       chiUnit: chiUnit.value,
       npt: npt.value,
       nptRad: nptRad.value,
