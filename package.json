@@ -13,6 +13,8 @@
     "dev:electron": "wait-on tcp:127.0.0.1:5173 file:dist-electron/main/index.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "build": "run-s build:renderer build:electron",
     "build:pack": "npm run build && electron-builder --win",
+    "build:pack:mac": "npm run build && electron-builder --mac",
+    "build:pack:all": "npm run build && electron-builder --win --mac",
     "build:renderer": "vite build",
     "build:electron": "run-s build:electron:main build:electron:preload",
     "build:electron:main": "vite build --config vite.electron.main.config.ts",
@@ -61,6 +63,19 @@
       "output": "dist-electron-builder"
     },
     "icon": "ICON/icon.ico",
+    "mac": {
+      "icon": "ICON/icon.icns",
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ]
+    },
+    "dmg": {
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
+    },
     "files": [
       "dist/**/*",
       "dist-electron/**/*",

@@ -154,6 +154,13 @@ export const messages = {
         npt: '方位角点数 (npt)',
         nptRad: '径向积分点数 (npt_rad)'
       },
+      azimuthRange: {
+        title: '方位角范围',
+        hint: '0° = 正右方向（X轴正方向），逆时针增加。留空则全360°积分。',
+        min: '起始方位角 (°)',
+        max: '终止方位角 (°)',
+        errorMinMax: '起始方位角必须小于终止方位角。'
+      },
       errors: {
         radialRange: '径向下限必须小于上限。'
       }
@@ -838,6 +845,13 @@ export const messages = {
         title: 'Integration Parameters',
         npt: 'Azimuthal Points (npt)',
         nptRad: 'Radial Integration Points (npt_rad)'
+      },
+      azimuthRange: {
+        title: 'Azimuthal Range',
+        hint: '0° = positive X direction (right), counterclockwise. Leave empty to integrate full 360°.',
+        min: 'Start Azimuth (°)',
+        max: 'End Azimuth (°)',
+        errorMinMax: 'Start azimuth must be less than end azimuth.'
       },
       errors: {
         radialRange: 'Radial min must be less than radial max.'

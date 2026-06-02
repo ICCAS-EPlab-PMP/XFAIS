@@ -123,6 +123,8 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           radial_unit: normalizeUnit(params.radialUnit) ?? 'q_nm^-1',
           radial_min: asOptionalNumber(params.radialMin),
           radial_max: asOptionalNumber(params.radialMax),
+          azimuth_min: asOptionalNumber(params.azimuthMin),
+          azimuth_max: asOptionalNumber(params.azimuthMax),
           correct_solid_angle: true,
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),

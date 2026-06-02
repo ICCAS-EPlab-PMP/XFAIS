@@ -1059,11 +1059,22 @@ async def handle_integrate_azimuth(
                 None,
             )
             opts = payload.get("options", {})
-            res = ai.integrate_radial(
-                data=data, npt=opts.get("npt", 360),
-                unit=opts.get("unit", "chi_deg"),
-                mask=mask.astype(np.uint8), method=opts.get("method", "splitpixel"),
-            )
+            kw: dict[str, Any] = {
+                "data": data,
+                "npt": opts.get("npt", 360),
+                "unit": opts.get("unit", "chi_deg"),
+                "mask": mask.astype(np.uint8),
+                "method": opts.get("method", "splitpixel"),
+            }
+            azimuth_min = opts.get("azimuth_min")
+            azimuth_max = opts.get("azimuth_max")
+            if azimuth_min is not None and azimuth_max is not None:
+                kw["azimuth_range"] = (float(azimuth_min), float(azimuth_max))
+            radial_min = opts.get("radial_min")
+            radial_max = opts.get("radial_max")
+            if radial_min is not None and radial_max is not None:
+                kw["radial_range"] = (float(radial_min), float(radial_max))
+            res = ai.integrate_radial(**kw)
             results.append({
                 "radial": res.radial.tolist(),
                 "intensity": res.intensity.tolist(),

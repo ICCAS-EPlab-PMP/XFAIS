@@ -5,6 +5,8 @@ import net from 'node:net'
 import path from 'node:path'
 import { EMBEDDED_PYTHON_VERSION, ensureEmbeddedPython, type PythonDependencyStatus, type PythonHealthReport, type PythonPaths } from './runtime'
 
+const isWindows = process.platform === 'win32'
+
 export type PythonServiceState = 'starting' | 'healthy' | 'error' | 'stopped' | 'restarting'
 
 export interface PythonServiceStatus {
@@ -177,7 +179,7 @@ export class PythonServiceManager {
       this.port = await reservePort()
 
       this.child = spawn(
-        path.join(paths.runtimeRoot, 'python.exe'),
+        paths.pythonExecutable,
         [
           paths.serviceScriptPath,
           'serve',
@@ -199,7 +201,7 @@ export class PythonServiceManager {
             PYTHONUTF8: '1'
           },
           stdio: ['ignore', 'pipe', 'pipe'],
-          windowsHide: true
+          ...(isWindows ? { windowsHide: true } : {})
         }
       )
 
@@ -297,7 +299,7 @@ export class PythonServiceManager {
       await wait(200)
     }
 
-    if (process.platform === 'win32' && typeof processId === 'number') {
+    if (isWindows && typeof processId === 'number') {
       await new Promise<void>((resolve) => {
         const killer = spawn('taskkill', ['/pid', String(processId), '/T', '/F'], {
           stdio: 'ignore',

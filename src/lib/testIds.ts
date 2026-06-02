@@ -98,6 +98,8 @@ export const testIds = {
   azimuthRadialMax: 'azimuth-radial-max',
   azimuthChiUnitDeg: 'azimuth-chi-unit-deg',
   azimuthChiUnitRad: 'azimuth-chi-unit-rad',
+  azimuthAzimuthMin: 'azimuth-azimuth-min',
+  azimuthAzimuthMax: 'azimuth-azimuth-max',
   azimuthNpt: 'azimuth-npt',
   azimuthNptRad: 'azimuth-npt-rad',
   azimuthRunBtn: 'azimuth-run-btn',
