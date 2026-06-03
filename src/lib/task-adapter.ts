@@ -244,6 +244,26 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         count: params.count,
       }
     }
+    case 'mask_maker': {
+      const action = asString(params.action)
+      // load_preview action: same as viewer_config image loading
+      if (action === 'load_preview' || action === 'load') {
+        const filePath = asString(params.filePath)
+        return {
+          action: 'load_preview',
+          filePath,
+          files: filePath ? [filePath] : [],
+          frame: asNumber(params.frame, 0),
+          frame_index: asNumber(params.frame, 0),
+          dataset: asString(params.dataset),
+          h5_dataset_path: asString(params.dataset),
+          channel: typeof params.channel === 'number' || typeof params.channel === 'string' ? params.channel : undefined,
+          h5_channel: typeof params.channel === 'number' || typeof params.channel === 'string' ? params.channel : undefined,
+        }
+      }
+      // All other mask operations: pass through as-is (draw_shape, apply_threshold, export_mask, load_mask)
+      return { ...params }
+    }
     case 'h5convert': {
       const datasetsRaw = params.datasets
       const datasetConfig: Record<string, unknown> = {}
@@ -408,7 +428,8 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
       }
     }
     case 'viewer_config':
-    case 'load_preview': {
+    case 'load_preview':
+    case 'mask_maker': {
       return {
         kind: 'result',
         data: isViewerDisplayResult(result) ? adaptViewerResult(result) : rawResult

@@ -84,6 +84,16 @@ const router = createRouter({
       }
     },
     {
+      path: '/workspace/mask-maker',
+      name: 'mask-maker',
+      component: () => import('@/views/workspace/MaskMakerView.vue'),
+      meta: {
+        titleKey: 'maskMaker.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'maskMaker.subtitle'
+      }
+    },
+    {
       path: '/workspace/png-generate',
       name: 'png-generate',
       component: () => import('@/views/workspace/PngGenerateView.vue'),

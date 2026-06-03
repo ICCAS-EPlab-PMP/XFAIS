@@ -336,7 +336,7 @@ function drawOverlays() {
         const rad = (angleDeg * Math.PI) / 180
         ctx.beginPath()
         ctx.moveTo(cx, cy)
-        ctx.lineTo(cx + r * Math.cos(rad), cy + r * Math.sin(rad))
+        ctx.lineTo(cx + r * Math.cos(rad), cy - r * Math.sin(rad))
         ctx.stroke()
       }
 

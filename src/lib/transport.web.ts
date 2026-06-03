@@ -32,6 +32,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   integrate_fiber: '/api/integrate_fiber',
   viewer_config: '/api/viewer_config',
   load_preview: '/api/viewer_config',
+  mask_maker: '/api/viewer_config',
   h5convert: '/api/h5convert',
   h5convert_scan: '/api/h5convert_scan',
   h5_extract: '/api/h5_extract',
@@ -89,6 +90,8 @@ export class WebTransport implements ITransport {
     })
     this.wsReady = this._init()
   }
+
+  // -- WebSocket URL discovery --------------------------------------------------
 
   /**
    * The Python backend now serves HTTP and WebSocket on the same port.

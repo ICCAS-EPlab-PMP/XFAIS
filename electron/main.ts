@@ -1,12 +1,40 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
-import { execSync, spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readdirSync } from 'node:fs'
+import { execSync, spawn, type SpawnOptions } from 'node:child_process'
+import { existsSync, mkdirSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APP_NAME, APP_VERSION, IPC_CHANNELS } from './constants'
 import { PythonServiceManager, type PythonServiceStatus } from './python/manager'
-import { PYTHON_RUNTIME_SUFFIX, PYTHON_EXECUTABLE } from './python/runtime'
+import { resolvePythonPaths } from './python/runtime'
+
+// ── ASAR-safe child_process wrappers ────────────────────────────────────
+// In packaged Electron apps the ASAR layer intercepts child_process calls.
+// Setting process.noAsar = true before each call prevents the wrapper
+// from interfering with commands that run outside the ASAR archive.
+
+const safeExecSync = (command: string, options?: Parameters<typeof execSync>[1]): string => {
+  const prev = process.noAsar
+  process.noAsar = true
+  try {
+    return execSync(command, options) as string
+  } finally {
+    process.noAsar = prev
+  }
+}
+
+const safeSpawn = (command: string, args?: readonly string[], options?: SpawnOptions): ReturnType<typeof spawn> => {
+  const prev = process.noAsar
+  process.noAsar = true
+  try {
+    return options
+      ? spawn(command, args as string[] ?? [], options)
+      : spawn(command, args as string[] ?? [])
+  } finally {
+    process.noAsar = prev
+  }
+}
+
 import type {
   ClientMessage,
   DialogOpenFileOptions,
@@ -152,28 +180,18 @@ const activeTasks = new Map<string, PendingTask>()
 
 // ── pyFAI 工具处理 / pyFAI tool handlers ───────────────────────────────────
 
-const getEmbeddedPythonRoot = (): string => {
-  const appRoot = app.getAppPath()
-  const embeddedDir = `python-3.11.9-${PYTHON_RUNTIME_SUFFIX}`
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, 'python-runtime', embeddedDir)
+const getEmbeddedPythonPaths = (): { pythonExe: string; scriptsDir: string } => {
+  const paths = resolvePythonPaths({
+    appRoot: app.getAppPath(),
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath
+  })
+  return {
+    pythonExe: paths.pythonExecutable,
+    scriptsDir: isDarwin
+      ? path.join(paths.runtimeRoot, 'bin')
+      : path.join(paths.runtimeRoot, 'Scripts')
   }
-  return path.join(appRoot, '.python-runtime', embeddedDir)
-}
-
-const getEmbeddedPythonScriptsDir = (): string => {
-  // On macOS, pip-installed scripts go to bin/; on Windows to Scripts/
-  const pythonRoot = getEmbeddedPythonRoot()
-  return isDarwin
-    ? path.join(pythonRoot, 'bin')
-    : path.join(pythonRoot, 'Scripts')
-}
-
-const getEmbeddedPythonExe = (): string => {
-  const pythonRoot = getEmbeddedPythonRoot()
-  return isDarwin
-    ? path.join(pythonRoot, 'bin', PYTHON_EXECUTABLE)
-    : path.join(pythonRoot, PYTHON_EXECUTABLE)
 }
 
 interface PyfaiCheckResult {
@@ -185,7 +203,7 @@ interface PyfaiCheckResult {
 const checkQtBindingAvailable = (pythonExe: string): boolean => {
   const shellOpts = isWindows ? { windowsHide: true as const } : {}
   try {
-    execSync(`"${pythonExe}" -c "from PySide6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
+    safeExecSync(`"${pythonExe}" -c "from PySide6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
       timeout: 8000,
       encoding: 'utf-8',
       ...shellOpts
@@ -193,7 +211,7 @@ const checkQtBindingAvailable = (pythonExe: string): boolean => {
     return true
   } catch {
     try {
-      execSync(`"${pythonExe}" -c "from PyQt6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
+      safeExecSync(`"${pythonExe}" -c "from PyQt6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
         timeout: 8000,
         encoding: 'utf-8',
         ...shellOpts
@@ -206,16 +224,14 @@ const checkQtBindingAvailable = (pythonExe: string): boolean => {
 }
 
 const checkPyfaiEmbedded = (): { available: boolean; version: string | null; calib2Path: string | null; hasQtBinding: boolean } => {
-  const scriptsDir = getEmbeddedPythonScriptsDir()
+  const { pythonExe, scriptsDir } = getEmbeddedPythonPaths()
   const calib2Name = isWindows ? 'pyFAI-calib2.exe' : 'pyFAI-calib2'
   const calib2Exe = path.join(scriptsDir, calib2Name)
   const calib2Path = existsSync(calib2Exe) ? calib2Exe : null
-
-  const pythonExe = getEmbeddedPythonExe()
   let version: string | null = null
   const shellOpts = isWindows ? { windowsHide: true as const } : {}
   try {
-    const output = execSync(`"${pythonExe}" -c "import pyFAI; print(pyFAI.version)"`, {
+    const output = safeExecSync(`"${pythonExe}" -c "import pyFAI; print(pyFAI.version)"`, {
       timeout: 10000,
       encoding: 'utf-8',
       ...shellOpts
@@ -239,7 +255,7 @@ const checkPyfaiSystem = (): { available: boolean; version: string | null; calib
 
   // Method 1: Find calib2 in PATH
   try {
-    const output = execSync(`${findCmd} ${calib2Name} ${DEV_NULL}`, {
+    const output = safeExecSync(`${findCmd} ${calib2Name} ${DEV_NULL}`, {
       timeout: 5000, encoding: 'utf-8', ...shellOpts
     }).trim()
     if (output) calib2Path = output.split('\n')[0].trim()
@@ -249,7 +265,7 @@ const checkPyfaiSystem = (): { available: boolean; version: string | null; calib
   let version: string | null = null
   for (const pyCmd of pythonCmds) {
     try {
-      const output = execSync(`${pyCmd} -c "import pyFAI; print(pyFAI.version)" ${DEV_NULL}`, {
+      const output = safeExecSync(`${pyCmd} -c "import pyFAI; print(pyFAI.version)" ${DEV_NULL}`, {
         timeout: 10000, encoding: 'utf-8', ...shellOpts
       }).trim()
       if (output) { version = output; break }
@@ -260,13 +276,13 @@ const checkPyfaiSystem = (): { available: boolean; version: string | null; calib
   if (version && !calib2Path) {
     for (const pyCmd of pythonCmds) {
       try {
-        const userBase = execSync(
+        const userBase = safeExecSync(
           `${pyCmd} -c "import site; print(site.getuserbase())" ${DEV_NULL}`,
           { timeout: 5000, encoding: 'utf-8', ...shellOpts }
         ).trim()
         if (userBase) {
           if (isWindows) {
-            const verStr = execSync(
+            const verStr = safeExecSync(
               `${pyCmd} -c "import sys; print(f'{sys.version_info.major}{sys.version_info.minor}')" ${DEV_NULL}`,
               { timeout: 5000, encoding: 'utf-8', ...shellOpts }
             ).trim()
@@ -280,7 +296,7 @@ const checkPyfaiSystem = (): { available: boolean; version: string | null; calib
       } catch { /* continue */ }
 
       try {
-        const prefix = execSync(
+        const prefix = safeExecSync(
           `${pyCmd} -c "import sys; print(sys.prefix)" ${DEV_NULL}`,
           { timeout: 5000, encoding: 'utf-8', ...shellOpts }
         ).trim()
@@ -297,7 +313,7 @@ const checkPyfaiSystem = (): { available: boolean; version: string | null; calib
       try {
         const localAppData = process.env.LOCALAPPDATA
         if (localAppData) {
-          const dirOutput = execSync(
+          const dirOutput = safeExecSync(
             `dir /b /ad "${localAppData}\\Programs\\Python\\Python*" ${DEV_NULL}`,
             { timeout: 5000, encoding: 'utf-8', ...shellOpts }
           ).trim()
@@ -340,14 +356,14 @@ const checkPyfaiSystem = (): { available: boolean; version: string | null; calib
   if (calib2Path) {
     for (const pyCmd of pythonCmds) {
       try {
-        execSync(`${pyCmd} -c "from PySide6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
+        safeExecSync(`${pyCmd} -c "from PySide6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
           timeout: 8000, encoding: 'utf-8', ...shellOpts
         })
         hasQtBinding = true
         break
       } catch {
         try {
-          execSync(`${pyCmd} -c "from PyQt6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
+          safeExecSync(`${pyCmd} -c "from PyQt6 import QtWidgets; print('ok')" ${DEV_NULL}`, {
             timeout: 8000, encoding: 'utf-8', ...shellOpts
           })
           hasQtBinding = true
@@ -401,7 +417,7 @@ const registerPyfaiHandlers = (): void => {
       exePath = embedded.calib2Path
     } else if (embedded.available) {
       // 嵌入式 Python 可用但找不到 exe
-      pythonCmd = getEmbeddedPythonExe()
+      pythonCmd = getEmbeddedPythonPaths().pythonExe
     } else {
       return { success: false, error: '未找到可用的 pyFAI-calib2。请先安装 pyFAI。' }
     }
@@ -411,8 +427,8 @@ const registerPyfaiHandlers = (): void => {
         ? { detached: true, stdio: ['ignore' as const, 'pipe' as const, 'pipe' as const], windowsHide: false }
         : { detached: true, stdio: ['ignore' as const, 'pipe' as const, 'pipe' as const] }
       const child = exePath
-        ? spawn(exePath, [], spawnOpts)
-        : spawn(pythonCmd!, ['-m', 'pyFAI.app.calib2'], spawnOpts)
+        ? safeSpawn(exePath, [], spawnOpts)
+        : safeSpawn(pythonCmd!, ['-m', 'pyFAI.app.calib2'], spawnOpts)
 
       let startupFailed = false
       let startupError = ''
@@ -706,6 +722,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   integrate_cake: '/api/integrate_cake',
   integrate_fiber: '/api/integrate_fiber',
   viewer_config: '/api/viewer_config',
+  mask_maker: '/api/viewer_config',
       h5convert: '/api/h5convert',
       h5convert_scan: '/api/h5convert_scan',
       h5_extract: '/api/h5_extract',
@@ -1076,6 +1093,14 @@ const win = (): BrowserWindow => {
 
 app.whenReady().then(async () => {
   mkdirSync(getLogDirectory(), { recursive: true })
+  const bootLogPath = path.join(getLogDirectory(), 'boot.log')
+  try {
+    writeFileSync(bootLogPath, `isPackaged=${app.isPackaged} getAppPath=${app.getAppPath()} resourcesPath=${process.resourcesPath}\n`, 'utf8')
+    appendFileSync(bootLogPath, `execPath=${process.execPath} cwd=${process.cwd()}\n`, 'utf8')
+  } catch (bootErr) {
+    // 如果连 boot.log 都写不了，说明 userData 路径有问题
+  }
+
   registerAppMeta()
   registerPythonRuntime()
   registerDialogHandlers()

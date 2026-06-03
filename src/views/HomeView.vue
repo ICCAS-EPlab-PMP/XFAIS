@@ -210,12 +210,17 @@ const fiberCards: FeatureCard[] = [
   }
 ]
 
-// Row 3: Image Tools (viewer + H5 tools)
+// Row 3: Image Tools (viewer + H5 tools + mask maker)
 const imageCards: FeatureCard[] = [
   {
     key: 'viewer',
     route: '/workspace/viewer',
     icon: '⊞'
+  },
+  {
+    key: 'maskMaker',
+    route: '/workspace/mask-maker',
+    icon: 'M'
   },
   {
     key: 'h5convert',
