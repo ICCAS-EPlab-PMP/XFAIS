@@ -115,6 +115,10 @@ export const messages = {
           title: '批量 PNG 生成',
           description: '批量生成色图 PNG 图像'
         },
+        maskMaker: {
+          title: '掩膜（Mask）制作',
+          description: '交互式 Mask 绘制工具，功能基于 silx/pyFAI 的 mask 模块复刻。建议有条件时直接使用 pyFAI/silx 构建掩膜以获得更完整的功能。'
+        },
         pyfaiCalib: {
           title: 'pyFAI-calib2 启动器',
           description: '启动 pyFAI-calib2 探测器校准 GUI'
@@ -329,6 +333,81 @@ export const messages = {
         title: 'JSON 预览（与 Viewer 兼容）'
       }
     },
+    maskMaker: {
+      title: '掩膜（Mask）制作',
+      subtitle: '交互式 Mask 绘制，支持几何形状、铅笔线条与阈值遮盖，导出 silx/pyFAI 兼容格式。本工具基于 silx.image.shapes 与 pyFAI 的 mask 功能复刻，建议有条件时直接使用 pyFAI/silx 构建掩膜以获得更完整的功能。',
+      empty: '选择图像文件以开始绘制 Mask。',
+      toolbar: {
+        file: '文件操作',
+        openImage: '打开图像',
+        loadMask: '加载 Mask',
+        exportMask: '导出 Mask',
+        drawTools: '绘制工具',
+        mode: '绘制模式',
+        mask: '遮盖',
+        unmask: '擦除',
+        edit: '编辑操作',
+        undo: '撤销',
+        redo: '重做',
+        invert: '反转',
+        clear: '清除全部'
+      },
+      tools: {
+        pan: '平移',
+        rectangle: '矩形',
+        disk: '圆形',
+        ellipse: '椭圆',
+        polygon: '多边形',
+        line: '线条'
+      },
+      properties: {
+        imageInfo: '图像信息',
+        fileName: '文件名',
+        dimensions: '尺寸',
+        format: '格式',
+        min: '最小值',
+        max: '最大值',
+        std: '标准差',
+        noImage: '未加载图像',
+        maskStats: 'Mask 统计',
+        maskedPixels: '遮盖像素',
+        totalPixels: '总像素',
+        percentage: '遮盖比例',
+        contrast: '对比度调节',
+        threshold: '阈值工具',
+        thresholdMin: '下限',
+        thresholdMax: '上限',
+        belowMin: '遮盖低于下限的像素',
+        aboveMax: '遮盖高于上限的像素',
+        between: '遮盖介于上下限之间',
+        notFinite: '遮盖非有限值'
+      },
+      canvas: {
+        polygonHint: '单击添加顶点，双击闭合多边形'
+      },
+      export: {
+        title: '导出 Mask',
+        format: '导出格式',
+        savePath: '保存路径',
+        noPath: '未选择路径',
+        browse: '浏览...',
+        cancel: '取消',
+        export: '导出',
+        exporting: '导出中...'
+      },
+      messages: {
+        maskLoaded: 'Mask 已加载',
+        exportSuccess: 'Mask 已导出'
+      },
+      errors: {
+        openFailed: '打开图像失败',
+        loadFailed: '加载图像失败',
+        shapeFailed: '绘制形状失败',
+        thresholdFailed: '阈值遮盖失败',
+        loadMaskFailed: '加载 Mask 失败',
+        exportFailed: '导出失败'
+      }
+    },
     viewer: {
       title: '图像查看器',
       subtitle: '浏览 EDF / TIFF / HDF5 探测器图像，支持色图控制与 JSON 导出配置。',
@@ -454,7 +533,8 @@ export const messages = {
         valueRangeMax: '最大强度',
         deadPixelThreshold: '死像素阈值',
         customMaskFile: '自定义掩膜文件',
-        noCustomMask: '未加载自定义掩膜'
+        noCustomMask: '未加载自定义掩膜',
+        maskActive: '✓ 已加载 Mask'
       },
       polarization: {
         title: '偏振校正',
@@ -807,6 +887,10 @@ export const messages = {
           title: 'Batch PNG Generation',
           description: 'Generate colormapped PNG images in batch'
         },
+        maskMaker: {
+          title: 'Mask Maker',
+          description: 'Interactive mask drawing based on silx/pyFAI mask modules. Consider using pyFAI/silx directly for more complete masking features when available.'
+        },
         pyfaiCalib: {
           title: 'pyFAI-calib2 Launcher',
           description: 'Launch the pyFAI-calib2 detector calibration GUI'
@@ -1021,6 +1105,81 @@ export const messages = {
         title: 'JSON Preview (Viewer-compatible)'
       }
     },
+    maskMaker: {
+      title: 'Mask Maker',
+      subtitle: 'Interactive mask drawing with geometric shapes & threshold masking. Export to silx/pyFAI-compatible formats. This tool replicates silx.image.shapes and pyFAI mask features — consider using pyFAI/silx directly for more complete masking capabilities.',
+      empty: 'Select an image file to start drawing a mask.',
+      toolbar: {
+        file: 'File Operations',
+        openImage: 'Open Image',
+        loadMask: 'Load Mask',
+        exportMask: 'Export Mask',
+        drawTools: 'Draw Tools',
+        mode: 'Mode',
+        mask: 'Mask',
+        unmask: 'Unmask',
+        edit: 'Edit',
+        undo: 'Undo',
+        redo: 'Redo',
+        invert: 'Invert',
+        clear: 'Clear All'
+      },
+      tools: {
+        pan: 'Pan',
+        rectangle: 'Rectangle',
+        disk: 'Circle',
+        ellipse: 'Ellipse',
+        polygon: 'Polygon',
+        line: 'Line'
+      },
+      properties: {
+        imageInfo: 'Image Info',
+        fileName: 'File Name',
+        dimensions: 'Dimensions',
+        format: 'Format',
+        min: 'Min',
+        max: 'Max',
+        std: 'Std Dev',
+        noImage: 'No image loaded',
+        maskStats: 'Mask Stats',
+        maskedPixels: 'Masked Pixels',
+        totalPixels: 'Total Pixels',
+        percentage: 'Coverage',
+        contrast: 'Contrast',
+        threshold: 'Threshold',
+        thresholdMin: 'Lower Bound',
+        thresholdMax: 'Upper Bound',
+        belowMin: 'Mask Below Lower Bound',
+        aboveMax: 'Mask Above Upper Bound',
+        between: 'Mask Between Bounds',
+        notFinite: 'Mask Non-Finite'
+      },
+      canvas: {
+        polygonHint: 'Click to add vertices, double-click to close polygon'
+      },
+      export: {
+        title: 'Export Mask',
+        format: 'Format',
+        savePath: 'Save Path',
+        noPath: 'No path selected',
+        browse: 'Browse...',
+        cancel: 'Cancel',
+        export: 'Export',
+        exporting: 'Exporting...'
+      },
+      messages: {
+        maskLoaded: 'Mask loaded',
+        exportSuccess: 'Mask exported successfully'
+      },
+      errors: {
+        openFailed: 'Failed to open image',
+        loadFailed: 'Failed to load image',
+        shapeFailed: 'Failed to apply shape',
+        thresholdFailed: 'Failed to apply threshold',
+        loadMaskFailed: 'Failed to load mask',
+        exportFailed: 'Failed to export mask'
+      }
+    },
     viewer: {
       title: 'Image Viewer',
       subtitle: 'Browse EDF / TIFF / HDF5 detector images with colormap control and JSON export configuration.',
@@ -1146,7 +1305,8 @@ export const messages = {
         valueRangeMax: 'Max Intensity',
         deadPixelThreshold: 'Dead Pixel Threshold',
         customMaskFile: 'Custom Mask File',
-        noCustomMask: 'No custom mask loaded'
+        noCustomMask: 'No custom mask loaded',
+        maskActive: '✓ Mask Loaded'
       },
       polarization: {
         title: 'Polarization Correction',

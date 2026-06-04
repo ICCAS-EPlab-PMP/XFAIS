@@ -18,6 +18,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import struct
 import tempfile
 from pathlib import Path
@@ -973,13 +974,18 @@ async def handle_integrate1d(
                 failed.append({"file": fpath, "reason": "No data loaded"})
                 continue
 
+            opts = payload.get("options", {})
+            custom_mask = None
+            custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
+            if custom_mask_path:
+                custom_mask = await _run_blocking(MaskBuilder.load_mask_file, str(custom_mask_path))
+
             mask = await _run_blocking(
                 MaskBuilder.build, data,
                 payload.get("valid_min", 0.0), payload.get("valid_max", 1e10),
-                dead_mask, None,
+                dead_mask, custom_mask,
             )
 
-            opts = payload.get("options", {})
             method = opts.get("method", "splitpixel")
             integrator = opts.get("integrator", "ng")
             integrate_kwargs = {
@@ -1050,13 +1056,18 @@ async def handle_integrate_azimuth(
             if data is None:
                 failed.append({"file": fpath, "reason": "No data loaded"})
                 continue
+            opts = payload.get("options", {})
+            custom_mask = None
+            custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
+            if custom_mask_path:
+                custom_mask = await _run_blocking(MaskBuilder.load_mask_file, str(custom_mask_path))
             mask = await _run_blocking(
                 MaskBuilder.build,
                 data,
                 payload.get("valid_min", 0.0),
                 payload.get("valid_max", 1e10),
                 dead_mask,
-                None,
+                custom_mask,
             )
             opts = payload.get("options", {})
             kw: dict[str, Any] = {
@@ -1129,13 +1140,18 @@ async def handle_integrate_cake(
             if data is None:
                 failed.append({"file": fpath, "reason": "No data loaded"})
                 continue
+            opts = payload.get("options", {})
+            custom_mask = None
+            custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
+            if custom_mask_path:
+                custom_mask = await _run_blocking(MaskBuilder.load_mask_file, str(custom_mask_path))
             mask = await _run_blocking(
                 MaskBuilder.build,
                 data,
                 payload.get("valid_min", 0.0),
                 payload.get("valid_max", 1e10),
                 dead_mask,
-                None,
+                custom_mask,
             )
             opts = payload.get("options", {})
             azimuth_min = opts.get("azimuth_min")
@@ -2114,8 +2130,6 @@ async def handle_viewer_config(
             real_tmp_dir = os.path.realpath(session_tmp_dir)
             real_folder = os.path.realpath(folder)
             
-            # Path traversal protection: folder must be inside session tmp dir
-            # 路径遍历防护：文件夹必须在 session 临时目录内
             if not real_folder.startswith(real_tmp_dir + os.sep) and real_folder != real_tmp_dir:
                 return {"status": "error", "message": "Access denied: can only scan uploaded files"}
         else:
@@ -2242,6 +2256,100 @@ async def handle_viewer_config(
         if include_image_data:
             result["imageData"] = _serialize_image_data(data)
         return result
+
+    # ── mask-maker: draw shape (delegates to silx.image.shapes) ─────────
+    if action == "draw_shape":
+        await send_progress(0.0, "Applying shape...")
+        mask_bytes = base64.b64decode(payload["mask_data"])
+        mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(
+            payload["height"], payload["width"]
+        ).copy()
+
+        mask = MaskBuilder.apply_shape(
+            mask,
+            shape_type=payload["shape_type"],
+            params=payload["params"],
+            level=payload.get("level", 1),
+            do_mask=payload.get("do_mask", True),
+        )
+        return {
+            "status": "ok",
+            "mask_data": base64.b64encode(mask.tobytes()).decode(),
+            "masked_pixels": int(np.count_nonzero(mask)),
+        }
+
+    # ── mask-maker: apply threshold ─────────────────────────────────────
+    if action == "apply_threshold":
+        await send_progress(0.0, "Applying threshold...")
+        mask_bytes = base64.b64decode(payload["mask_data"])
+        mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(
+            payload["height"], payload["width"]
+        ).copy()
+
+        file_path = payload["filePath"]
+        frame = payload.get("frame", 0)
+        ext = os.path.splitext(file_path)[1].lower()
+        dataset_path = payload.get("dataset") or payload.get("h5_dataset_path")
+        h5_channel = payload.get("channel") if payload.get("channel") is not None else payload.get("h5_channel")
+
+        if ext in {".h5", ".hdf5"}:
+            if not dataset_path:
+                datasets = await _run_blocking(H5Handler.find_datasets, file_path)
+                entries = _serialize_h5_datasets(datasets)
+                dataset_path = H5Handler.pick_default_dataset([item["path"] for item in entries])
+                if not dataset_path:
+                    return {"status": "error", "message": "No image dataset found"}
+            data, _dead = await _run_blocking(
+                H5Handler.load_frame, file_path, dataset_path, frame, h5_channel,
+            )
+        else:
+            data, _dead, _meta = await _run_blocking(ImageLoader.load_frame, file_path, frame)
+
+        if data is None:
+            return {"status": "error", "message": "Failed to load pixel data"}
+
+        mask = MaskBuilder.apply_threshold(
+            mask,
+            data,
+            mode=payload["mode"],
+            threshold=payload.get("threshold"),
+            threshold_min=payload.get("threshold_min"),
+            threshold_max=payload.get("threshold_max"),
+            level=payload.get("level", 1),
+            do_mask=payload.get("do_mask", True),
+        )
+        return {
+            "status": "ok",
+            "mask_data": base64.b64encode(mask.tobytes()).decode(),
+            "masked_pixels": int(np.count_nonzero(mask)),
+        }
+
+    # ── mask-maker: export mask ─────────────────────────────────────────
+    if action == "export_mask":
+        await send_progress(0.0, "Exporting mask...")
+        mask_bytes = base64.b64decode(payload["mask_data"])
+        mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(
+            payload["height"], payload["width"]
+        )
+        result = MaskBuilder.export_mask(
+            mask,
+            payload["format"],
+            payload["save_path"],
+            header=payload.get("header"),
+        )
+        return result
+
+    # ── mask-maker: load existing mask ──────────────────────────────────
+    if action == "load_mask":
+        await send_progress(0.0, "Loading mask...")
+        mask_array = MaskBuilder.load_mask_file(payload["file_path"])
+        mask_uint8 = mask_array.astype(np.uint8)
+        return {
+            "status": "ok",
+            "mask_data": base64.b64encode(mask_uint8.tobytes()).decode(),
+            "shape": list(mask_uint8.shape),
+            "masked_pixels": int(np.count_nonzero(mask_uint8)),
+        }
 
     # ── default fallback: scan datasets ─────────────────────────────────
     await send_progress(0.0, "Inspecting files...")
@@ -3158,6 +3266,16 @@ def run_health(expected_python: str, requirements_lock: str) -> int:
     return 0 if report["health_ok"] else 1
 
 
+def _find_free_port(host: str = '127.0.0.1') -> int:
+    """Reserve and return a free TCP port on the given host.
+    在指定主机上预留并返回一个空闲 TCP 端口。
+    """
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        s.bind((host, 0))
+        return s.getsockname()[1]
+
+
 def _start_ws_in_thread(service: WebSocketService, host: str, port: int) -> None:
     """Run the WebSocket server in a dedicated thread with its own event loop."""
     try:
@@ -3186,16 +3304,31 @@ def run_server(host: str, port: int, expected_python: str, requirements_lock: st
             continue
         ws_service.register_route(route, handler_fn)
 
+    # Reserve a dedicated port for the WebSocket server and launch it.
+    # 为 WebSocket 服务器预留独立端口并启动。
+    ws_port = _find_free_port(host)
     cached_report = dict(report)
-    cached_report["ws_port"] = None
+    cached_report["ws_port"] = ws_port
     handler = type("ConfiguredHealthHandler", (HealthHandler,), {
         "expected_python": expected_python,
         "requirements_lock": requirements_lock,
-        "ws_port": None,
+        "ws_port": ws_port,
         "cached_report": cached_report,
     })
 
-    print(f"[python-service] HTTP + WebSocket on {host}:{port}")
+    # Start the WebSocket server in a background thread and wait until it is
+    # accepting connections before proceeding to start the HTTP server.
+    # 在后台线程启动 WebSocket 服务器，并等待其就绪后再启动 HTTP 服务器。
+    ws_thread = threading.Thread(
+        target=_start_ws_in_thread,
+        args=(ws_service, host, ws_port),
+        daemon=True,
+    )
+    ws_thread.start()
+    if not ws_service.ready.wait(timeout=15):
+        print(f"[python-service] WARNING: WebSocket server did not become ready within 15s on port {ws_port}")
+
+    print(f"[python-service] HTTP on {host}:{port}, WebSocket on {host}:{ws_port}")
 
     threading.Thread(target=_warm_viewer_runtime, daemon=True).start()
 
@@ -3251,7 +3384,9 @@ class WebHealthHandler(BaseHTTPRequestHandler):
     # -- WebSocket upgrade support (single-port mode) --------------------------
 
     def _handle_ws_upgrade(self) -> None:
-        """Handle WebSocket upgrade request on /ws path."""
+        """Handle WebSocket upgrade request on /ws path.
+        处理 /ws 路径上的 WebSocket 升级请求。
+        """
         ws_key = self.headers.get("Sec-WebSocket-Key", "")
         if not ws_key:
             self._write_json({"error": "Missing Sec-WebSocket-Key"}, HTTPStatus.BAD_REQUEST)
@@ -3379,7 +3514,9 @@ class WebHealthHandler(BaseHTTPRequestHandler):
                 _ws_service.session_manager.remove_session(session_id)
 
     def _ws_send(self, data: str | bytes, binary: bool = False) -> None:
-        """Send a WebSocket frame."""
+        """Send a WebSocket frame. Supports text and binary.
+        发送 WebSocket 帧。支持文本和二进制。
+        """
         if isinstance(data, str):
             payload = data.encode("utf-8")
             opcode = 0x01  # text
@@ -3387,12 +3524,13 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             payload = data
             opcode = 0x02  # binary
 
+        mask_bit = 0x80  # server frames are NOT masked
         frame = bytearray()
         frame.append(0x80 | opcode)  # FIN + opcode
 
         length = len(payload)
         if length < 126:
-            frame.append(length)
+            frame.append(mask_bit | length if False else length)
         elif length < 65536:
             frame.append(126)
             frame.extend(struct.pack("!H", length))
@@ -3405,7 +3543,9 @@ class WebHealthHandler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def _ws_recv(self) -> str | None:
-        """Receive a single WebSocket text frame. Returns None on close."""
+        """Receive a single WebSocket text frame. Returns None on close.
+        接收单个 WebSocket 文本帧。关闭时返回 None。
+        """
         try:
             header = self.rfile.read(2)
             if len(header) < 2:

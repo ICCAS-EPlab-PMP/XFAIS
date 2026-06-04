@@ -54,6 +54,9 @@
         :data-testid="testIds.maskCustomFile"
         @update:model-value="onMaskPathChange"
       />
+      <span v-if="model.customMaskPath" class="mbf-active-tag">
+        {{ t('business.mask.maskActive') }}
+      </span>
     </div>
   </fieldset>
 </template>
@@ -170,5 +173,21 @@ function onMaskPathChange(path: string | null): void {
 
 .mbf-custom {
   margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mbf-active-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.12);
+  color: #16a34a;
+  font-size: 0.75rem;
+  font-weight: 700;
+  white-space: nowrap;
 }
 </style>
