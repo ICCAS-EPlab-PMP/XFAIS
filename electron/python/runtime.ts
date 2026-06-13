@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
-import { spawn } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { fork, spawn, type ChildProcess } from 'node:child_process'
+import { appendFileSync, existsSync } from 'node:fs'
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,36 +112,281 @@ const pickExistingPath = (candidatePaths: string[], fallbackPath: string): strin
 
 const normalizeOutput = (value: string): string => value.replace(/\r\n/g, '\n').trim()
 
+// Detect paths containing non-ASCII characters (e.g. Chinese, Japanese).
+// cmd.exe (used by shell:true) corrupts these via codepage conversion, so we
+// must bypass shell:true and/or use the fork-based helper for such paths.
+const hasNonAsciiPath = (p: string): boolean => /[^\x00-\x7F]/.test(p)
+
+const MAX_OUTPUT_BUFFER = 50 * 1024 * 1024
+
+// In packaged Electron 35 apps, child_process.spawn with the default
+// CreateProcessW path can fail with ENOENT even when the executable exists.
+// The root cause is an interaction between ASAR's noAsar flag and libuv's
+// CreateProcessW wrapper on certain Windows builds. We work around this by:
+//   1. Forcing `shell: true` so the command is launched via cmd.exe, which
+//      uses a different process-creation code path that is unaffected.
+//   2. Prepending Windows system directories to PATH so cmd.exe itself is
+//      resolvable. The augmented PATH is also used to locate sibling DLLs
+//      (python311.dll, vcruntime140.dll, etc.) required by the embedded
+//      Python runtime.
+const SYSTEM_PATH_PREFIXES = isWindows
+  ? ['C:\\WINDOWS\\system32', 'C:\\WINDOWS', 'C:\\WINDOWS\\System32\\Wbem']
+  : []
+
+const buildAugmentedPath = (exeDir: string, env: NodeJS.ProcessEnv): string => {
+  const currentPath = env.PATH ?? env.Path ?? ''
+  // Order matters: exe dir first (for sibling DLLs), then system paths
+  // (for cmd.exe resolution), then the inherited user PATH.
+  return [exeDir, ...SYSTEM_PATH_PREFIXES, currentPath]
+    .filter((entry) => typeof entry === 'string' && entry.length > 0)
+    .join(path.delimiter)
+}
+
+// ── ASAR-safe process launcher via fork() ──────────────────────────────
+// In packaged Electron 35 apps, child_process.spawn/exec are intercepted by
+// the ASAR wrapper and may fail with ENOENT even for paths outside ASAR.
+// child_process.fork() is NOT patched, so we use it with ELECTRON_RUN_AS_NODE=1
+// to launch a plain Node.js helper that runs commands on our behalf.
+
+let helperScriptPath = ''
+let helperProcess: ChildProcess | null = null
+let helperReady = false
+let helperCommandId = 0
+const helperPending = new Map<number, {
+  resolve: (result: RunProcessResult) => void
+  reject: (err: Error) => void
+}>()
+
+const setHelperScriptPath = (resourcesPath: string, projectRoot: string): void => {
+  // In packaged mode the helper is in extraResources; in dev mode it's in resources/
+  const packagedPath = path.join(resourcesPath, 'run-command.mjs')
+  const devPath = path.join(projectRoot, 'resources', 'run-command.mjs')
+  helperScriptPath = existsSync(packagedPath) ? packagedPath : devPath
+}
+
+const ensureHelperProcess = (): Promise<void> => {
+  if (helperProcess && helperReady) return Promise.resolve()
+
+  return new Promise<void>((resolve, reject) => {
+    const env = {
+      ...process.env,
+      ELECTRON_RUN_AS_NODE: '1'
+    } as Record<string, string>
+
+    helperProcess = fork(helperScriptPath, [], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe', 'ipc']
+    })
+
+    helperProcess.stdout?.on('data', () => {}) // consume to prevent blocking
+    helperProcess.stderr?.on('data', () => {})
+
+    helperProcess.once('message', (msg: any) => {
+      if (msg?.type === 'ready') {
+        helperReady = true
+        resolve()
+      }
+    })
+
+    helperProcess.on('message', (msg: any) => {
+      if (msg?.id == null) return
+      const pending = helperPending.get(msg.id)
+      if (!pending) return
+      helperPending.delete(msg.id)
+
+      if (msg.error) {
+        pending.reject(new Error(`${msg.error} (${msg.code ?? 'UNKNOWN'})`))
+      } else {
+        pending.resolve({
+          code: msg.code ?? 0,
+          stderr: normalizeOutput(msg.stderr ?? ''),
+          stdout: normalizeOutput(msg.stdout ?? '')
+        })
+      }
+    })
+
+    helperProcess.once('error', (err) => {
+      helperProcess = null
+      helperReady = false
+      for (const [, p] of helperPending) p.reject(err)
+      helperPending.clear()
+      reject(err)
+    })
+
+    helperProcess.once('exit', () => {
+      helperProcess = null
+      helperReady = false
+      for (const [, p] of helperPending) {
+        p.reject(new Error('Helper process exited unexpectedly'))
+      }
+      helperPending.clear()
+    })
+
+    // Timeout for helper startup
+    setTimeout(() => {
+      if (!helperReady) {
+        helperProcess?.kill()
+        helperProcess = null
+        reject(new Error('Helper process startup timed out'))
+      }
+    }, 10000)
+  })
+}
+
+const runViaHelper = async (
+  executable: string,
+  argumentsList: string[],
+  options: RunProcessOptions = {}
+): Promise<RunProcessResult> => {
+  await ensureHelperProcess()
+  const id = ++helperCommandId
+
+  return new Promise<RunProcessResult>((resolve, reject) => {
+    helperPending.set(id, { resolve, reject })
+    const cwd = options.cwd ?? path.dirname(executable)
+    const env = options.env ?? process.env
+    const augmentedPath = buildAugmentedPath(path.dirname(executable), env)
+
+    helperProcess!.send({
+      type: 'run',
+      id,
+      cmd: executable,
+      args: argumentsList,
+      cwd,
+      env: { ...env, PATH: augmentedPath, Path: augmentedPath }
+    })
+
+    // Timeout for individual commands (10 minutes for pip install)
+    setTimeout(() => {
+      if (helperPending.has(id)) {
+        helperPending.delete(id)
+        reject(new Error('Command execution timed out'))
+      }
+    }, 600000)
+  })
+}
+
+const killHelperProcess = (): void => {
+  if (helperProcess) {
+    helperProcess.kill()
+    helperProcess = null
+    helperReady = false
+  }
+}
+
 const runProcess = async (
+  executable: string,
+  argumentsList: string[],
+  options: RunProcessOptions = {}
+): Promise<RunProcessResult> => {
+  // For paths containing non-ASCII characters (e.g. Chinese), cmd.exe used by
+  // shell:true cannot reliably handle the path due to codepage limitations.
+  // Prefer the fork-based helper which uses Node.js APIs with full Unicode support.
+  if (hasNonAsciiPath(executable) && helperScriptPath && existsSync(helperScriptPath)) {
+    try {
+      return await runViaHelper(executable, argumentsList, options)
+    } catch (helperError: any) {
+      // Fall through to direct spawn as last resort (without shell:true — see runProcessDirect)
+    }
+  }
+
+  // Try direct spawn
+  try {
+    return await runProcessDirect(executable, argumentsList, options)
+  } catch (directError: any) {
+    const msg = directError?.message ?? ''
+    // If ENOENT and helper script is available, fall back to fork-based launcher
+    if (msg.includes('ENOENT') && helperScriptPath && existsSync(helperScriptPath)) {
+      try {
+        return await runViaHelper(executable, argumentsList, options)
+      } catch (helperError: any) {
+        throw new Error(
+          `Direct spawn failed: ${msg}\nHelper fallback also failed: ${helperError?.message ?? String(helperError)}`
+        )
+      }
+    }
+    throw directError
+  }
+}
+
+const runProcessDirect = async (
   executable: string,
   argumentsList: string[],
   options: RunProcessOptions = {}
 ): Promise<RunProcessResult> =>
   await new Promise((resolve, reject) => {
-    const child = spawn(executable, argumentsList, {
-      cwd: options.cwd,
-      env: options.env,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: options.windowsHide ?? true
-    })
+    const cwd = options.cwd ?? path.dirname(executable)
+    const env = options.env ?? process.env
+    const augmentedPath = buildAugmentedPath(path.dirname(executable), env)
 
-    let stdout = ''
-    let stderr = ''
+    // Disable ASAR wrapping during spawn to prevent interception of
+    // child_process calls in packaged Electron apps.
+    const previousNoAsar = process.noAsar
+    process.noAsar = true
+
+    let child
+    try {
+      // shell:true routes through cmd.exe which is needed for the ASAR ENOENT
+      // workaround, but cmd.exe cannot handle non-ASCII paths (e.g. Chinese
+      // characters in the install directory). For non-ASCII paths we skip
+      // shell:true and rely on Node.js's CreateProcessW which supports Unicode.
+      // process.noAsar=true (set above) already prevents ASAR interception.
+      const useShell = !hasNonAsciiPath(executable)
+
+      child = spawn(executable, argumentsList, {
+        cwd,
+        env: {
+          ...env,
+          PATH: augmentedPath,
+          Path: augmentedPath
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: options.windowsHide ?? true,
+        ...(useShell ? { shell: true } : {})
+      })
+    } catch (spawnError) {
+      process.noAsar = previousNoAsar
+      reject(spawnError)
+      return
+    }
+
+    process.noAsar = previousNoAsar
+
+    let stdoutChunks = ''
+    let stderrChunks = ''
+    let outputOverflow = false
 
     child.stdout?.setEncoding('utf8')
     child.stderr?.setEncoding('utf8')
-    child.stdout?.on('data', (chunk) => {
-      stdout += chunk
+
+    child.stdout?.on('data', (chunk: string) => {
+      if (stdoutChunks.length < MAX_OUTPUT_BUFFER) {
+        stdoutChunks += chunk
+      } else {
+        outputOverflow = true
+      }
     })
-    child.stderr?.on('data', (chunk) => {
-      stderr += chunk
+    child.stderr?.on('data', (chunk: string) => {
+      if (stderrChunks.length < MAX_OUTPUT_BUFFER) {
+        stderrChunks += chunk
+      } else {
+        outputOverflow = true
+      }
     })
-    child.on('error', reject)
-    child.on('exit', (code) => {
+
+    child.once('error', (err) => {
+      reject(err)
+    })
+
+    child.once('close', (code) => {
+      if (outputOverflow) {
+        reject(new Error('Process output exceeded maximum buffer size.'))
+        return
+      }
       resolve({
         code: code ?? 0,
-        stderr: normalizeOutput(stderr),
-        stdout: normalizeOutput(stdout)
+        stderr: normalizeOutput(stderrChunks),
+        stdout: normalizeOutput(stdoutChunks)
       })
     })
   })
@@ -324,14 +569,48 @@ export const readPythonHealth = async (pythonPaths: PythonPaths, pythonExecutabl
 export const ensureEmbeddedPython = async (options: EnsurePythonRuntimeOptions = {}): Promise<{ health: PythonHealthReport; paths: PythonPaths }> => {
   const pythonPaths = resolvePythonPaths(options)
   const pythonExecutable = pythonPaths.pythonExecutable
+
+  // Set up the ASAR-safe helper script path
+  setHelperScriptPath(options.resourcesPath ?? pythonPaths.resourcesPath, pythonPaths.appRoot)
+
+  const logDiag = (msg: string): void => {
+    if (options.logDirectory) {
+      try {
+        const logPath = path.join(options.logDirectory, 'python-service.log')
+        appendFileSync(logPath, `[runtime] ${msg}\n`)
+      } catch { /* best effort */ }
+    }
+  }
+  logDiag(`ensureEmbeddedPython: exe=${pythonExecutable} isPackaged=${pythonPaths.isPackaged}`)
+
   const runtimeReady = await fileExists(pythonExecutable)
+  logDiag(`runtimeReady=${runtimeReady}`)
 
   if (!runtimeReady) {
+    const installerExists = await fileExists(pythonPaths.installerPath)
+    if (!installerExists) {
+      const pathsSummary = [
+        `pythonExecutable: ${pythonExecutable}`,
+        `installerPath: ${pythonPaths.installerPath}`,
+        `runtimeRoot: ${pythonPaths.runtimeRoot}`,
+        `resourcesPath: ${pythonPaths.resourcesPath}`,
+        `isPackaged: ${pythonPaths.isPackaged}`
+      ].join('\n')
+      throw new Error(
+        `Embedded Python runtime not found and cannot be reinstalled — both runtime and installer are missing.\n` +
+        `${pathsSummary}\n\n` +
+        `应用安装不完整：内置 Python 运行时缺失且安装器也不存在。\n` +
+        `请尝试重新安装 X-FAIS。如果问题持续，请检查安装包完整性。`
+      )
+    }
     await installEmbeddedPython(pythonPaths)
   }
 
   if (!(await hasPipAvailable(pythonExecutable))) {
+    logDiag('pip not available, running ensurepip...')
     await ensurePipAvailable(pythonExecutable)
+  } else {
+    logDiag('pip OK')
   }
 
   const lockExists = await fileExists(pythonPaths.requirementsLockPath)
@@ -357,6 +636,8 @@ export const ensureEmbeddedPython = async (options: EnsurePythonRuntimeOptions =
   }
 
   const health = await readPythonHealth(pythonPaths, pythonExecutable)
+  logDiag(`health OK: ${health.health_ok} version=${health.python_version}`)
+  killHelperProcess() // Clean up helper process after successful completion
   return { health, paths: pythonPaths }
 }
 

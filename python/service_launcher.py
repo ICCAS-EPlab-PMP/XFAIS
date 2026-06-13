@@ -24,6 +24,7 @@ import tempfile
 from pathlib import Path
 import sys
 import threading
+import time
 import traceback
 import uuid
 from http import HTTPStatus
@@ -60,6 +61,8 @@ API_ROUTES: list[str] = [
     "/api/cell_calibrant_generate",
     "/api/manual_calibrant_generate",
     "/api/list_space_groups",
+    "/api/bg_subtract",
+    "/api/poni_importer",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -129,6 +132,8 @@ FiberIntegratorService = _LazyImportProxy("python.services.fiber_integrator", "F
 ImageRenderer = _LazyImportProxy("python.services.image_renderer", "ImageRenderer")
 fabio = _LazyImportProxy("fabio")
 Cell = _LazyImportProxy("pyFAI.crystallography.cell", "Cell")
+BgSubtractor = _LazyImportProxy("python.services.bg_subtractor")
+PoniImporter = _LazyImportProxy("python.services.poni_importer")
 
 
 # ---------------------------------------------------------------------------
@@ -3160,6 +3165,657 @@ async def handle_manual_calibrant_generate(
     }
 
 
+# ---------------------------------------------------------------------------
+# Background subtraction handler / 背景扣除处理函数
+# ---------------------------------------------------------------------------
+
+
+async def _handle_bg_subtract_single(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Single-file background subtraction. 单文件背景扣除。"""
+    await send_progress(0.0, "Loading sample image...")
+    sample_path = payload.get("sample_path", "")
+    bg_path = payload.get("bg_path", "")
+    transmission = float(payload.get("transmission", 1.0))
+    output_format = payload.get("output_format", "h5")
+
+    if not sample_path:
+        return {"status": "error", "message": "Missing sample_path"}
+    if not bg_path:
+        return {"status": "error", "message": "Missing bg_path"}
+
+    # Load sample image / 加载样品图像
+    sample_result = await _run_blocking(ImageLoader.load, sample_path)
+    if isinstance(sample_result, tuple):
+        sample_data = sample_result[0]
+    elif isinstance(sample_result, dict):
+        sample_data = sample_result.get("data")
+    else:
+        sample_data = sample_result
+    if sample_data is None:
+        return {"status": "error", "message": f"Failed to load sample: {sample_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Load background image / 加载背景图像
+    await send_progress(0.3, "Loading background image...")
+    bg_result = await _run_blocking(ImageLoader.load, bg_path)
+    if isinstance(bg_result, tuple):
+        bg_data = bg_result[0]
+    elif isinstance(bg_result, dict):
+        bg_data = bg_result.get("data")
+    else:
+        bg_data = bg_result
+    if bg_data is None:
+        return {"status": "error", "message": f"Failed to load background: {bg_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Perform subtraction / 执行扣除
+    await send_progress(0.6, "Computing subtraction...")
+    result = await _run_blocking(
+        BgSubtractor.subtract_with_reference, sample_data, bg_data, transmission,
+    )
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Render preview PNG / 渲染预览PNG
+    await send_progress(0.8, "Rendering preview...")
+    stats = ImageRenderer.compute_stats(result)
+    auto_clim = (stats.get("autoMin", 0.0), stats.get("autoMax", 1.0))
+    render_settings = {
+        "cmap": "viridis",
+        "use_log": False,
+        "clim": auto_clim,
+    }
+    png_bytes = await _run_blocking(ImageRenderer.render_png, result, render_settings)
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "__binary_png__": png_bytes,
+        "mime": "image/png",
+        "width": int(result.shape[-1]),
+        "height": int(result.shape[-2]),
+        "stats": stats,
+        "result": {
+            "shape": list(result.shape),
+            "dtype": str(result.dtype),
+            "min": float(np.nanmin(result)),
+            "max": float(np.nanmax(result)),
+        },
+    }
+
+
+async def _handle_bg_ionchamber_match(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Ionchamber file matching with transmission calculation.
+    电离室文件匹配并计算透射率。
+
+    Transmission is calculated as: sample_ion_intensity / bg_ion_intensity
+    透射率计算公式: 样品电离室强度 / 背景电离室强度
+    """
+    await send_progress(0.0, "Matching ionchamber files...")
+    data_files = payload.get("data_files", [])
+    ionchamber_files = payload.get("ionchamber_files", [])
+    bg_path = payload.get("bg_path", "")
+    bg_ionchamber_path = payload.get("bg_ionchamber_path", "")
+    ionchamber_channel = payload.get("ionchamber_channel", "Ionchamber0")
+    ionchamber_method = payload.get("ionchamber_method", "median")
+
+    if not data_files:
+        sample_folder = payload.get("sample_folder", "")
+        if sample_folder and os.path.isdir(sample_folder):
+            image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5"}
+            data_files = [
+                os.path.join(sample_folder, fn)
+                for fn in sorted(os.listdir(sample_folder))
+                if os.path.isfile(os.path.join(sample_folder, fn))
+                and os.path.splitext(fn)[1].lower() in image_exts
+            ]
+
+    if not ionchamber_files:
+        ionchamber_folder = payload.get("ionchamber_folder", "")
+        if ionchamber_folder and os.path.isdir(ionchamber_folder):
+            # Only include ionchamber-specific files, exclude image files
+            # 只包含电离室文件，排除图像文件
+            _ion_exts = {".ionchamber", ".txt", ".log", ".csv"}
+            _image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5", ".png", ".jpg", ".jpeg"}
+            ionchamber_files = [
+                os.path.join(ionchamber_folder, fn)
+                for fn in sorted(os.listdir(ionchamber_folder))
+                if os.path.isfile(os.path.join(ionchamber_folder, fn))
+                and os.path.splitext(fn)[1].lower() not in _image_exts
+            ]
+
+    if not data_files:
+        return {"status": "error", "message": "Missing data_files"}
+    if not ionchamber_files:
+        return {"status": "error", "message": "Missing ionchamber_files"}
+
+    # Match ionchamber files to data files / 匹配电离室文件到数据文件
+    matches = await _run_blocking(
+        BgSubtractor.match_ionchamber, data_files, ionchamber_files,
+    )
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    min_score = float(payload.get("min_score", 0.0))
+    regex_pattern = payload.get("regex_pattern", "") or ""
+    import re as _re
+    _regex_compiled = _re.compile(regex_pattern) if regex_pattern else None
+
+    # Load background ionchamber data / 加载背景电离室数据
+    bg_ion_df = None
+    if bg_ionchamber_path and os.path.isfile(bg_ionchamber_path):
+        try:
+            bg_ion_df = await _run_blocking(
+                BgSubtractor.parse_ionchamber_file, bg_ionchamber_path,
+            )
+            await send_progress(0.5, f"Loaded background ionchamber: {os.path.basename(bg_ionchamber_path)}")
+        except Exception as exc:
+            print(f"[bg_subtract] Failed to load background ionchamber: {exc}", flush=True)
+
+    # Compute transmission for each match / 计算每个匹配的透射率
+    await send_progress(0.6, "Computing transmissions...")
+    results = []
+    for i, match in enumerate(matches):
+        if cancel_event.is_set():
+            return {"status": "cancelled", "message": "Cancelled by user"}
+
+        match_score = match.get("score")
+        if min_score > 0 and match_score is not None and float(match_score) < min_score:
+            continue
+
+        data_file_path = match.get("data_file", "")
+        if _regex_compiled is not None:
+            data_fn = os.path.basename(data_file_path)
+            if not _regex_compiled.search(data_fn):
+                continue
+
+        entry = {
+            "data_file": data_file_path,
+            "matched_ion": match.get("matched_ion", ""),
+            "score": match_score,
+            "method": match.get("method", ""),
+            "transmission": None,
+        }
+
+        ion_path = match.get("matched_ion")
+        if ion_path and bg_ion_df is not None:
+            try:
+                sample_ion_df = await _run_blocking(
+                    BgSubtractor.parse_ionchamber_file, ion_path,
+                )
+                if sample_ion_df is not None:
+                    transmission = await _run_blocking(
+                        BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
+                        ionchamber_channel, ionchamber_method,
+                    )
+                    entry["transmission"] = float(transmission)
+                    entry["transmission_computed"] = True
+            except Exception as exc:
+                entry["error"] = str(exc)
+                entry["transmission_computed"] = False
+        else:
+            entry["transmission_computed"] = False
+            if bg_ion_df is None:
+                entry["note"] = "No background ionchamber provided"
+
+        results.append(entry)
+
+        if (i + 1) % 5 == 0:
+            await send_progress(0.6 + 0.4 * (i + 1) / len(matches), f"Computed {i + 1}/{len(matches)}...")
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "matches": results,
+        "count": len(results),
+        "bg_ionchamber_loaded": bg_ion_df is not None,
+    }
+
+
+async def _handle_bg_subtract_batch(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Batch background subtraction. 批量背景扣除。
+
+    Accepts either ``folder_path`` (batch mode) or ``data_files`` (multi-file
+    single mode) as the source of files to process.
+    接受 ``folder_path``（批量模式）或 ``data_files``（单文件模式多选）作为待处理文件来源。
+    """
+    await send_progress(0.0, "Scanning files...")
+    folder_path = payload.get("folder_path", "")
+    data_files_raw = payload.get("data_files")
+    bg_path = payload.get("bg_path", "")
+    ionchamber_folder = payload.get("ionchamber_folder")
+    bg_ionchamber_path = payload.get("bg_ionchamber_path", "")
+    ionchamber_channel = payload.get("ionchamber_channel", "Ionchamber0")
+    ionchamber_method = payload.get("ionchamber_method", "median")
+    output_dir = payload.get("output_dir", "")
+    transmission = float(payload.get("transmission", 1.0))
+    output_format = payload.get("output_format", "h5")
+
+    # Collect file list from folder or explicit data_files / 从文件夹或显式 data_files 收集文件列表
+    image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5"}
+
+    if data_files_raw and isinstance(data_files_raw, list) and len(data_files_raw) > 0:
+        files: list[str] = [str(f) for f in data_files_raw if f]
+    elif folder_path:
+        if not os.path.isdir(folder_path):
+            return {"status": "error", "message": f"Invalid folder: {folder_path}"}
+        files = [
+            os.path.join(folder_path, fn)
+            for fn in sorted(os.listdir(folder_path))
+            if os.path.isfile(os.path.join(folder_path, fn))
+            and os.path.splitext(fn)[1].lower() in image_exts
+        ]
+    else:
+        return {"status": "error", "message": "Missing folder_path or data_files"}
+
+    if not bg_path:
+        return {"status": "error", "message": "Missing bg_path"}
+
+    # For data_files mode without explicit output_dir, save alongside originals
+    # 对于 data_files 模式没有显式输出目录的情况，保存在源文件旁边
+    if not output_dir:
+        if folder_path:
+            return {"status": "error", "message": "Missing output_dir"}
+        # Use the directory of the first file / 使用第一个文件所在目录
+        output_dir = os.path.dirname(files[0]) if files else ""
+
+    if not files:
+        return {"status": "error", "message": "No image files found"}
+
+    # Load background once / 加载背景一次
+    await send_progress(0.05, "Loading background...")
+    bg_result = await _run_blocking(ImageLoader.load, bg_path)
+    if isinstance(bg_result, tuple):
+        bg_data = bg_result[0]
+    elif isinstance(bg_result, dict):
+        bg_data = bg_result.get("data")
+    else:
+        bg_data = bg_result
+    if bg_data is None:
+        return {"status": "error", "message": f"Failed to load background: {bg_path}"}
+
+    # Auto-match ionchamber files if folder provided / 如提供文件夹则自动匹配电离室文件
+    transmissions: dict[str, float] = {}
+    if ionchamber_folder and os.path.isdir(ionchamber_folder):
+        await send_progress(0.1, "Matching ionchamber files...")
+        _image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5", ".png", ".jpg", ".jpeg"}
+        ion_files = [
+            os.path.join(ionchamber_folder, fn)
+            for fn in sorted(os.listdir(ionchamber_folder))
+            if os.path.isfile(os.path.join(ionchamber_folder, fn))
+            and os.path.splitext(fn)[1].lower() not in _image_exts
+        ]
+        if ion_files:
+            matches = await _run_blocking(
+                BgSubtractor.match_ionchamber, files, ion_files,
+            )
+
+            # Load background ionchamber once / 一次性加载背景电离室数据
+            bg_ion_df = None
+            if bg_ionchamber_path and os.path.isfile(bg_ionchamber_path):
+                try:
+                    bg_ion_df = await _run_blocking(
+                        BgSubtractor.parse_ionchamber_file, bg_ionchamber_path,
+                    )
+                except Exception as exc:
+                    print(f"[bg_subtract] batch: failed to load bg ionchamber: {exc}", flush=True)
+
+            for match in matches:
+                data_f = match.get("data_file", "")
+                # match_ionchamber() returns "matched_ion" (not "ionchamber_file")
+                ion_path = match.get("matched_ion")
+                if ion_path and bg_ion_df is not None:
+                    try:
+                        sample_ion_df = await _run_blocking(
+                            BgSubtractor.parse_ionchamber_file, ion_path,
+                        )
+                        if sample_ion_df is not None:
+                            t = await _run_blocking(
+                                BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
+                                ionchamber_channel, ionchamber_method,
+                            )
+                            transmissions[data_f] = float(t)
+                    except Exception as exc:
+                        print(f"[bg_subtract] batch: ionchamber match failed for {data_f}: {exc}", flush=True)
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Ensure output directory exists / 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Process each file / 处理每个文件
+    total = len(files)
+    success_count = 0
+    failed_files: list[str] = []
+    start_time = time.time()
+
+    for i, fpath in enumerate(files):
+        if cancel_event.is_set():
+            return {
+                "status": "cancelled",
+                "message": "Cancelled by user",
+                "success_count": success_count,
+                "failed_count": len(failed_files),
+                "failed_files": failed_files,
+                "output_dir": output_dir,
+                "elapsed": round(time.time() - start_time, 2),
+            }
+
+        filename = os.path.basename(fpath)
+        progress = 0.15 + 0.85 * (i / total)
+        await send_progress(progress, f"Processing {filename}...")
+
+        try:
+            # Load sample / 加载样品
+            sample_result = await _run_blocking(ImageLoader.load, fpath)
+            if isinstance(sample_result, tuple):
+                sample_data = sample_result[0]
+            elif isinstance(sample_result, dict):
+                sample_data = sample_result.get("data")
+            else:
+                sample_data = sample_result
+            if sample_data is None:
+                failed_files.append(filename)
+                continue
+
+            # Determine transmission for this file / 确定此文件的透射率
+            file_transmission = transmissions.get(fpath, transmission)
+
+            # Subtract / 扣除
+            result = await _run_blocking(
+                BgSubtractor.subtract_with_reference, sample_data, bg_data, file_transmission,
+            )
+
+            # Save result in requested format / 以请求格式保存结果
+            if output_format == "edf":
+                out_name = os.path.splitext(filename)[0] + "_subtracted.edf"
+                out_path = os.path.join(output_dir, out_name)
+
+                def _save_edf(path: str, data: Any) -> None:
+                    import fabio
+                    edf = fabio.edfimage.EdfImage(data=data)
+                    edf.write(path)
+
+                await _run_blocking(_save_edf, out_path, result)
+            elif output_format == "tif":
+                out_name = os.path.splitext(filename)[0] + "_subtracted.tif"
+                out_path = os.path.join(output_dir, out_name)
+
+                def _save_tif(path: str, data: Any) -> None:
+                    import fabio
+                    tif = fabio.tifimage.TifImage(data=data)
+                    tif.write(path)
+
+                await _run_blocking(_save_tif, out_path, result)
+            else:
+                out_name = os.path.splitext(filename)[0] + "_subtracted.h5"
+                out_path = os.path.join(output_dir, out_name)
+
+                def _save_h5(path: str, data: Any) -> None:
+                    import h5py
+                    with h5py.File(path, "w") as hf:
+                        hf.create_dataset("data", data=data, compression="gzip")
+
+                await _run_blocking(_save_h5, out_path, result)
+            success_count += 1
+
+        except Exception as exc:
+            print(f"[bg_subtract] batch: failed to process {filename}: {exc}", flush=True)
+            failed_files.append(filename)
+            continue
+
+    elapsed = time.time() - start_time
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "success_count": success_count,
+        "failed_count": len(failed_files),
+        "failed_files": failed_files,
+        "output_dir": output_dir,
+        "elapsed": round(elapsed, 2),
+    }
+
+
+async def _handle_bg_subtract_scan_folder(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5"}
+    folder = payload.get("folder", "")
+    if not folder or not os.path.isdir(folder):
+        return {"status": "error", "message": f"Invalid folder: {folder}"}
+    await send_progress(0.5, "Scanning...")
+    files = [
+        os.path.join(folder, fn)
+        for fn in sorted(os.listdir(folder))
+        if os.path.isfile(os.path.join(folder, fn))
+        and os.path.splitext(fn)[1].lower() in image_exts
+    ]
+    await send_progress(1.0, "Complete")
+    return {"status": "ok", "files": files, "count": len(files)}
+
+
+async def _handle_bg_subtract_preview(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Preview an image file (sample / background / result). 预览图像文件。"""
+    # Accept multiple param names for compatibility / 兼容多种参数名
+    file_path = (
+        payload.get("file_path")
+        or payload.get("sample_path")
+        or payload.get("bg_path")
+        or ""
+    )
+    if not file_path:
+        return {"status": "error", "message": "Missing file_path"}
+
+    if not os.path.isfile(file_path):
+        return {"status": "error", "message": f"File not found: {file_path}"}
+
+    await send_progress(0.2, "Loading image...")
+    load_result = await _run_blocking(ImageLoader.load, file_path)
+    if isinstance(load_result, tuple):
+        data = load_result[0]
+    elif isinstance(load_result, dict):
+        data = load_result.get("data")
+    else:
+        data = load_result
+    if data is None:
+        return {"status": "error", "message": f"Failed to load image: {file_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    await send_progress(0.6, "Rendering preview...")
+    stats = ImageRenderer.compute_stats(data)
+    auto_clim = (stats.get("autoMin", 0.0), stats.get("autoMax", 1.0))
+
+    cmap = payload.get("cmap", "viridis") or "viridis"
+    use_log = bool(payload.get("use_log", False))
+    clim_min = payload.get("clim_min")
+    clim_max = payload.get("clim_max")
+    if clim_min is not None and clim_max is not None:
+        clim = (float(clim_min), float(clim_max))
+    else:
+        clim = auto_clim
+
+    render_settings = {
+        "cmap": cmap,
+        "use_log": use_log,
+        "clim": clim,
+    }
+    png_bytes = await _run_blocking(ImageRenderer.render_png, data, render_settings)
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "__binary_png__": png_bytes,
+        "mime": "image/png",
+        "width": int(data.shape[-1]),
+        "height": int(data.shape[-2]),
+        "stats": stats,
+        "result": {
+            "shape": list(data.shape),
+            "dtype": str(data.dtype),
+            "min": float(np.nanmin(data)),
+            "max": float(np.nanmax(data)),
+        },
+    }
+
+
+async def handle_bg_subtract(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Handle background subtraction requests. 背景扣除请求处理函数。
+
+    Actions:
+      - subtract: Single file subtraction (sample / T - background)
+      - preview_sample / preview_background / preview_result: Preview image file
+      - ionchamber_match: Auto-match ionchamber files to data files
+      - batch: Batch process a folder of files
+      - scan_folder: Scan folder and return list of image files
+    """
+    action = payload.get("action", "subtract")
+
+    if action == "subtract":
+        return await _handle_bg_subtract_single(payload, send_progress, cancel_event)
+    elif action in ("preview_result", "preview_sample", "preview_background"):
+        return await _handle_bg_subtract_preview(payload, send_progress, cancel_event)
+    elif action == "ionchamber_match":
+        return await _handle_bg_ionchamber_match(payload, send_progress, cancel_event)
+    elif action == "batch":
+        return await _handle_bg_subtract_batch(payload, send_progress, cancel_event)
+    elif action == "scan_folder":
+        return await _handle_bg_subtract_scan_folder(payload, send_progress, cancel_event)
+    else:
+        return {"status": "error", "message": f"Unknown action: {action}"}
+
+
+# ---------------------------------------------------------------------------
+# PONI importer handler / PONI导入器处理函数
+# ---------------------------------------------------------------------------
+
+
+async def _handle_poni_importer_parse(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Parse a PONI file and extract geometry parameters. 解析PONI文件并提取几何参数。"""
+    await send_progress(0.0, "Loading PONI file...")
+    file_path = payload.get("file_path", "")
+
+    if not file_path:
+        return {"status": "error", "message": "Missing file_path"}
+
+    if not os.path.isfile(file_path):
+        return {"status": "error", "message": f"File not found: {file_path}"}
+
+    await send_progress(0.5, "Parsing PONI file...")
+    poni_data = await _run_blocking(PoniImporter.parse_poni_file, file_path)
+
+    if poni_data is None:
+        return {"status": "error", "message": "Failed to parse PONI file"}
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "poni_data": poni_data,
+    }
+
+
+async def _handle_poni_importer_export(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Export PONI data to various formats. 导出PONI数据为各种格式。"""
+    await send_progress(0.0, "Preparing export...")
+    poni_data = payload.get("poni_data")
+    export_format = payload.get("format", "json")
+
+    if not poni_data:
+        return {"status": "error", "message": "Missing poni_data"}
+
+    await send_progress(0.5, "Exporting...")
+
+    try:
+        result: dict[str, Any] = {"status": "ok"}
+
+        if export_format == "json":
+            json_str = await _run_blocking(PoniImporter.export_to_json, poni_data)
+            result["exported_content"] = json_str
+        elif export_format == "poni":
+            # Prefer output_path; fall back to output_dir + timestamped name.
+            output_path = payload.get("output_path")
+            if not output_path:
+                output_dir = payload.get("output_dir") or payload.get("outputDir") or ""
+                if output_dir:
+                    import time
+                    default_name = f"calibration_{int(time.time())}.poni"
+                    output_path = os.path.join(output_dir, default_name)
+                else:
+                    output_path = "exported.poni"
+            exported_path = await _run_blocking(PoniImporter.export_to_poni, poni_data, output_path)
+            result["exported_path"] = exported_path
+        elif export_format == "params":
+            manual_params = await _run_blocking(PoniImporter.export_to_manual_params, poni_data)
+            result["exported_params"] = manual_params
+        else:
+            return {"status": "error", "message": f"Unknown format: {export_format}"}
+
+        await send_progress(1.0, "Complete")
+        return result
+
+    except Exception as exc:
+        return {"status": "error", "message": f"Export failed: {str(exc)}"}
+
+
+async def handle_poni_importer(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Handle PONI importer requests. PONI导入器请求处理函数。
+
+    Actions:
+      - parse: Parse a .poni file and extract parameters
+      - export: Export PONI data to JSON/poni/params format
+    """
+    action = payload.get("action", "parse")
+
+    if action == "parse":
+        return await _handle_poni_importer_parse(payload, send_progress, cancel_event)
+    elif action == "export":
+        return await _handle_poni_importer_export(payload, send_progress, cancel_event)
+    else:
+        return {"status": "error", "message": f"Unknown action: {action}"}
+
+
 # Route → handler mapping / 路由→处理函数映射
 ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/integrate1d": handle_integrate1d,
@@ -3177,6 +3833,8 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/cell_calibrant_generate": handle_cell_calibrant_generate,
     "/api/manual_calibrant_generate": handle_manual_calibrant_generate,
     "/api/list_space_groups": handle_list_space_groups,
+    "/api/bg_subtract": handle_bg_subtract,
+    "/api/poni_importer": handle_poni_importer,
 }
 
 

@@ -166,44 +166,86 @@ export class PythonServiceManager {
 
       const stream = await this.ensureLogStream()
       stream.write(`[manager] ${new Date().toISOString()} ${detail}\n`)
+      stream.write(`[debug] appRoot=${this.appRoot} isPackaged=${this.isPackaged} resourcesPath=${this.resourcesPath}\n`)
 
-      const { health, paths } = await ensureEmbeddedPython({
-        appRoot: this.appRoot,
-        isPackaged: this.isPackaged,
-        logDirectory: this.logDirectory,
-        resourcesPath: this.resourcesPath
-      })
+      let health, paths: import('./runtime').PythonPaths
+      try {
+        const result = await ensureEmbeddedPython({
+          appRoot: this.appRoot,
+          isPackaged: this.isPackaged,
+          logDirectory: this.logDirectory,
+          resourcesPath: this.resourcesPath
+        })
+        health = result.health
+        paths = result.paths
+        stream.write(`[debug] ensureEmbeddedPython OK: python=${paths.pythonExecutable}\n`)
+      } catch (ensureError) {
+        const msg = ensureError instanceof Error ? ensureError.message : String(ensureError)
+        stream.write(`[debug] ensureEmbeddedPython FAILED: ${msg}\n`)
+        throw ensureError
+      }
 
       this.lastHealth = health
       this.runtimePaths = paths
       this.port = await reservePort()
 
-      this.child = spawn(
-        paths.pythonExecutable,
-        [
-          paths.serviceScriptPath,
-          'serve',
-          '--host',
-          '127.0.0.1',
-          '--port',
-          String(this.port),
-          '--expected-python',
-          EMBEDDED_PYTHON_VERSION,
-          '--requirements-lock',
-          paths.requirementsLockPath
-        ],
-        {
-          cwd: path.dirname(paths.serviceScriptPath),
-          env: {
-            ...process.env,
-            PYTHONIOENCODING: 'utf-8',
-            PYTHONUNBUFFERED: '1',
-            PYTHONUTF8: '1'
-          },
-          stdio: ['ignore', 'pipe', 'pipe'],
-          ...(isWindows ? { windowsHide: true } : {})
-        }
-      )
+      const exeDir = path.dirname(paths.pythonExecutable)
+      // Mirror the same PATH augmentation used in runtime.ts runProcessDirect
+      // so Python's sibling DLLs (python311.dll, vcruntime140.dll, etc.) are
+      // resolvable. The Windows system paths are kept for general OS tooling.
+      const systemPathPrefixes = isWindows
+        ? ['C:\\WINDOWS\\system32', 'C:\\WINDOWS', 'C:\\WINDOWS\\System32\\Wbem']
+        : []
+      const pathEnv = process.env.PATH ?? process.env.Path ?? ''
+      const augmentedPath = [exeDir, ...systemPathPrefixes, pathEnv]
+        .filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+        .join(path.delimiter)
+      stream.write(`[debug] spawn exe=${paths.pythonExecutable} cwd=${exeDir}\n`)
+
+      const spawnEnv: Record<string, string> = {
+        ...(process.env as Record<string, string>),
+        PATH: augmentedPath,
+        Path: augmentedPath,
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUNBUFFERED: '1',
+        PYTHONUTF8: '1'
+      }
+
+      stream.write(`[debug] spawning python: exe=${paths.pythonExecutable} shell=false noAsar=true\n`)
+
+      // Disable ASAR wrapping during spawn to prevent child_process
+      // interception in packaged Electron apps.
+      // shell:true is intentionally omitted: it routes through cmd.exe which
+      // corrupts non-ASCII paths (e.g. Chinese install directories).
+      // Node.js's CreateProcessW supports Unicode paths natively, and
+      // process.noAsar=true already handles the ASAR ENOENT workaround.
+      const previousNoAsar = process.noAsar
+      process.noAsar = true
+      try {
+        this.child = spawn(
+          paths.pythonExecutable,
+          [
+            paths.serviceScriptPath,
+            'serve',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(this.port),
+            '--expected-python',
+            EMBEDDED_PYTHON_VERSION,
+            '--requirements-lock',
+            paths.requirementsLockPath
+          ],
+          {
+            cwd: exeDir,
+            env: spawnEnv,
+            stdio: ['ignore', 'pipe', 'pipe'],
+            ...(isWindows ? { windowsHide: true } : {})
+          }
+        )
+      } finally {
+        process.noAsar = previousNoAsar
+      }
 
       this.child.stdout!.setEncoding('utf8')
       this.child.stderr!.setEncoding('utf8')
@@ -230,13 +272,20 @@ export class PythonServiceManager {
         state: 'healthy'
       })
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Embedded Python startup failed.'
+      const rawMessage = error instanceof Error ? error.message : 'Embedded Python startup failed.'
       this.child = null
       this.port = null
+
+      // ENOENT → python.exe 路径不存在，提供友好的恢复指引
+      const isFileNotFound = rawMessage.includes('ENOENT') || rawMessage.includes('not found')
+      const detail = isFileNotFound
+        ? `内置 Python 运行时不可用（${rawMessage}）。内置运行时可以在不依赖系统 Python 的前提下恢复。点击重试即可重新拉起。`
+        : rawMessage
+
       this.setStatus({
         canRetry: true,
         dependencyStatus: this.lastHealth?.dependency_status ?? 'unknown',
-        detail: message,
+        detail,
         port: null,
         state: 'error'
       })
@@ -301,10 +350,17 @@ export class PythonServiceManager {
 
     if (isWindows && typeof processId === 'number') {
       await new Promise<void>((resolve) => {
-        const killer = spawn('taskkill', ['/pid', String(processId), '/T', '/F'], {
-          stdio: 'ignore',
-          windowsHide: true
-        })
+        const previousNoAsar = process.noAsar
+        process.noAsar = true
+        let killer
+        try {
+          killer = spawn('taskkill', ['/pid', String(processId), '/T', '/F'], {
+            stdio: 'ignore',
+            windowsHide: true
+          })
+        } finally {
+          process.noAsar = previousNoAsar
+        }
         killer.once('exit', () => resolve())
         killer.once('error', () => resolve())
       })

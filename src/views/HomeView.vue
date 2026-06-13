@@ -116,7 +116,25 @@
       </div>
     </div>
 
-    <!-- Row 4: PyFAI辅助功能 -->
+    <!-- Row 4: Background Subtraction (standalone) -->
+    <div class="card-section">
+      <h2 class="section-header">{{ t('home.sections.backgroundSubtraction') }}</h2>
+      <div class="card-row">
+        <router-link
+          v-for="card in bgSubtractCards"
+          :key="card.key"
+          :to="card.route"
+          class="feature-card"
+          :data-testid="`home-card-${card.key}`"
+        >
+          <span class="feature-icon">{{ card.icon }}</span>
+          <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
+          <p>{{ t(`home.cards.${card.key}.description`) }}</p>
+        </router-link>
+      </div>
+    </div>
+
+    <!-- Row 5: PyFAI辅助功能 -->
     <div class="card-section">
       <h2 class="section-header">{{ t('home.sections.pyfaiTools') }}</h2>
       <div class="card-row">
@@ -234,7 +252,16 @@ const imageCards: FeatureCard[] = [
   }
 ]
 
-// Row 4: PyFAI辅助功能
+// Row 4: Background Subtraction (standalone section)
+const bgSubtractCards: FeatureCard[] = [
+  {
+    key: 'bgSubtract',
+    route: '/workspace/bg-subtract',
+    icon: '⊖'
+  }
+]
+
+// Row 5: PyFAI辅助功能
 const pyfaiCards: FeatureCard[] = [
   {
     key: 'cellCalibrantGenerator',
@@ -245,6 +272,11 @@ const pyfaiCards: FeatureCard[] = [
     key: 'pyfaiCalib',
     route: '/workspace/pyfai-calib',
     icon: '⚙'
+  },
+  {
+    key: 'poniImporter',
+    route: '/workspace/poni-importer',
+    icon: 'P'
   }
 ]
 
@@ -261,8 +293,59 @@ const showLogDirectory = async (): Promise<void> => {
   })
 }
 
-function checkUpdate(): void {
-  window.open('https://github.com/ICCAS-EPlab-PMP/XFAIS/releases', '_blank', 'noopener')
+const REPO_OWNER = 'ICCAS-EPlab-PMP'
+const REPO_NAME = 'XFAIS'
+const RELEASES_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`
+
+async function checkUpdate(): Promise<void> {
+  toast.push({
+    title: t('home.actions.checkUpdate'),
+    message: t('home.update.checking'),
+    tone: 'info',
+  })
+
+  try {
+    const meta = await transport.getAppMeta()
+    const currentVersion = meta.appVersion
+
+    const resp = await fetch(RELEASES_API, {
+      headers: { Accept: 'application/vnd.github+json' },
+    })
+    if (!resp.ok) {
+      throw new Error(`HTTP ${resp.status}`)
+    }
+    const data = await resp.json() as { tag_name?: string; html_url?: string }
+    const latestTag = data.tag_name ?? ''
+    const latestVersion = latestTag.replace(/^v/, '')
+
+    if (latestVersion && latestVersion !== currentVersion) {
+      const downloadUrl = data.html_url ?? `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest`
+      toast.push({
+        title: t('home.update.newVersionTitle'),
+        message: `${t('home.update.newVersion', { current: currentVersion, latest: latestVersion })}\n${downloadUrl}`,
+        tone: 'success',
+      })
+    } else if (latestVersion) {
+      toast.push({
+        title: t('home.actions.checkUpdate'),
+        message: t('home.update.upToDate', { version: currentVersion }),
+        tone: 'info',
+      })
+    } else {
+      // No releases yet
+      toast.push({
+        title: t('home.actions.checkUpdate'),
+        message: t('home.update.noRelease'),
+        tone: 'info',
+      })
+    }
+  } catch (err) {
+    toast.push({
+      title: t('home.actions.checkUpdate'),
+      message: t('home.update.failed', { error: err instanceof Error ? err.message : String(err) }),
+      tone: 'error',
+    })
+  }
 }
 
 function openPyFAICitation(): void {

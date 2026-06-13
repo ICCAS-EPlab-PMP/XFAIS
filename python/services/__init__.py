@@ -14,6 +14,14 @@ from .h5convert import H5Converter
 from .h5_extractor import H5Extractor
 from .pnggenerate import PNGGenerator
 from .fiber_integrator import FiberIntegratorService
+from .bg_subtractor import (
+    subtract_with_reference,
+    parse_ionchamber_file,
+    calc_transmission,
+    match_ionchamber,
+    subtract_h5_stack,
+    find_h5_transmissions,
+)
 
 __all__ = [
     "H5Handler",
@@ -30,4 +38,10 @@ __all__ = [
     "H5Extractor",
     "PNGGenerator",
     "FiberIntegratorService",
+    "subtract_with_reference",
+    "parse_ionchamber_file",
+    "calc_transmission",
+    "match_ionchamber",
+    "subtract_h5_stack",
+    "find_h5_transmissions",
 ]

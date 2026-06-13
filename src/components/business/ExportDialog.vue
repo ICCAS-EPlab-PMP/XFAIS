@@ -37,28 +37,8 @@
         </select>
       </label>
 
-      <!-- Output path / 输出路径 (Desktop: native file dialog) -->
-      <template v-if="transport.isDesktop()">
-        <FileDialogButton
-          v-if="exportMode === 'single'"
-          mode="saveFile"
-          :label="t('business.export.outputPath')"
-          :placeholder="t('business.export.chooseOutputPath')"
-          :filters="currentFilters"
-          :model-value="outputPath"
-          @update:model-value="outputPath = $event"
-        />
-        <FileDialogButton
-          v-else
-          mode="openFolder"
-          :label="t('business.export.outputFolder')"
-          :placeholder="t('business.export.outputFolderPlaceholder')"
-          :model-value="outputPath"
-          @update:model-value="outputPath = $event"
-        />
-      </template>
       <!-- Output path / 输出路径 (Web: auto-download) -->
-      <p v-else class="ed-web-hint">
+      <p v-if="!transport.isDesktop()" class="ed-web-hint">
         {{ t('business.export.webDownloadHint') }}
       </p>
 
@@ -80,7 +60,6 @@
 import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
-import FileDialogButton from './FileDialogButton.vue'
 import { useTransport } from '@/lib/transport'
 
 export type ExportFormat = 'txt' | 'hdf5' | 'tiff' | 'csv' | 'xy' | 'edf' | 'npy'
@@ -102,7 +81,6 @@ const { t } = useI18n()
 const transport = useTransport()
 
 const selectedFormat = ref<ExportFormat>(props.formats[0])
-const outputPath = ref<string | null>(null)
 const exportMode = ref<ExportMode>('single')
 
 const FORMAT_EXTENSIONS: Record<ExportFormat, string[]> = {
@@ -121,24 +99,30 @@ const currentFilters = computed(() => {
 })
 
 const canExport = computed(() => {
-  if (transport.isDesktop()) {
-    return outputPath.value !== null && outputPath.value.length > 0
-  }
-  // Web mode: always ready to download
+  // Desktop: always enabled — file dialog opens on click
+  // Web: always enabled — triggers browser download
   return true
 })
 
-function handleExport(): void {
+async function handleExport(): Promise<void> {
   if (transport.isDesktop()) {
-    if (!outputPath.value) return
+    let finalPath: string | null = null
 
-    let finalPath = outputPath.value
     if (exportMode.value === 'single') {
+      // Open save-file dialog on click
+      finalPath = await transport.selectSavePath({ filters: currentFilters.value })
+      if (!finalPath) return // user cancelled
+
+      // Auto-append extension if missing
       const exts = FORMAT_EXTENSIONS[selectedFormat.value] ?? []
-      const hasKnownExt = exts.some((ext) => finalPath.toLowerCase().endsWith(`.${ext.toLowerCase()}`))
+      const hasKnownExt = exts.some((ext) => finalPath!.toLowerCase().endsWith(`.${ext.toLowerCase()}`))
       if (!hasKnownExt && exts.length > 0) {
         finalPath = `${finalPath}.${exts[0]}`
       }
+    } else {
+      // Open folder-selection dialog on click
+      finalPath = await transport.selectFolder()
+      if (!finalPath) return // user cancelled
     }
 
     emit('export', { format: selectedFormat.value, path: finalPath, mode: exportMode.value })

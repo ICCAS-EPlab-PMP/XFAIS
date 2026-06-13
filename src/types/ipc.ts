@@ -91,6 +91,7 @@ export const API_ROUTES = [
   '/api/calibrant_generate',
   '/api/cell_calibrant_generate',
   '/api/manual_calibrant_generate',
+  '/api/bg_subtract',
 ] as const
 
 export type ApiRoute = (typeof API_ROUTES)[number]

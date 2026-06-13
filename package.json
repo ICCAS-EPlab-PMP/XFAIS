@@ -1,6 +1,6 @@
 {
   "name": "x-fais-electron",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "dist-electron/main/index.js",
@@ -13,6 +13,7 @@
     "dev:electron": "wait-on tcp:127.0.0.1:5173 file:dist-electron/main/index.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "build": "run-s build:renderer build:electron",
     "build:pack": "npm run build && electron-builder --win",
+    "build:pack:dir": "npm run build && electron-builder --win --dir",
     "build:pack:mac": "npm run build && electron-builder --mac",
     "build:pack:all": "npm run build && electron-builder --win --mac",
     "build:renderer": "vite build",
@@ -84,12 +85,15 @@
     "extraResources": [
       {
         "from": ".python-runtime",
-        "to": "python-runtime",
-        "filter": ["**/*"]
+        "to": "python-runtime"
       },
       {
         "from": "python",
         "to": "python"
+      },
+      {
+        "from": "resources/run-command.mjs",
+        "to": "run-command.mjs"
       }
     ],
     "win": {

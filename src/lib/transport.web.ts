@@ -43,6 +43,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   cell_calibrant_generate: '/api/cell_calibrant_generate',
   manual_calibrant_generate: '/api/manual_calibrant_generate',
   list_space_groups: '/api/list_space_groups',
+  bg_subtract: '/api/bg_subtract',
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────

@@ -124,6 +124,26 @@ const router = createRouter({
       }
     },
     {
+      path: '/workspace/bg-subtract',
+      name: 'bg-subtract',
+      component: () => import('@/views/workspace/BgSubtractView.vue'),
+      meta: {
+        titleKey: 'bgSubtract.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'bgSubtract.description',
+      },
+    },
+    {
+      path: '/workspace/poni-importer',
+      name: 'poni-importer',
+      component: () => import('@/views/workspace/PoniImporterView.vue'),
+      meta: {
+        titleKey: 'poniImporter.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'poniImporter.subtitle',
+      },
+    },
+    {
       path: '/:pathMatch(.*)*',
       name: 'not-found',
       component: () => import('@/views/NotFoundView.vue'),

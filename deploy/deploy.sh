@@ -257,6 +257,7 @@ sync_source() {
 
   mkdir -p "$APP_INSTALL_DIR"
 
+  # 强制重建时清理安装目录中的旧构建产物
   if [[ "$FORCE_REBUILD" == "true" ]]; then
     if [[ -d "$APP_INSTALL_DIR/dist" ]]; then
       chmod -R u+w "$APP_INSTALL_DIR/dist" 2>/dev/null || true

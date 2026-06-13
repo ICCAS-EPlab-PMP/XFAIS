@@ -732,7 +732,9 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   calibrant_generate: '/api/calibrant_generate',
   cell_calibrant_generate: '/api/cell_calibrant_generate',
   manual_calibrant_generate: '/api/manual_calibrant_generate',
-  list_space_groups: '/api/list_space_groups'
+  list_space_groups: '/api/list_space_groups',
+  bg_subtract: '/api/bg_subtract',
+  poni_importer: '/api/poni_importer'
 }
 
 
@@ -883,13 +885,19 @@ const handleBinaryFrame = (data: Buffer): void => {
     return
   }
 
+  // Create a clean ArrayBuffer copy that is guaranteed structured-clone compatible.
+  // Node.js Buffers backed by a shared pool produce ArrayBuffers that fail
+  // Electron's structured clone algorithm ("An object could not be cloned").
+  const cleanBuf = new ArrayBuffer(pngData.byteLength)
+  new Uint8Array(cleanBuf).set(pngData)
+
   mainWindow?.webContents.send(IPC_CHANNELS.taskBinaryData, {
     taskId,
     mime: header.mime ?? 'image/png',
     frame: header.frame ?? 0,
     width: header.width ?? 0,
     height: header.height ?? 0,
-    data: pngData.buffer.slice(pngData.byteOffset, pngData.byteOffset + pngData.byteLength)
+    data: cleanBuf
   })
 
   emitTaskResult({
