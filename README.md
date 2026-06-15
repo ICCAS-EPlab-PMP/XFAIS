@@ -298,4 +298,4 @@ npm run build:pack:mac
 
 ## 许可证
 
-Private - ICCAS EPlab PMP
+MIT license.
