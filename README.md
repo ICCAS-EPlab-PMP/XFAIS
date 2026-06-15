@@ -3,7 +3,8 @@
 [![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square&logo=python)](https://www.python.org/)
 [![Vue.js](https://img.shields.io/badge/Vue.js-3-green?style=flat-square&logo=vue.js)](https://vuejs.org/)
 [![Electron](https://img.shields.io/badge/Electron-35-lightgrey?style=flat-square&logo=electron)](https://www.electronjs.org/)
-[![English](https://img.shields.io/badge/📖-English-009688?style=flat-square)](./README_EN.md)
+
+[English_Version](https://img.shields.io/badge/📖-English-009688?style=flat-square)
 
 **基于 [pyFAI](https://github.com/silx-kit/pyFAI) 和 [fabIO](https://github.com/silx-kit/fabIO) 内核构建的专业 X 射线数据分析 GUI**
 
