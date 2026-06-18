@@ -163,6 +163,10 @@
               />
             </label>
           </div>
+          <label class="az-toggle-label" :title="t('business.advancedOptions.dropEmptyBinsHint')">
+            <input v-model="dropEmptyBins" type="checkbox" :data-testid="testIds.azimuthDropEmptyBins" />
+            <span>{{ t('business.advancedOptions.dropEmptyBins') }}</span>
+          </label>
         </fieldset>
 
         <!-- Display settings (collapsible, default collapsed) / 显示设置（可折叠，默认收起） -->
@@ -494,6 +498,8 @@ const radialMax = ref(20.0)
 const chiUnit = ref<'chi_deg' | 'chi_rad'>('chi_deg')
 const npt = ref(360)
 const nptRad = ref(100)
+/** Drop fully-masked empty bins from the result (default on). / 剔除完全遮蔽的空 bin（默认开）。 */
+const dropEmptyBins = ref(true)
 /** Azimuth integration range in degrees. Default -180..180 = full 360°. */
 const azimuthMin = ref(-180)
 const azimuthMax = ref(180)
@@ -1020,6 +1026,7 @@ async function handleRun(): Promise<void> {
       chiUnit: chiUnit.value,
       npt: npt.value,
       nptRad: nptRad.value,
+      dropEmptyBins: dropEmptyBins.value,
     }
 
     const response = await transport.submitTask('integrate_azimuth', params)

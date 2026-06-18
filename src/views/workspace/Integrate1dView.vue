@@ -407,6 +407,7 @@ const advancedOptions = reactive<AdvancedOptions>({
   radialMax: null,
   unit: 'q_A',
   correctSolidAngle: true,
+  dropEmptyBins: true,
   algorithm: 'splitpixel',
   integrator: 'ng',
 })
@@ -924,6 +925,7 @@ async function handleRun(): Promise<void> {
       radialMax: advancedOptions.radialMax,
       unit: advancedOptions.unit,
       correctSolidAngle: advancedOptions.correctSolidAngle,
+      dropEmptyBins: advancedOptions.dropEmptyBins,
       algorithm: advancedOptions.algorithm ?? 'splitpixel',
       integrator: advancedOptions.integrator ?? 'ng',
     },

@@ -419,6 +419,7 @@ const advancedOptions = ref<AdvancedOptions>({
   radialMax: null,
   unit: 'q_A',
   correctSolidAngle: true,
+  dropEmptyBins: true,
 })
 
 const polarizationFactor = ref<number | null>(null)

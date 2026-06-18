@@ -110,13 +110,19 @@
           <div class="pi-field">
             <label class="pi-label">{{ t('poniImporter.detectorPreset') }}</label>
             <select v-model="selectedPreset" class="pi-select">
-              <option value="">{{ t('poniImporter.detectorCustom') }}</option>
               <option v-for="p in detectorPresets" :key="p.name" :value="p.name">{{ p.name }}</option>
             </select>
+            <p class="pi-field-hint">{{ t('poniImporter.detectorPresetHint') }}</p>
           </div>
           <div class="pi-field">
             <label class="pi-label">{{ t('poniImporter.detectorName') }}</label>
-            <input v-model="createForm.detector_name" type="text" class="pi-input" />
+            <input
+              v-model="createForm.detector_name"
+              type="text"
+              class="pi-input"
+              :placeholder="t('poniImporter.detectorNamePlaceholder')"
+              :readonly="!!selectedPreset"
+            />
           </div>
         </div>
       </aside>
@@ -221,12 +227,13 @@ interface PoniData {
   distance: number      // Detector distance in meters
   wavelength: number    // Wavelength in meters
   pixel_size: number    // Pixel size in meters
-  poni1: number         // Beam center X (meters, = center_y_px * pixel_size)
-  poni2: number         // Beam center Y (meters, = center_x_px * pixel_size)
+  poni1: number         // Beam center Y direction (meters, = center_y_px * pixel_size)
+  poni2: number         // Beam center X direction (meters, = center_x_px * pixel_size)
   rot1?: number         // Rotation 1 (radians)
   rot2?: number         // Rotation 2 (radians)
   rot3?: number         // Rotation 3 (radians)
-  detector_name?: string // Detector name
+  detector_name?: string // Detector name (pyFAI-registered name preferred)
+  detector_config?: string // Detector config (JSON, no surrounding quotes)
   [key: string]: any    // Additional fields
 }
 
@@ -403,7 +410,7 @@ const detectorPresets: DetectorPreset[] = [
   { name: 'Rayonix MX300', detector_name: 'RayonixMX300', pixel_size: 0.148 },
 ]
 
-const selectedPreset = ref<string>('')
+const selectedPreset = ref<string>('Pilatus 1M')
 
 // Watch preset selection and auto-fill form / 监听预设选择并自动填充表单
 watch(selectedPreset, (presetName) => {
@@ -415,6 +422,16 @@ watch(selectedPreset, (presetName) => {
     createForm.pixel_size = pixelSizeUnit.value === 'um' ? preset.pixel_size * 1000 : preset.pixel_size
   }
 })
+
+// Initialize form fields from the default preset on mount.
+// 在挂载时用默认预设初始化表单字段。
+{
+  const initial = detectorPresets.find(p => p.name === selectedPreset.value)
+  if (initial) {
+    createForm.detector_name = initial.detector_name
+    createForm.pixel_size = pixelSizeUnit.value === 'um' ? initial.pixel_size * 1000 : initial.pixel_size
+  }
+}
 
 // === Helpers / 辅助函数 ===
 
@@ -458,6 +475,17 @@ function formatBeamCenter(valueMeters: number): string {
 
 async function doExport(): Promise<void> {
   if (!poniData.value) return
+  // Final pre-export validation: a detector name is required so the
+  // downstream pyFAI loader can resolve a geometry. The form already
+  // defaults to a preset, but defend against manual edits.
+  if (!poniData.value.detector_name) {
+    toast.push({
+      title: t('poniImporter.errorTitle'),
+      message: t('poniImporter.detectorRequired'),
+      tone: 'error',
+    })
+    return
+  }
   try {
     // Deep-clone to strip Vue reactive proxy metadata before IPC.
     // Vue's reactive()/ref() wrappers add internal symbol keys (e.g. __v_isReactive,
@@ -593,6 +621,13 @@ async function doExport(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.pi-field-hint {
+  margin: 2px 0 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  line-height: 1.4;
 }
 
 .pi-label {

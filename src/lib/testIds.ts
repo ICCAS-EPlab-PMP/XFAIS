@@ -52,6 +52,7 @@ export const testIds = {
   advancedRadialMax: 'advanced-radial-max',
   advancedUnit: 'advanced-unit',
   advancedSolidAngle: 'advanced-solid-angle',
+  advancedDropEmptyBins: 'advanced-drop-empty-bins',
   advancedAlgorithm: 'advanced-algorithm',
   advancedIntegrator: 'advanced-integrator',
 
@@ -102,9 +103,15 @@ export const testIds = {
   azimuthAzimuthMax: 'azimuth-azimuth-max',
   azimuthNpt: 'azimuth-npt',
   azimuthNptRad: 'azimuth-npt-rad',
+  azimuthDropEmptyBins: 'azimuth-drop-empty-bins',
   azimuthRunBtn: 'azimuth-run-btn',
   azimuthChart: 'azimuth-chart',
   azimuthExport: 'azimuth-export',
+
+  // Shared line chart (line/points mode toggle) / 共享折线图（线/点切换）
+  lineChartMode: 'line-chart-mode',
+  lineChartModeLine: 'line-chart-mode-line',
+  lineChartModePoints: 'line-chart-mode-points',
 
   // Integrate 1D page / 1D 积分页面
   integrate1dPage: 'integrate-1d-page',

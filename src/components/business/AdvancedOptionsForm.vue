@@ -109,9 +109,20 @@
           type="checkbox"
           :checked="modelValue.correctSolidAngle"
           :data-testid="testIds.advancedSolidAngle"
-          @change="onCheckboxToggle"
+          @change="onCheckboxToggle('correctSolidAngle')"
         />
         <span class="aof-toggle-label">{{ t('business.advancedOptions.correctSolidAngle') }}</span>
+      </label>
+
+      <!-- Drop fully-masked empty bins / 剔除完全遮蔽的空 bin -->
+      <label class="aof-toggle" :title="t('business.advancedOptions.dropEmptyBinsHint')">
+        <input
+          type="checkbox"
+          :checked="modelValue.dropEmptyBins"
+          :data-testid="testIds.advancedDropEmptyBins"
+          @change="onCheckboxToggle('dropEmptyBins')"
+        />
+        <span class="aof-toggle-label">{{ t('business.advancedOptions.dropEmptyBins') }}</span>
       </label>
     </div>
   </fieldset>
@@ -161,6 +172,8 @@ export interface AdvancedOptions {
   unit: IntegrationUnit
   /** Correct solid angle / 立体角校正 */
   correctSolidAngle: boolean
+  /** Drop fully-masked empty bins (default on) / 剔除完全遮蔽的空 bin（默认开） */
+  dropEmptyBins: boolean
   /** Integration algorithm method (1D only) / 积分算法方法（仅1D） */
   algorithm?: IntegrationAlgorithm
   /** Integrator engine (1D only) / 积分器引擎（仅1D） */
@@ -184,6 +197,7 @@ const props = withDefaults(defineProps<{
     radialMax: null,
     unit: 'q_nm',
     correctSolidAngle: true,
+    dropEmptyBins: true,
   }),
   showIntegrationMethod: false,
   hideUnit: false,
@@ -233,10 +247,10 @@ function onIntegratorChange(event: Event): void {
   emit('update:modelValue', { ...props.modelValue, integrator: val })
 }
 
-function onCheckboxToggle(): void {
+function onCheckboxToggle(field: 'correctSolidAngle' | 'dropEmptyBins'): void {
   emit('update:modelValue', {
     ...props.modelValue,
-    correctSolidAngle: !props.modelValue.correctSolidAngle,
+    [field]: !props.modelValue[field],
   })
 }
 </script>

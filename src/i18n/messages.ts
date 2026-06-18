@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.1.0'
+      version: 'v0.2.0'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.1.0',
+      kicker: '桌面集成版 v0.2.0',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -335,7 +335,9 @@ export const messages = {
         layoutPerFile: '按文件分目录',
         dpi: 'DPI',
         showAxes: '显示坐标轴',
-        showColorbar: '显示色标'
+        showColorbar: '显示色标',
+        chartLine: '线图',
+        chartPoints: '点图'
       },
       fileTypes: {
         title: '文件类型过滤'
@@ -567,6 +569,8 @@ export const messages = {
         radialMax: '径向最大值',
         unit: '单位',
         correctSolidAngle: '立体角校正',
+        dropEmptyBins: '剔除空 bin',
+        dropEmptyBinsHint: '开启后，完全被遮蔽、无有效像素的 bin 将从曲线与导出中去除，避免把 0 误读为真实零信号',
         algorithm: '积分算法',
         integrator: '积分器引擎'
       },
@@ -927,8 +931,8 @@ export const messages = {
       detectorDistance: '探测器距离',
       wavelength: '波长',
       pixelSize: '像素尺寸',
-      beamCenterX: '光束中心 X (poni1, 像素)',
-      beamCenterY: '光束中心 Y (poni2, 像素)',
+      beamCenterX: '光束中心 X (poni2, 像素)',
+      beamCenterY: '光束中心 Y (poni1, 像素)',
       rot1: '旋转 1 (rad)',
       rot2: '旋转 2 (rad)',
       rot3: '旋转 3 (rad)',
@@ -936,6 +940,9 @@ export const messages = {
       detectorConfig: '探测器配置',
       detectorPreset: '探测器预设',
       detectorCustom: '自定义',
+      detectorPresetHint: '选择一个探测器预设以确保 .poni 文件可被 pyFAI 正确加载。',
+      detectorNamePlaceholder: '例如：Pilatus1M、Eiger2_4M',
+      detectorRequired: '请先选择一个探测器预设。',
       createBtn: '导出',
       createSuccessTitle: 'PONI 预览',
     },
@@ -961,7 +968,7 @@ export const messages = {
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.1.0'
+      version: 'v0.2.0'
     },
     shell: {
       sections: {
@@ -995,7 +1002,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.1.0',
+      kicker: 'Desktop Edition v0.2.0',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -1292,7 +1299,9 @@ export const messages = {
         layoutPerFile: 'Per-File Directory',
         dpi: 'DPI',
         showAxes: 'Show Axes',
-        showColorbar: 'Show Colorbar'
+        showColorbar: 'Show Colorbar',
+        chartLine: 'Line',
+        chartPoints: 'Points'
       },
       fileTypes: {
         title: 'File Type Filter'
@@ -1524,6 +1533,8 @@ export const messages = {
         radialMax: 'Radial Max',
         unit: 'Unit',
         correctSolidAngle: 'Solid Angle Correction',
+        dropEmptyBins: 'Drop empty bins',
+        dropEmptyBinsHint: 'Remove fully-masked bins (no valid pixels) from the curve and export, so their 0 is not misread as real zero signal',
         algorithm: 'Integration Algorithm',
         integrator: 'Integrator Engine'
       },
@@ -1883,8 +1894,8 @@ export const messages = {
       detectorDistance: 'Detector Distance',
       wavelength: 'Wavelength',
       pixelSize: 'Pixel Size',
-      beamCenterX: 'Beam Center X (poni1, px)',
-      beamCenterY: 'Beam Center Y (poni2, px)',
+      beamCenterX: 'Beam Center X (poni2, px)',
+      beamCenterY: 'Beam Center Y (poni1, px)',
       rot1: 'Rotation 1 (rad)',
       rot2: 'Rotation 2 (rad)',
       rot3: 'Rotation 3 (rad)',
@@ -1892,6 +1903,9 @@ export const messages = {
       detectorConfig: 'Detector Config',
       detectorPreset: 'Detector Preset',
       detectorCustom: 'Custom',
+      detectorPresetHint: 'Pick a detector preset to ensure the .poni file loads correctly in pyFAI.',
+      detectorNamePlaceholder: 'e.g. Pilatus1M, Eiger2_4M',
+      detectorRequired: 'Please pick a detector preset before exporting.',
       createBtn: 'Export',
       createSuccessTitle: 'PONI Preview',
     },

@@ -922,6 +922,26 @@ async def handle_export_integration(
         return {"success": False, "error": str(exc)}
 
 
+def _drop_empty_bins(res, drop: bool):
+    """Drop fully-masked bins that have no contributing pixels.
+
+    剔除完全被 mask 遮蔽的空 bin——此时 pyFAI 把强度置为 `_empty`（默认 0.0），
+    会显示成误导性的零点。判定依据是 `res.count == 0`（有效像素归一化计数为 0），
+    而非 `intensity == 0`，以免误删真实低信号 bin。
+
+    Returns ``(radial_list, intensity_list)``. When ``drop`` is False, or when the
+    result lacks a usable ``count`` array, the original arrays are returned as-is.
+    """
+    radial = res.radial
+    intensity = res.intensity
+    count = getattr(res, "count", None) if drop else None
+    if drop and count is not None:
+        keep = count > 0  # empty bin 的 count 恰为 0
+        radial = radial[keep]
+        intensity = intensity[keep]
+    return radial.tolist(), intensity.tolist()
+
+
 async def handle_integrate1d(
     payload: dict[str, Any],
     send_progress: Callable[[float, str], Awaitable[None]],
@@ -1006,14 +1026,17 @@ async def handle_integrate1d(
                 res = ai.integrate1d_ng(**integrate_kwargs)
             else:
                 res = ai.integrate1d(**integrate_kwargs)
+            radial_list, intensity_list = _drop_empty_bins(
+                res, opts.get("drop_empty_bins", True)
+            )
             results.append({
-                "radial": res.radial.tolist(),
-                "intensity": res.intensity.tolist(),
+                "radial": radial_list,
+                "intensity": intensity_list,
                 "label": meta.get("filename", fpath),
                 "filename": meta.get("filename", fpath),
                 "unit": opts.get("unit", "q_nm^-1"),
             })
-            print(f"[integrate1d] OK ({i+1}/{len(files)}): {fpath} → {len(res.radial)} points", flush=True)
+            print(f"[integrate1d] OK ({i+1}/{len(files)}): {fpath} → {len(radial_list)} points (of {len(res.radial)})", flush=True)
         except Exception as file_exc:
             failed.append({"file": fpath, "reason": str(file_exc)})
             print(f"[integrate1d] ERROR on {fpath}: {file_exc}", flush=True)
@@ -1091,12 +1114,15 @@ async def handle_integrate_azimuth(
             if radial_min is not None and radial_max is not None:
                 kw["radial_range"] = (float(radial_min), float(radial_max))
             res = ai.integrate_radial(**kw)
+            radial_list, intensity_list = _drop_empty_bins(
+                res, opts.get("drop_empty_bins", True)
+            )
             results.append({
-                "radial": res.radial.tolist(),
-                "intensity": res.intensity.tolist(),
+                "radial": radial_list,
+                "intensity": intensity_list,
                 "label": meta.get("filename", fpath),
                 "filename": meta.get("filename", fpath),
-                "chi": res.radial.tolist(),
+                "chi": radial_list,
                 "unit": opts.get("unit", "chi_deg"),
             })
         except Exception as file_exc:
@@ -1181,9 +1207,12 @@ async def handle_integrate_cake(
             res = ai.integrate1d(
                 **integrate_kwargs,
             )
+            x_list, y_list = _drop_empty_bins(
+                res, opts.get("drop_empty_bins", True)
+            )
             traces.append({
-                "x": res.radial.tolist(),
-                "y": res.intensity.tolist(),
+                "x": x_list,
+                "y": y_list,
                 "name": meta.get("filename", "") or Path(fpath).name,
             })
         except Exception as file_exc:
@@ -3760,6 +3789,22 @@ async def _handle_poni_importer_export(
 
     if not poni_data:
         return {"status": "error", "message": "Missing poni_data"}
+
+    # PONI files require a `Detector:` line — without one, pyFAI's
+    # AzimuthalIntegrator.load() silently falls back to a generic Detector
+    # and drops the user's pixel size. The frontend normally guarantees
+    # this is set (it defaults to a preset), but defend against direct IPC
+    # calls or future code paths that skip the form.
+    if export_format == "poni":
+        det_name = poni_data.get("detector_name")
+        if not det_name or not str(det_name).strip():
+            return {
+                "status": "error",
+                "message": (
+                    "Missing detector_name — pick a detector preset in the "
+                    "PONI importer before exporting a .poni file."
+                ),
+            }
 
     await send_progress(0.5, "Exporting...")
 

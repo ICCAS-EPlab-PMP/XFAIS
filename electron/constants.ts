@@ -1,5 +1,5 @@
 export const APP_NAME = 'X-FAIS'
-export const APP_VERSION = '0.1.0'
+export const APP_VERSION = '0.2.0'
 export const IPC_CHANNELS = {
   appMeta: 'app:meta',
   pythonStatus: 'python:status',

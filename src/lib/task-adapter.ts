@@ -100,6 +100,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           radial_min: asOptionalNumber(advanced.radialMin),
           radial_max: asOptionalNumber(advanced.radialMax),
           correct_solid_angle: asBoolean(advanced.correctSolidAngle, true),
+          drop_empty_bins: asBoolean(advanced.dropEmptyBins, true),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -126,6 +127,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           azimuth_min: asOptionalNumber(params.azimuthMin),
           azimuth_max: asOptionalNumber(params.azimuthMax),
           correct_solid_angle: true,
+          drop_empty_bins: asBoolean(params.dropEmptyBins, true),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -152,6 +154,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           azimuth_min: asOptionalNumber(params.azimuthMin),
           azimuth_max: asOptionalNumber(params.azimuthMax),
           correct_solid_angle: asBoolean(advanced.correctSolidAngle, true),
+          drop_empty_bins: asBoolean(advanced.dropEmptyBins, true),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
