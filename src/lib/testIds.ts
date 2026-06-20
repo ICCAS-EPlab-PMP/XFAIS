@@ -113,6 +113,12 @@ export const testIds = {
   lineChartModeLine: 'line-chart-mode-line',
   lineChartModePoints: 'line-chart-mode-points',
 
+  // Shared HDF5 dataset/channel/frame selector / 共享 HDF5 选择器
+  h5Selector: 'h5-selector',
+  h5DatasetSelect: 'h5-dataset-select',
+  h5ChannelSelect: 'h5-channel-select',
+  h5FrameSelect: 'h5-frame-select',
+
   // Integrate 1D page / 1D 积分页面
   integrate1dPage: 'integrate-1d-page',
   integrate1dFileInput: 'integrate-1d-file-input',

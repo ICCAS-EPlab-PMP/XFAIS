@@ -79,6 +79,15 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
   const activeMask = Object.keys(mask).length > 0 ? mask : maskConfig
   const polarizationFactor = asOptionalNumber(params.polarizationFactor)
 
+  // H5 dataset/frame/channel — forwarded to the integration handlers so users
+  // can pick which dataset, frame (4-D), and channel to integrate. Defaults:
+  // auto-detected dataset, first frame, channel 0. See H5Selector.vue.
+  const h5DatasetPath = asString(params.dataset) ?? asString(params.h5Dataset)
+  const h5Channel = typeof params.channel === 'number' || typeof params.channel === 'string'
+    ? params.channel
+    : undefined
+  const frameIndex = asNumber(params.frame, 0)
+
   switch (command) {
     case 'integrate1d': {
       const advanced = asRecord(params.advanced)
@@ -91,6 +100,9 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         valid_min: asNumber(activeMask.valueRangeMin, 0),
         valid_max: asNumber(activeMask.valueRangeMax, 1e10),
         custom_mask_path: asString(activeMask.customMaskPath),
+        h5_dataset_path: h5DatasetPath,
+        h5_channel: h5Channel,
+        frame_index: frameIndex,
         options: {
           npt: asNumber(advanced.nptRad, 1000),
           npt_azim: asNumber(advanced.nptAzim, 360),
@@ -117,6 +129,9 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         valid_min: asNumber(activeMask.valueRangeMin, 0),
         valid_max: asNumber(activeMask.valueRangeMax, 1e10),
         custom_mask_path: asString(activeMask.customMaskPath),
+        h5_dataset_path: h5DatasetPath,
+        h5_channel: h5Channel,
+        frame_index: frameIndex,
         options: {
           npt: asNumber(params.npt, 360),
           npt_rad: asNumber(params.nptRad, 100),
@@ -145,6 +160,9 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         valid_min: asNumber(activeMask.valueRangeMin, 0),
         valid_max: asNumber(activeMask.valueRangeMax, 1e10),
         custom_mask_path: asString(activeMask.customMaskPath),
+        h5_dataset_path: h5DatasetPath,
+        h5_channel: h5Channel,
+        frame_index: frameIndex,
         options: {
           npt_rad: asNumber(advanced.nptRad, 1000),
           npt_azim: asNumber(advanced.nptAzim, 360),

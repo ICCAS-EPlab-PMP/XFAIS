@@ -994,6 +994,7 @@ async def handle_integrate1d(
             data, dead_mask, meta = await _run_blocking(
                 ImageLoader.load, fpath,
                 payload.get("h5_dataset_path"), payload.get("h5_channel"),
+                payload.get("frame_index", 0),
             )
             if data is None:
                 failed.append({"file": fpath, "reason": "No data loaded"})
@@ -1080,6 +1081,7 @@ async def handle_integrate_azimuth(
             data, dead_mask, meta = await _run_blocking(
                 ImageLoader.load, fpath,
                 payload.get("h5_dataset_path"), payload.get("h5_channel"),
+                payload.get("frame_index", 0),
             )
             if data is None:
                 failed.append({"file": fpath, "reason": "No data loaded"})
@@ -1167,6 +1169,7 @@ async def handle_integrate_cake(
             data, dead_mask, meta = await _run_blocking(
                 ImageLoader.load, fpath,
                 payload.get("h5_dataset_path"), payload.get("h5_channel"),
+                payload.get("frame_index", 0),
             )
             if data is None:
                 failed.append({"file": fpath, "reason": "No data loaded"})

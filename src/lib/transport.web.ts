@@ -536,7 +536,7 @@ export class WebTransport implements ITransport {
   async getAppMeta(): Promise<AppMeta> {
     // Try reading version from meta tag injected at build time
     const metaTag = document.querySelector('meta[name="app-version"]')
-    const version = metaTag?.getAttribute('content') ?? '0.2.0'
+    const version = metaTag?.getAttribute('content') ?? '0.2.1'
 
     return {
       appName: 'X-FAIS',

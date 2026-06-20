@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.2.0'
+      version: 'v0.2.1'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.2.0',
+      kicker: '桌面集成版 v0.2.1',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -512,6 +512,14 @@ export const messages = {
         replaceTooltip: '清除现有文件列表，仅使用新选择的文件',
         appendTooltip: '将新选择的文件追加到现有文件列表中'
       },
+      h5: {
+        title: 'HDF5 选择',
+        dataset: '数据集',
+        channel: '通道',
+        frame: '帧',
+        frameOf: '第 {current} / {total} 帧',
+        hint: '选择对积分生效，多文件统一应用；默认第一帧、通道 0'
+      },
       sections: {
         maskImport: '掩膜导入',
         displaySettings: '显示设置',
@@ -968,7 +976,7 @@ export const messages = {
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.2.0'
+      version: 'v0.2.1'
     },
     shell: {
       sections: {
@@ -1002,7 +1010,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.2.0',
+      kicker: 'Desktop Edition v0.2.1',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -1475,6 +1483,14 @@ export const messages = {
         append: 'Append',
         replaceTooltip: 'Clear existing file list and use only newly selected files',
         appendTooltip: 'Append newly selected files to the existing file list'
+      },
+      h5: {
+        title: 'HDF5 Selection',
+        dataset: 'Dataset',
+        channel: 'Channel',
+        frame: 'Frame',
+        frameOf: 'Frame {current} / {total}',
+        hint: 'Applies to integration across all files; defaults to first frame, channel 0'
       },
       sections: {
         maskImport: 'Mask Import',

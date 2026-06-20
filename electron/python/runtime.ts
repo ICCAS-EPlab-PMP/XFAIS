@@ -129,8 +129,16 @@ const MAX_OUTPUT_BUFFER = 50 * 1024 * 1024
 //      resolvable. The augmented PATH is also used to locate sibling DLLs
 //      (python311.dll, vcruntime140.dll, etc.) required by the embedded
 //      Python runtime.
+// Resolve the Windows installation root from the environment (SystemRoot is
+// the canonical var; windir is a legacy fallback). Hardcoding C:\WINDOWS is
+// wrong on machines where Windows lives on a different drive, which breaks
+// cmd.exe / system-tool resolution.
+const WINDOWS_ROOT = isWindows
+  ? (process.env.SystemRoot || process.env.windir || 'C:\\WINDOWS').replace(/[\\/]+$/, '')
+  : 'C:\\WINDOWS'
+
 const SYSTEM_PATH_PREFIXES = isWindows
-  ? ['C:\\WINDOWS\\system32', 'C:\\WINDOWS', 'C:\\WINDOWS\\System32\\Wbem']
+  ? [`${WINDOWS_ROOT}\\system32`, WINDOWS_ROOT, `${WINDOWS_ROOT}\\System32\\Wbem`]
   : []
 
 const buildAugmentedPath = (exeDir: string, env: NodeJS.ProcessEnv): string => {
@@ -290,23 +298,41 @@ const runProcess = async (
     }
   }
 
-  // Try direct spawn
-  try {
-    return await runProcessDirect(executable, argumentsList, options)
-  } catch (directError: any) {
-    const msg = directError?.message ?? ''
-    // If ENOENT and helper script is available, fall back to fork-based launcher
-    if (msg.includes('ENOENT') && helperScriptPath && existsSync(helperScriptPath)) {
-      try {
-        return await runViaHelper(executable, argumentsList, options)
-      } catch (helperError: any) {
-        throw new Error(
-          `Direct spawn failed: ${msg}\nHelper fallback also failed: ${helperError?.message ?? String(helperError)}`
-        )
+  // Direct spawn with retry. In packaged Electron the asar-aware spawn can
+  // intermittently return ENOENT for an existing executable (the helper serve
+  // spawn in manager.ts proves direct spawn *can* work; the failure is
+  // transient). The file genuinely exists, so a short backoff-retry almost
+  // always succeeds on the next attempt.
+  const MAX_DIRECT_ATTEMPTS = 4
+  for (let attempt = 1; attempt <= MAX_DIRECT_ATTEMPTS; attempt += 1) {
+    try {
+      return await runProcessDirect(executable, argumentsList, options)
+    } catch (directError: any) {
+      const msg = directError?.message ?? ''
+      const isTransientEnoent = msg.includes('ENOENT')
+      const canRetry = isTransientEnoent && attempt < MAX_DIRECT_ATTEMPTS
+      if (canRetry) {
+        await new Promise((resolve) => { setTimeout(resolve, 250 * attempt) })
+        continue
       }
+
+      // Exhausted retries (or a non-ENOENT error). Try the fork-based helper
+      // as a final fallback if it is available.
+      if (isTransientEnoent && helperScriptPath && existsSync(helperScriptPath)) {
+        try {
+          return await runViaHelper(executable, argumentsList, options)
+        } catch (helperError: any) {
+          throw new Error(
+            `Direct spawn failed: ${msg}\nHelper fallback also failed: ${helperError?.message ?? String(helperError)}`
+          )
+        }
+      }
+      throw directError
     }
-    throw directError
   }
+
+  // Unreachable: the loop either returns or throws.
+  throw new Error('runProcess: exhausted all direct spawn attempts without a result.')
 }
 
 const runProcessDirect = async (
@@ -326,13 +352,17 @@ const runProcessDirect = async (
 
     let child
     try {
-      // shell:true routes through cmd.exe which is needed for the ASAR ENOENT
-      // workaround, but cmd.exe cannot handle non-ASCII paths (e.g. Chinese
-      // characters in the install directory). For non-ASCII paths we skip
-      // shell:true and rely on Node.js's CreateProcessW which supports Unicode.
-      // process.noAsar=true (set above) already prevents ASAR interception.
-      const useShell = !hasNonAsciiPath(executable)
-
+      // Spawn the executable directly via Node.js's CreateProcessW (which is
+      // Unicode-safe, so non-ASCII install paths work fine). We intentionally
+      // do NOT use shell:true:
+      //   - shell:true routes through cmd.exe, whose codepage corrupts
+      //     non-ASCII paths AND which itself fails with ENOENT on Windows
+      //     setups where cmd.exe isn't resolvable at the expected system path
+      //     (the user-facing "spawn C:\WINDOWS\system32\cmd.exe ENOENT" error).
+      //   - process.noAsar=true (set above) is sufficient to stop ASAR from
+      //     intercepting this spawn in packaged Electron — the same approach
+      //     already used by manager.ts for the long-lived serve process and by
+      //     safeSpawn() in main.ts.
       child = spawn(executable, argumentsList, {
         cwd,
         env: {
@@ -341,8 +371,7 @@ const runProcessDirect = async (
           Path: augmentedPath
         },
         stdio: ['ignore', 'pipe', 'pipe'],
-        windowsHide: options.windowsHide ?? true,
-        ...(useShell ? { shell: true } : {})
+        windowsHide: options.windowsHide ?? true
       })
     } catch (spawnError) {
       process.noAsar = previousNoAsar
@@ -606,33 +635,44 @@ export const ensureEmbeddedPython = async (options: EnsurePythonRuntimeOptions =
     await installEmbeddedPython(pythonPaths)
   }
 
-  if (!(await hasPipAvailable(pythonExecutable))) {
-    logDiag('pip not available, running ensurepip...')
-    await ensurePipAvailable(pythonExecutable)
+  // In packaged mode the runtime AND its dependencies are shipped pre-installed
+  // (site-packages is bundled, and afterPack may trim pip/setuptools). We must
+  // NOT run ensurepip or `pip install` here: pip may be absent, and reinstalling
+  // would try to mutate the locked, shipped environment (and the many spawns it
+  // requires are what exposed the intermittent asar/spawn ENOENT). The shipped
+  // runtime is authoritative — we just verify the lock is present and trust it.
+  if (!pythonPaths.isPackaged) {
+    if (!(await hasPipAvailable(pythonExecutable))) {
+      logDiag('pip not available, running ensurepip...')
+      await ensurePipAvailable(pythonExecutable)
+    } else {
+      logDiag('pip OK')
+    }
+
+    const lockExists = await fileExists(pythonPaths.requirementsLockPath)
+
+    const activeRequirementsPath = lockExists ? pythonPaths.requirementsLockPath : pythonPaths.requirementsInputPath
+    const activeRequirementsHash = await computeRequirementsHash(activeRequirementsPath)
+    const stampExists = await fileExists(pythonPaths.stampPath)
+
+    let shouldInstallDependencies = !lockExists
+    if (stampExists) {
+      const stampContent = await readFile(pythonPaths.stampPath, 'utf8')
+      const stamp = JSON.parse(stampContent) as RuntimeStamp
+      shouldInstallDependencies = shouldInstallDependencies || stamp.requirementsHash !== activeRequirementsHash || stamp.pythonVersion !== EMBEDDED_PYTHON_VERSION
+    } else {
+      shouldInstallDependencies = true
+    }
+
+    if (shouldInstallDependencies) {
+      await installPythonDependencies(pythonPaths, pythonExecutable)
+    }
   } else {
-    logDiag('pip OK')
-  }
-
-  const lockExists = await fileExists(pythonPaths.requirementsLockPath)
-  if (!lockExists && options.isPackaged) {
-    throw new Error(`Packaged requirements lock is missing: ${pythonPaths.requirementsLockPath}`)
-  }
-
-  const activeRequirementsPath = lockExists ? pythonPaths.requirementsLockPath : pythonPaths.requirementsInputPath
-  const activeRequirementsHash = await computeRequirementsHash(activeRequirementsPath)
-  const stampExists = await fileExists(pythonPaths.stampPath)
-
-  let shouldInstallDependencies = !lockExists
-  if (stampExists) {
-    const stampContent = await readFile(pythonPaths.stampPath, 'utf8')
-    const stamp = JSON.parse(stampContent) as RuntimeStamp
-    shouldInstallDependencies = shouldInstallDependencies || stamp.requirementsHash !== activeRequirementsHash || stamp.pythonVersion !== EMBEDDED_PYTHON_VERSION
-  } else {
-    shouldInstallDependencies = true
-  }
-
-  if (shouldInstallDependencies) {
-    await installPythonDependencies(pythonPaths, pythonExecutable)
+    const lockExists = await fileExists(pythonPaths.requirementsLockPath)
+    if (!lockExists) {
+      throw new Error(`Packaged requirements lock is missing: ${pythonPaths.requirementsLockPath}`)
+    }
+    logDiag('packaged mode: shipped runtime is authoritative, skipping pip/dependency install')
   }
 
   const health = await readPythonHealth(pythonPaths, pythonExecutable)

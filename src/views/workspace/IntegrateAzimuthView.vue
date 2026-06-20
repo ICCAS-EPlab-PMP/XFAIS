@@ -245,6 +245,13 @@
           </div>
         </div>
 
+        <!-- HDF5 dataset/channel/frame selector (only for .h5 with image datasets) / HDF5 选择器 -->
+        <H5Selector
+          v-model="h5Selection"
+          :datasets="h5Datasets"
+          @change="onH5SelectionChange"
+        />
+
         <!-- Image preview (collapsible) / 图像预览（可折叠） -->
         <div class="az-collapsible">
           <div class="az-section-toggle" @click="onPreviewToggle">
@@ -409,6 +416,8 @@ import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
 import PolarizationForm from '@/components/business/PolarizationForm.vue'
+import H5Selector from '@/components/business/H5Selector.vue'
+import type { H5DatasetInfo, H5Selection } from '@/components/business/H5Selector.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ExportDialog from '@/components/business/ExportDialog.vue'
 import type { ExportFormat, ExportMode } from '@/components/business/ExportDialog.vue'
@@ -430,6 +439,12 @@ interface PreviewMetadata {
   metadata?: {
     width?: number
     height?: number
+    h5Datasets?: H5DatasetInfo[]
+    selectedDataset?: string
+    selectedChannel?: number
+    nChannels?: number
+    totalFrames?: number
+    frameIndex?: number
   }
 }
 
@@ -555,6 +570,8 @@ function clearAllFiles(): void {
   previewImageSize.value = null
   selectedPreviewIndex.value = 0
   thumbnailItems.value = []
+  h5Datasets.value = []
+  h5Selection.value = { dataset: '', channel: 0, frame: 0 }
 }
 
 // ── Preview state / 预览状态 ──
@@ -567,6 +584,11 @@ const resolvedBeamCenter = ref<{ x: number; y: number } | null>(
   { x: geometry.value.centerX, y: geometry.value.centerY }
 )
 const previewImageSize = ref<{ width: number; height: number; origWidth: number; origHeight: number } | null>(null)
+
+// ── H5 dataset/channel/frame selection / H5 数据集/通道/帧选择 ──
+
+const h5Datasets = ref<H5DatasetInfo[]>([])
+const h5Selection = ref<H5Selection>({ dataset: '', channel: 0, frame: 0 })
 
 // ── Display settings / 显示设置 ──
 
@@ -738,6 +760,8 @@ async function handleChooseFiles(): Promise<void> {
   importFolderPath.value = null
   selectedPreviewIndex.value = 0
   thumbnailItems.value = []
+  h5Datasets.value = []
+  h5Selection.value = { dataset: '', channel: 0, frame: 0 }
   await loadPreviewIfExpanded()
   loadThumbnailPageIfExpanded()
 }
@@ -768,6 +792,8 @@ async function rescanFolder(): Promise<void> {
     }
     selectedPreviewIndex.value = 0
     thumbnailItems.value = []
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
     await loadPreviewIfExpanded()
     loadThumbnailPageIfExpanded()
   } catch (err) {
@@ -795,10 +821,18 @@ async function loadPreview(path: string): Promise<void> {
 
   try {
     await resolveBeamCenter()
+    // 4D h5: pass dataset/channel/frame so the preview reflects the user's selection.
+    // On first load of a file h5Datasets is empty (reset by the file-change handler),
+    // so no dataset is sent and the backend auto-detects the default.
+    const isH5 = h5Datasets.value.length > 0
     const response = await transport.submitTask('viewer_config', {
       action: 'open_file',
       filePath: path,
-      frame: 0,
+      frame: h5Selection.value.frame,
+      ...(isH5 ? {
+        dataset: h5Selection.value.dataset || undefined,
+        channel: h5Selection.value.channel,
+      } : {}),
       settings: buildRenderSettings(),
     })
 
@@ -822,6 +856,21 @@ async function loadPreview(path: string): Promise<void> {
         origWidth: data.metadata?.width ?? 0,
         origHeight: data.metadata?.height ?? 0,
       }
+
+      // Capture H5 dataset metadata for the selector / 同步 HDF5 数据集元数据
+      const md = data.metadata
+      h5Datasets.value = Array.isArray(md?.h5Datasets) ? md!.h5Datasets! : []
+      if (h5Datasets.value.length > 0) {
+        const sel = md?.selectedDataset ?? h5Datasets.value[0]?.path ?? ''
+        // Sync selection to the backend-rendered dataset on new-file loads.
+        // Selection-change reloads already request this dataset, so no reset (no loop).
+        if (sel && h5Selection.value.dataset !== sel) {
+          h5Selection.value = { dataset: sel, channel: 0, frame: 0 }
+        }
+      } else if (h5Selection.value.dataset) {
+        h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+      }
+
       previewLoading.value = false
     })
 
@@ -852,6 +901,13 @@ async function loadPreviewIfExpanded(): Promise<void> {
 function onPreviewToggle(): void {
   previewExpanded.value = !previewExpanded.value
   if (previewExpanded.value && activeFilePath.value && !previewB64.value) {
+    loadPreview(activeFilePath.value)
+  }
+}
+
+/** Reload preview when the H5 dataset/channel/frame selection changes */
+function onH5SelectionChange(): void {
+  if (previewExpanded.value && activeFilePath.value) {
     loadPreview(activeFilePath.value)
   }
 }
@@ -937,6 +993,9 @@ function handleThumbSelect(index: number): void {
   selectedPreviewIndex.value = index
   const fPath = files.value[index]
   if (fPath) {
+    // Switching to a different file: reset H5 selection so a stale dataset isn't sent
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
     loadPreview(fPath)
   }
 }
@@ -1015,6 +1074,10 @@ async function handleRun(): Promise<void> {
     const params: Record<string, unknown> = {
       filePath: activeFilePath.value,
       files: [...files.value],
+      // 4D h5 selection — forwarded to the backend integration handler
+      dataset: h5Selection.value.dataset || undefined,
+      channel: h5Selection.value.channel,
+      frame: h5Selection.value.frame,
       geometry: { ...geometry.value },
       mask: { ...maskConfig.value },
       polarizationFactor: polarizationFactor.value,
