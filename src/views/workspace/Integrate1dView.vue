@@ -604,8 +604,21 @@ function formatSci(value: number): string {
 function submitAndWait(route: string, params: Record<string, unknown>): Promise<unknown> {
   return new Promise((resolve, reject) => {
     transport.submitTask(route, params).then(response => {
-      transport.onTaskResult(response.taskId, (p) => resolve(p.data))
-      transport.onTaskError(response.taskId, (p) => reject(new Error(p.error)))
+      // Register both listeners, but unsubscribe whichever fires first so we
+      // never leak handlers across a long session of preview/thumbnail calls.
+      // 注册两个监听器，先触发的负责清理双方，避免预览/缩略图长会话中累积泄漏。
+      let offResult: (() => void) | null = null
+      let offError: (() => void) | null = null
+      let settled = false
+      const finish = (fn: () => void): void => {
+        if (settled) return
+        settled = true
+        offResult?.()
+        offError?.()
+        fn()
+      }
+      offResult = transport.onTaskResult(response.taskId, p => finish(() => resolve(p.data)))
+      offError = transport.onTaskError(response.taskId, p => finish(() => reject(new Error(p.error))))
     }).catch(reject)
   })
 }
@@ -868,25 +881,38 @@ async function loadThumbnailPage(page?: number): Promise<void> {
       const parts = path.split(sep)
       const label = parts[parts.length - 1] || path
 
-      const result = await submitAndWait('viewer_config', {
-        action: 'preview',
-        filePath: path,
-        thumb_render_settings: buildThumbRenderSettings(),
-      })
+      try {
+        const result = await submitAndWait('viewer_config', {
+          action: 'preview',
+          filePath: path,
+          thumb_render_settings: buildThumbRenderSettings(),
+        })
 
-      const thumbData = result as { b64?: string; previewB64?: string }
-      items.push({
-        index: start + i,
-        b64: typeof thumbData?.b64 === 'string'
-          ? thumbData.b64
-          : (typeof thumbData?.previewB64 === 'string' ? thumbData.previewB64 : ''),
-        label,
-      })
+        const thumbData = result as { b64?: string; previewB64?: string }
+        // Per-item try/catch: a single unreadable/corrupt file pushes a
+        // placeholder instead of blanking the whole page. The previous
+        // blanket catch made any one failure look like "no thumbnails".
+        // 逐项捕获：单个不可读/损坏的文件仅占位，不再清空整页。
+        items.push({
+          index: start + i,
+          b64: typeof thumbData?.b64 === 'string'
+            ? thumbData.b64
+            : (typeof thumbData?.previewB64 === 'string' ? thumbData.previewB64 : ''),
+          label,
+        })
+      } catch (err) {
+        console.error(`[Integrate1d] thumbnail render failed for "${label}":`, err)
+        items.push({ index: start + i, b64: '', label })
+      }
     }
 
     thumbnailItems.value = items
-  } catch {
-    thumbnailItems.value = []
+  } catch (err) {
+    // Only catastrophic (non-render) failures reach here — keep whatever
+    // items we have rather than wiping them silently.
+    // 仅灾难性（非渲染）失败到达此处，保留已得项而非静默清空。
+    console.error('[Integrate1d] loadThumbnailPage aborted:', err)
+    if (items.length) thumbnailItems.value = items
   } finally {
     thumbLoading.value = false
   }

@@ -110,20 +110,44 @@
           <div class="pi-field">
             <label class="pi-label">{{ t('poniImporter.detectorPreset') }}</label>
             <select v-model="selectedPreset" class="pi-select">
+              <option value="Custom">{{ t('poniImporter.detectorCustom') }}</option>
               <option v-for="p in detectorPresets" :key="p.name" :value="p.name">{{ p.name }}</option>
             </select>
-            <p class="pi-field-hint">{{ t('poniImporter.detectorPresetHint') }}</p>
+            <p class="pi-field-hint">{{ isCustomDetector ? t('poniImporter.detectorCustomHint') : t('poniImporter.detectorPresetHint') }}</p>
           </div>
-          <div class="pi-field">
+
+          <!-- Preset mode: resolved pyFAI name (read-only) / 预设模式：解析出的 pyFAI 名（只读） -->
+          <div v-if="!isCustomDetector" class="pi-field">
             <label class="pi-label">{{ t('poniImporter.detectorName') }}</label>
             <input
-              v-model="createForm.detector_name"
+              :value="createForm.detector_name"
               type="text"
               class="pi-input"
-              :placeholder="t('poniImporter.detectorNamePlaceholder')"
-              :readonly="!!selectedPreset"
+              readonly
             />
           </div>
+
+          <!-- Custom mode: friendly label + array shape / 自定义模式：友好名称 + 阵列尺寸 -->
+          <template v-else>
+            <div class="pi-field">
+              <label class="pi-label">{{ t('poniImporter.detectorCustomLabel') }}</label>
+              <input
+                v-model="createForm.detector_label"
+                type="text"
+                class="pi-input"
+                :placeholder="t('poniImporter.detectorCustomPlaceholder')"
+              />
+            </div>
+            <div class="pi-field">
+              <label class="pi-label">{{ t('poniImporter.detectorShape') }}</label>
+              <div class="pi-shape-row">
+                <input v-model.number="createForm.shape_rows" type="number" class="pi-input" min="1" step="1" placeholder="rows" />
+                <span class="pi-shape-x">×</span>
+                <input v-model.number="createForm.shape_cols" type="number" class="pi-input" min="1" step="1" placeholder="cols" />
+              </div>
+              <p class="pi-field-hint">{{ t('poniImporter.detectorShapeHint') }}</p>
+            </div>
+          </template>
         </div>
       </aside>
 
@@ -155,6 +179,10 @@
                 <div class="pi-param-item">
                   <span class="pi-param-label">{{ t('poniParams.pixelSize') }}:</span>
                   <span class="pi-param-value">{{ formatValue(poniData.pixel_size, 'µm') }}</span>
+                </div>
+                <div class="pi-param-item">
+                  <span class="pi-param-label">{{ t('poniParams.detectorName') }}:</span>
+                  <span class="pi-param-value">{{ detectorDisplay }}</span>
                 </div>
                 <div class="pi-param-item">
                   <span class="pi-param-label">{{ t('poniParams.beamCenterX') }}:</span>
@@ -262,7 +290,10 @@ const createForm = reactive({
   rot1: 0,              // degrees
   rot2: 0,
   rot3: 0,
-  detector_name: '',
+  detector_name: '',     // pyFAI name (preset mode, auto-filled)
+  detector_label: '',    // friendly name (custom mode only)
+  shape_rows: null as number | null,  // custom detector rows  → max_shape[0]
+  shape_cols: null as number | null,  // custom detector cols  → max_shape[1]
 })
 
 // Unit toggles / 单位切换
@@ -357,7 +388,7 @@ const poniData = computed<PoniData | null>(() => {
   const beamYM = beamCenterToMeters(createForm.beamCenterY, beamCenterUnit.value, pixelSizeM)
 
   const DEG2RAD = Math.PI / 180
-  return {
+  const data: PoniData = {
     distance: distanceM,
     wavelength: wavelengthM,
     pixel_size: pixelSizeM,
@@ -366,8 +397,22 @@ const poniData = computed<PoniData | null>(() => {
     rot1: createForm.rot1 * DEG2RAD,
     rot2: createForm.rot2 * DEG2RAD,
     rot3: createForm.rot3 * DEG2RAD,
-    detector_name: createForm.detector_name || undefined,
   }
+  if (isCustomDetector.value) {
+    // Custom detector: pyFAI uses its generic `Detector` class, so we send
+    // the friendly name as `detector_label` (written back as a comment by
+    // the backend) and an optional array size as `detector_shape` → max_shape.
+    const label = (createForm.detector_label || '').trim()
+    if (label) data.detector_label = label
+    const r = createForm.shape_rows
+    const c = createForm.shape_cols
+    if (r != null && c != null && r > 0 && c > 0) {
+      data.detector_shape = [Math.trunc(r), Math.trunc(c)]
+    }
+  } else {
+    data.detector_name = createForm.detector_name || undefined
+  }
+  return data
 })
 
 // === Detector presets (pyFAI compatible) / 探测器预设 ===
@@ -411,6 +456,24 @@ const detectorPresets: DetectorPreset[] = [
 ]
 
 const selectedPreset = ref<string>('Pilatus 1M')
+
+// Custom detector mode: unlocked when the user picks the "Custom" option.
+// pyFAI cannot store an arbitrary detector name, so a custom detector is
+// written as the generic `Detector` class + a pixel-size config (backend),
+// with the user's friendly name preserved only as a comment label.
+const isCustomDetector = computed(() => selectedPreset.value === 'Custom')
+
+// Human-readable detector summary for the preview panel / 预览面板的探测器摘要
+const detectorDisplay = computed(() => {
+  if (isCustomDetector.value) {
+    const label = (createForm.detector_label || '').trim() || t('poniImporter.detectorCustom')
+    const r = createForm.shape_rows
+    const c = createForm.shape_cols
+    const hasShape = r != null && c != null && r > 0 && c > 0
+    return hasShape ? `${label} (${Math.trunc(r)}×${Math.trunc(c)})` : label
+  }
+  return createForm.detector_name || '—'
+})
 
 // Watch preset selection and auto-fill form / 监听预设选择并自动填充表单
 watch(selectedPreset, (presetName) => {
@@ -475,10 +538,9 @@ function formatBeamCenter(valueMeters: number): string {
 
 async function doExport(): Promise<void> {
   if (!poniData.value) return
-  // Final pre-export validation: a detector name is required so the
-  // downstream pyFAI loader can resolve a geometry. The form already
-  // defaults to a preset, but defend against manual edits.
-  if (!poniData.value.detector_name) {
+  // Custom mode always resolves to a valid generic detector on the backend;
+  // preset mode still requires the auto-filled pyFAI name as a sanity guard.
+  if (!isCustomDetector.value && !poniData.value.detector_name) {
     toast.push({
       title: t('poniImporter.errorTitle'),
       message: t('poniImporter.detectorRequired'),
@@ -660,6 +722,24 @@ async function doExport(): Promise<void> {
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: 0.875rem;
+}
+
+/* Two-input row for the custom detector shape / 自定义探测器尺寸双输入行 */
+.pi-shape-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pi-shape-x {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+}
+
+.pi-shape-row .pi-input {
+  flex: 1;
+  min-width: 0;
 }
 
 /* Label row with inline unit toggle / 标签行含内联单位切换 */

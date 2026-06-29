@@ -1103,7 +1103,11 @@ async def handle_integrate_azimuth(
             kw: dict[str, Any] = {
                 "data": data,
                 "npt": opts.get("npt", 360),
+                "npt_rad": opts.get("npt_rad", 100),
                 "unit": opts.get("unit", "chi_deg"),
+                # radial_unit 决定 radial_range 的单位。pyFAI 默认为 q_nm^-1，
+                # 若不显式传入，用户按 q_A^-1 / 2th_deg / r_mm 填的范围会被误当作 nm^-1。
+                "radial_unit": opts.get("radial_unit", "q_nm^-1"),
                 "mask": mask.astype(np.uint8),
                 "method": opts.get("method", "splitpixel"),
             }
@@ -3793,19 +3797,24 @@ async def _handle_poni_importer_export(
     if not poni_data:
         return {"status": "error", "message": "Missing poni_data"}
 
-    # PONI files require a `Detector:` line — without one, pyFAI's
-    # AzimuthalIntegrator.load() silently falls back to a generic Detector
-    # and drops the user's pixel size. The frontend normally guarantees
-    # this is set (it defaults to a preset), but defend against direct IPC
-    # calls or future code paths that skip the form.
+    # export_to_poni always emits a valid `Detector:` line: a registered
+    # pyFAI name when one is given, otherwise the generic `Detector` class
+    # configured with pixel1/pixel2 (+ optional max_shape). The only hard
+    # precondition is a usable pixel size for that generic fallback, so we
+    # validate that instead of requiring a preset detector name — this lets
+    # users export a custom (non-registry) detector from the PONI importer.
     if export_format == "poni":
-        det_name = poni_data.get("detector_name")
-        if not det_name or not str(det_name).strip():
+        pixel_size = poni_data.get("pixel_size")
+        try:
+            pixel_ok = pixel_size is not None and float(pixel_size) > 0
+        except (TypeError, ValueError):
+            pixel_ok = False
+        if not pixel_ok:
             return {
                 "status": "error",
                 "message": (
-                    "Missing detector_name — pick a detector preset in the "
-                    "PONI importer before exporting a .poni file."
+                    "Missing or invalid pixel_size — enter a pixel size in "
+                    "the PONI importer before exporting a .poni file."
                 ),
             }
 
