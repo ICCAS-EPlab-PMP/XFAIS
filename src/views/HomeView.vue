@@ -157,17 +157,18 @@
       <h2>{{ t('home.acknowledgments.title') }}</h2>
       <p>
         {{ t('home.acknowledgments.thanks') }}
+        <a href="https://zcode.z.ai/" target="_blank" rel="noopener">Z-code</a>、
         <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener">opencode</a>、
         <a href="https://github.com/code-yeongyu/oh-my-openagent" target="_blank" rel="noopener">oh-my-openagent</a>、
         <a href="https://github.com/esengine/DeepSeek-Reasonix" target="_blank" rel="noopener">Reasonix</a>
       </p>
       <p>
         {{ t('home.acknowledgments.models') }}
-        <a href="https://bigmodel.cn/" target="_blank" rel="noopener">GLM-5.1</a> /
-        <a href="https://www.deepseek.com/" target="_blank" rel="noopener">DeepSeek V4</a> /
-        <a href="https://www.minimaxi.com/" target="_blank" rel="noopener">MiniMax 2.7</a> /
-        <a href="https://tongyi.aliyun.com/" target="_blank" rel="noopener">Qwen 3.6 Plus</a> /
-        <a href="https://platform.xiaomimimo.com/docs/zh-CN/welcome" target="_blank" rel="noopener">MiMo V2.5</a>
+        <a href="https://bigmodel.cn/" target="_blank" rel="noopener">GLM 系列</a> /
+        <a href="https://www.deepseek.com/" target="_blank" rel="noopener">DeepSeek 系列</a> /
+        <a href="https://www.minimaxi.com/" target="_blank" rel="noopener">Minimax 系列</a> /
+        <a href="https://tongyi.aliyun.com/" target="_blank" rel="noopener">Qwen 系列</a> /
+        <a href="https://platform.xiaomimimo.com/docs/zh-CN/welcome" target="_blank" rel="noopener">MiMO 系列</a>
       </p>
       <p>
         {{ t('home.acknowledgments.developer') }}
@@ -190,7 +191,7 @@ import { useToast } from '@/lib/toast'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const toast = useToast()
 const transport = useTransport()
 
@@ -241,14 +242,9 @@ const imageCards: FeatureCard[] = [
     icon: 'M'
   },
   {
-    key: 'h5convert',
-    route: '/workspace/h5convert',
-    icon: '⇄'
-  },
-  {
-    key: 'h5extract',
-    route: '/workspace/h5-extract',
-    icon: '⤓'
+    key: 'h5toolkit',
+    route: '/workspace/h5-toolkit',
+    icon: '⬗'
   }
 ]
 
@@ -258,6 +254,11 @@ const bgSubtractCards: FeatureCard[] = [
     key: 'bgSubtract',
     route: '/workspace/bg-subtract',
     icon: '⊖'
+  },
+  {
+    key: 'imageMath',
+    route: '/workspace/image-math',
+    icon: '⊕'
   }
 ]
 
@@ -296,6 +297,33 @@ const showLogDirectory = async (): Promise<void> => {
 const REPO_OWNER = 'ICCAS-EPlab-PMP'
 const REPO_NAME = 'XFAIS'
 const RELEASES_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`
+// 中文模式下载链接（直链 zip），英文模式使用 GitHub Release 页面
+const ZH_DOWNLOAD_URL = 'https://www.polymcrystal.com/download/XFAIS-latest.zip'
+
+function pickDownloadUrl(releaseUrl: string): string {
+  return locale.value === 'en' ? releaseUrl : ZH_DOWNLOAD_URL
+}
+
+async function copyToClipboard(text: string): Promise<void> {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+    // Fallback for non-secure contexts (e.g. file:// / packaged Electron renderer)
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.focus()
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  } catch {
+    /* ignore clipboard failures — the URL is still shown in the toast */
+  }
+}
 
 async function checkUpdate(): Promise<void> {
   toast.push({
@@ -319,10 +347,14 @@ async function checkUpdate(): Promise<void> {
     const latestVersion = latestTag.replace(/^v/, '')
 
     if (latestVersion && latestVersion !== currentVersion) {
-      const downloadUrl = data.html_url ?? `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest`
+      const fallbackReleaseUrl = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest`
+      const releaseUrl = data.html_url ?? fallbackReleaseUrl
+      const downloadUrl = pickDownloadUrl(releaseUrl)
+      // 成功检查到新版本时自动复制下载链接到剪贴板
+      await copyToClipboard(downloadUrl)
       toast.push({
         title: t('home.update.newVersionTitle'),
-        message: `${t('home.update.newVersion', { current: currentVersion, latest: latestVersion })}\n${downloadUrl}`,
+        message: `${t('home.update.newVersion', { current: currentVersion, latest: latestVersion })}\n${downloadUrl}\n${t('home.update.linkCopied')}`,
         tone: 'success',
       })
     } else if (latestVersion) {

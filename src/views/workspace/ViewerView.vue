@@ -259,11 +259,12 @@
             v-if="pngExportMode === 'single'"
             type="button"
             class="vw-export-btn"
-            :disabled="!fullImageB64 || pngExporting"
+            :disabled="!fullImageB64 || pngExporting || pixelInfoMode"
             @click="handleExportSinglePng"
           >
             {{ pngExporting ? t('viewer.exporting') : t('viewer.exportSingle') }}
           </button>
+          <p v-if="pixelInfoMode" class="vw-hint">{{ t('viewer.exportDisabledByPixelMode') }}</p>
 
           <template v-if="pngExportMode === 'batch'">
             <FileDialogButton
@@ -275,7 +276,7 @@
             <button
               type="button"
               class="vw-export-btn"
-              :disabled="!pngBatchOutputFolder || selectedFiles.length === 0 || pngExporting"
+              :disabled="!pngBatchOutputFolder || selectedFiles.length === 0 || pngExporting || pixelInfoMode"
               @click="handleExportBatchPng"
             >
               {{ pngExporting ? t('viewer.exporting') : t('viewer.exportBatch') }}
@@ -286,6 +287,54 @@
               </div>
               <span class="vw-export-progress-text">{{ pngExportProgress }} / {{ pngExportTotal }}</span>
             </div>
+          </template>
+        </div>
+
+        <!-- Pixel-info mode / 像素信息读取模式 -->
+        <div class="vw-card">
+          <h3 class="vw-card-title">{{ t('viewer.pixelInfoMode') }}</h3>
+          <label class="vw-toggle" :title="t('viewer.pixelInfoHint')">
+            <input v-model="pixelInfoMode" type="checkbox" :disabled="pngExporting" />
+            <span>{{ t('viewer.pixelInfoEnable') }}</span>
+          </label>
+          <p v-if="pngExporting" class="vw-hint">{{ t('viewer.pixelInfoDisabledByExport') }}</p>
+
+          <template v-if="pixelInfoMode">
+            <!-- Geometry (PONI file / manual) / 几何参数（PONI 文件 / 手动） -->
+            <GeometryForm v-model="geometry" />
+
+            <!-- Resolved beam center (so the user can verify PONI was applied) / 解析的光束中心（便于确认 PONI 已生效） -->
+            <div v-if="resolvedBeamCenter" class="vw-field">
+              <span class="vw-label">{{ t('viewer.beamCenter') }}:</span>
+              <span class="vw-meta-value">({{ resolvedBeamCenter.x.toFixed(1) }}, {{ resolvedBeamCenter.y.toFixed(1) }})</span>
+            </div>
+
+            <!-- q-range ring / q 范围圆环 -->
+            <div class="vw-field">
+              <label class="vw-toggle">
+                <input v-model="ringEnabled" type="checkbox" />
+                <span>{{ t('viewer.showRing') }}</span>
+              </label>
+            </div>
+            <!-- Beam-center crosshair (yellow) / 光斑中心十字（黄色） -->
+            <div class="vw-field">
+              <label class="vw-toggle">
+                <input v-model="beamCenterVisible" type="checkbox" />
+                <span>{{ t('viewer.showBeamCenter') }}</span>
+              </label>
+            </div>
+            <div v-if="ringEnabled" class="vw-grid-2">
+              <label class="vw-field">
+                <span class="vw-label">q min (Å⁻¹)</span>
+                <input v-model.number="ringMin" type="number" class="vw-input" step="0.05" min="0" />
+              </label>
+              <label class="vw-field">
+                <span class="vw-label">q max (Å⁻¹)</span>
+                <input v-model.number="ringMax" type="number" class="vw-input" step="0.05" min="0" />
+              </label>
+            </div>
+
+            <p class="vw-hint">{{ t('viewer.pixelInfoClickHint') }}</p>
           </template>
         </div>
       </aside>
@@ -326,6 +375,10 @@
                 :colorbar-gradient="colorbarGradient"
                 :colorbar-min-label="colorbarMinLabel"
                 :colorbar-max-label="colorbarMaxLabel"
+                :overlays="imageOverlays"
+                :data-width="imageSize?.width"
+                :data-height="imageSize?.height"
+                @image:click="onImageClick"
               />
               <div v-if="isLoadingFullRes && previewB64" class="vw-fullres-loading">
                 <span>{{ t('viewer.loadingFullRes') }}</span>
@@ -363,6 +416,35 @@
                   <span class="vw-meta-value">Ch{{ selectedChannel }}</span>
                 </div>
               </div>
+            </div>
+
+            <!-- Pixel info panel (below stats, only in pixel-info mode) / 像素信息面板（统计下方，仅像素信息模式） -->
+            <div v-if="pixelInfoMode" class="vw-pixel-info" :data-testid="testIds.viewerStats">
+              <h4 class="vw-stats-title">{{ t('viewer.pixelInfoMode') }}</h4>
+              <div v-if="pixelInfoLoading" class="vw-hint">{{ t('viewer.pixelInfoLoading') }}</div>
+              <dl v-else-if="pixelInfo" class="vw-stats-list">
+                <div class="vw-stat-item">
+                  <dt>{{ t('viewer.pixelInfoQ') }}</dt>
+                  <dd>{{ pixelInfo.q.toFixed(4) }} Å⁻¹</dd>
+                </div>
+                <div class="vw-stat-item">
+                  <dt>{{ t('viewer.pixelInfo2theta') }}</dt>
+                  <dd>{{ pixelInfo.twoTheta.toFixed(4) }}°</dd>
+                </div>
+                <div class="vw-stat-item">
+                  <dt>{{ t('viewer.pixelInfoChi') }}</dt>
+                  <dd>{{ pixelInfo.chi.toFixed(2) }}°</dd>
+                </div>
+                <div class="vw-stat-item">
+                  <dt>{{ t('viewer.pixelInfoI') }}</dt>
+                  <dd>{{ formatSci(pixelInfo.intensity) }}</dd>
+                </div>
+                <div class="vw-stat-item">
+                  <dt>pixel (x, y)</dt>
+                  <dd>({{ pixelInfo.pixelX }}, {{ pixelInfo.pixelY }})</dd>
+                </div>
+              </dl>
+              <p v-else class="vw-hint">{{ t('viewer.pixelInfoClickHint') }}</p>
             </div>
           </div>
 
@@ -445,6 +527,9 @@ import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ThumbnailStrip from '@/components/business/ThumbnailStrip.vue'
 import type { ThumbnailItem } from '@/components/business/ThumbnailStrip.vue'
 import ImagePreview from '@/components/charts/ImagePreview.vue'
+import type { Overlay } from '@/components/charts/ImagePreview.vue'
+import GeometryForm from '@/components/business/GeometryForm.vue'
+import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 
 // === Types / 类型定义 ===
 
@@ -646,6 +731,11 @@ function applyFrameResult(result: ViewerLoadResult): void {
   if (result.metadata) {
     if (Array.isArray(result.metadata.h5Datasets)) {
       h5Datasets.value = result.metadata.h5Datasets
+    }
+    // Capture natural image size for overlay sizing (pixel-info ring mask).
+    // 捕获图像自然尺寸，用于叠加（像素信息圆环遮罩）尺寸。
+    if (typeof result.metadata.width === 'number' && typeof result.metadata.height === 'number') {
+      imageSize.value = { width: result.metadata.width, height: result.metadata.height }
     }
     if (typeof result.metadata.selectedDataset === 'string' && result.metadata.selectedDataset) {
       selectedDataset.value = result.metadata.selectedDataset
@@ -1072,6 +1162,202 @@ function submitAndWait(route: string, params: Record<string, unknown>): Promise<
   })
 }
 
+// === Pixel-info mode state / 像素信息读取模式状态 ===
+// MUST be declared before the helper functions / computed / watches below that
+// reference these refs (block-scoped `const` TDZ). Mirrors IntegrateAzimuthView.
+// 必须在下方引用这些 ref 的辅助函数/computed/watch 之前声明（块级 const 暂存死区）。
+// 与 IntegrateAzimuthView 一致。
+const pixelInfoMode = ref(false)
+const geometry = ref<GeometryParams>({
+  pixel1: 172, pixel2: 172, distance: 200, wavelength: 1.5418, centerX: 512, centerY: 512,
+})
+const resolvedBeamCenter = ref<{ x: number; y: number } | null>(null)
+/** q-range ring bounds (Å⁻¹). / q 范围圆环边界（Å⁻¹）。 */
+const ringMin = ref(0)
+const ringMax = ref(1.5)
+const ringEnabled = ref(true)
+/** Show the yellow beam-center crosshair (default on). / 显示黄色光斑中心十字（默认开）。 */
+const beamCenterVisible = ref(true)
+const azimuthMaskSrc = ref<string | null>(null)
+const azimuthMaskSize = ref<{ width: number; height: number } | null>(null)
+interface PixelInfoResult { q: number; twoTheta: number; chi: number; intensity: number; pixelX: number; pixelY: number; beamCenterX?: number; beamCenterY?: number }
+const pixelInfo = ref<PixelInfoResult | null>(null)
+const pixelInfoLoading = ref(false)
+let cleanupRingBinary: (() => void) | null = null
+let cleanupRingResult: (() => void) | null = null
+let cleanupRingError: (() => void) | null = null
+let ringDebounceTimer: ReturnType<typeof setTimeout> | undefined
+/** Image natural size captured for overlay sizing / 用于叠加尺寸的图像自然尺寸。 */
+const imageSize = ref<{ width: number; height: number } | null>(null)
+
+// === Pixel-info mode helpers / 像素信息模式辅助函数 ===
+
+function buildGeometryPayload(): Record<string, unknown> {
+  return {
+    poniPath: geometry.value.poniPath ?? undefined,
+    pixel1: geometry.value.pixel1,
+    pixel2: geometry.value.pixel2,
+    distance: geometry.value.distance,
+    wavelength: geometry.value.wavelength,
+    centerX: geometry.value.centerX,
+    centerY: geometry.value.centerY,
+  }
+}
+
+async function resolveBeamCenter(): Promise<void> {
+  try {
+    const result = await submitAndWait('viewer_config', {
+      action: 'resolve_geometry_center',
+      geometry: buildGeometryPayload(),
+    })
+    const center = result as { centerX?: number; centerY?: number }
+    if (typeof center.centerX === 'number' && typeof center.centerY === 'number') {
+      resolvedBeamCenter.value = { x: center.centerX, y: center.centerY }
+      return
+    }
+  } catch {
+    // Fallback to current form values / 失败时回退到当前表单值
+  }
+  resolvedBeamCenter.value = { x: geometry.value.centerX, y: geometry.value.centerY }
+}
+
+function cleanupRingListeners(): void {
+  cleanupRingBinary?.()
+  cleanupRingBinary = null
+  cleanupRingResult?.()
+  cleanupRingResult = null
+  cleanupRingError?.()
+  cleanupRingError = null
+}
+
+function revokeRingSrc(): void {
+  if (azimuthMaskSrc.value?.startsWith('blob:')) {
+    URL.revokeObjectURL(azimuthMaskSrc.value)
+  }
+  azimuthMaskSrc.value = null
+}
+
+/**
+ * Request the q-range ring mask PNG (reuses the azimuth_mask backend action)
+ * and expose it via azimuthMaskSrc for the imageOverlays computed.
+ * 请求 q 范围圆环遮罩 PNG（复用 azimuth_mask 后端 action），
+ * 并通过 azimuthMaskSrc 暴露给 imageOverlays 计算属性。
+ */
+async function loadRingMask(): Promise<void> {
+  if (!pixelInfoMode.value || !ringEnabled.value || !filePath.value || !imageSize.value) {
+    revokeRingSrc()
+    azimuthMaskSize.value = null
+    return
+  }
+  if (!(ringMax.value > ringMin.value)) return
+
+  cleanupRingListeners()
+
+  try {
+    const response = await transport.submitTask('viewer_config', {
+      action: 'azimuth_mask',
+      filePath: filePath.value,
+      geometry: buildGeometryPayload(),
+      radial_unit: 'q_A^-1',
+      radial_min: ringMin.value,
+      radial_max: ringMax.value,
+    })
+
+    cleanupRingBinary = transport.onTaskBinaryData(response.taskId, (payload) => {
+      if (!payload.data) return
+      revokeRingSrc()
+      const blob = new Blob([payload.data], { type: payload.mime || 'image/png' })
+      azimuthMaskSrc.value = URL.createObjectURL(blob)
+      if (imageSize.value) {
+        azimuthMaskSize.value = { width: imageSize.value.width, height: imageSize.value.height }
+      }
+    })
+
+    cleanupRingError = transport.onTaskError(response.taskId, () => {
+      revokeRingSrc()
+    })
+  } catch {
+    revokeRingSrc()
+  }
+}
+
+/** Debounced ring refresh so numeric typing doesn't fire a request per keystroke. / 防抖刷新圆环。 */
+function scheduleRingMask(): void {
+  if (ringDebounceTimer) clearTimeout(ringDebounceTimer)
+  ringDebounceTimer = setTimeout(() => {
+    ringDebounceTimer = undefined
+    void loadRingMask()
+  }, 300)
+}
+
+/** Read (q, 2θ, chi, I) at the clicked pixel via the backend pixel_info action. / 通过后端 pixel_info 读取点击像素的 (q, 2θ, chi, I)。 */
+async function onImageClick(e: { pixelX: number; pixelY: number }): Promise<void> {
+  if (!pixelInfoMode.value || !filePath.value) return
+  pixelInfoLoading.value = true
+  try {
+    const result = await submitAndWait('viewer_config', {
+      action: 'pixel_info',
+      filePath: filePath.value,
+      geometry: buildGeometryPayload(),
+      pixelX: e.pixelX,
+      pixelY: e.pixelY,
+      frame: currentFrame.value,
+      dataset: selectedDataset.value || undefined,
+      channel: channelCount.value > 1 ? selectedChannel.value : undefined,
+    }) as PixelInfoResult | { status?: string; message?: string }
+    if (result && typeof (result as PixelInfoResult).q === 'number') {
+      const r = result as PixelInfoResult
+      pixelInfo.value = r
+      // pixel_info returns the beam center computed from the same geometry as
+      // q/chi, so use it to place the yellow crosshair — a reliable source that
+      // doesn't depend on a separate resolve_geometry_center round-trip.
+      // pixel_info 返回的光束中心与 q/chi 同源，用它来放置黄色十字 —— 可靠来源，
+      // 不依赖单独的 resolve_geometry_center 往返请求。
+      if (typeof r.beamCenterX === 'number' && typeof r.beamCenterY === 'number') {
+        resolvedBeamCenter.value = { x: r.beamCenterX, y: r.beamCenterY }
+      }
+    } else if (result && (result as { status?: string }).status === 'error') {
+      toast.push({
+        title: t('viewer.pixelInfoMode'),
+        message: (result as { message?: string }).message ?? t('viewer.pixelInfoError'),
+        tone: 'error',
+      })
+    }
+  } catch (err) {
+    toast.push({
+      title: t('viewer.pixelInfoMode'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    pixelInfoLoading.value = false
+  }
+}
+
+/** Image overlays: ring mask (under) + beam-center crosshair (over). / 图像叠加：圆环遮罩（下）+ 光束中心十字（上）。 */
+const imageOverlays = computed<Overlay[]>(() => {
+  if (!pixelInfoMode.value) return []
+  const overlays: Overlay[] = []
+  const size = imageSize.value
+  if (azimuthMaskSrc.value && azimuthMaskSize.value && size) {
+    overlays.push({
+      type: 'imageMask',
+      src: azimuthMaskSrc.value,
+      width: azimuthMaskSize.value.width || size.width,
+      height: azimuthMaskSize.value.height || size.height,
+    })
+  }
+  if (beamCenterVisible.value && resolvedBeamCenter.value) {
+    overlays.push({
+      type: 'beamCenter',
+      x: resolvedBeamCenter.value.x,
+      y: resolvedBeamCenter.value.y,
+      color: '#eab308', // yellow / 黄色
+    })
+  }
+  return overlays
+})
+
 // === File handling / 文件处理 ===
 
 async function handleFileSelected(path: string | null, resetBatch = true): Promise<void> {
@@ -1345,6 +1631,18 @@ const pngBatchOutputFolder = ref<string | null>(null)
 const pngExportProgress = ref(0)
 const pngExportTotal = ref(0)
 
+// Resolve beam center + refresh ring when geometry / range / frame / file change.
+// These watches must sit after the refs above are declared.
+// 几何/范围/帧/文件变化时解析光束中心并刷新圆环。这些 watch 必须位于上述 ref 声明之后。
+watch(geometry, () => { void resolveBeamCenter() }, { deep: true })
+watch(
+  [pixelInfoMode, ringEnabled, ringMin, ringMax, resolvedBeamCenter, filePath, currentFrame],
+  () => { scheduleRingMask() },
+)
+watch(pixelInfoMode, (on) => {
+  if (on && !resolvedBeamCenter.value) void resolveBeamCenter()
+})
+
 async function handleExportSinglePng(): Promise<void> {
   if (!filePath.value || pngExporting.value) return
 
@@ -1531,9 +1829,15 @@ onUnmounted(() => {
     clearTimeout(rerenderTimer)
     rerenderTimer = null
   }
+  if (ringDebounceTimer) {
+    clearTimeout(ringDebounceTimer)
+    ringDebounceTimer = undefined
+  }
   if (fullImageB64.value?.startsWith('blob:')) {
     URL.revokeObjectURL(fullImageB64.value)
   }
+  revokeRingSrc()
+  cleanupRingListeners()
   cleanupListeners()
 })
 </script>
@@ -1652,6 +1956,24 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.vw-grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  /* Allow columns to shrink below min-content so two inputs fit side-by-side
+     in a narrow sidebar. / 允许列缩小到 min-content 以下，使两个输入框在窄侧栏中并排。 */
+  min-width: 0;
+}
+
+.vw-grid-2 > .vw-field {
+  min-width: 0;
+}
+
+.vw-grid-2 .vw-input {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .vw-label {
@@ -1961,6 +2283,18 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
   align-self: start;
+}
+
+/* Pixel-info panel (sits under stats in pixel-info mode) / 像素信息面板（像素信息模式下位于统计下方） */
+.vw-pixel-info {
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-self: start;
+  background: var(--primary-bg, transparent);
 }
 
 .vw-stats-title {

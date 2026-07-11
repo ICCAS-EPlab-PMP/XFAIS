@@ -249,7 +249,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         output_path: asString(params.output_path) ?? asString(params.outputPath),
         batchCachePath: asString(params.batchCachePath),
         batch_cache_path: asString(params.batchCachePath) ?? asString(params.batch_cache_path),
-        resultIndex: typeof params.resultIndex === 'number' ? params.resultIndex : params.resultIndex,
+        resultIndex: typeof params.resultIndex === 'number' ? params.resultIndex : params.result_index,
         result_index: typeof params.resultIndex === 'number' ? params.resultIndex : params.result_index,
         thumbnailOnly: typeof params.thumbnailOnly === 'boolean' ? params.thumbnailOnly : undefined,
         thumbnail_only: typeof params.thumbnailOnly === 'boolean' ? params.thumbnailOnly : (typeof params.thumbnail_only === 'boolean' ? params.thumbnail_only : undefined),
@@ -263,6 +263,26 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         thumb_render_settings: params.thumb_render_settings,
         start: params.start,
         count: params.count,
+        // azimuth_mask overlay fields (passed through verbatim; consumed only
+        // by the viewer_config 'azimuth_mask' action). / 方位角遮罩叠加字段
+        // （原样透传，仅被 viewer_config 的 'azimuth_mask' action 消费）。
+        azimuth_min: typeof params.azimuth_min === 'number' ? params.azimuth_min
+          : (typeof params.azimuthMin === 'number' ? params.azimuthMin : undefined),
+        azimuth_max: typeof params.azimuth_max === 'number' ? params.azimuth_max
+          : (typeof params.azimuthMax === 'number' ? params.azimuthMax : undefined),
+        radial_unit: asString(params.radial_unit) ?? asString(params.radialUnit),
+        radial_min: typeof params.radial_min === 'number' ? params.radial_min
+          : (typeof params.radialMin === 'number' ? params.radialMin : undefined),
+        radial_max: typeof params.radial_max === 'number' ? params.radial_max
+          : (typeof params.radialMax === 'number' ? params.radialMax : undefined),
+        // pixel_info overlay fields (passed through verbatim; consumed only by
+        // the viewer_config 'pixel_info' action). / 像素信息字段（原样透传，
+        // 仅被 viewer_config 的 'pixel_info' action 消费）。
+        pixelX: typeof params.pixelX === 'number' ? params.pixelX
+          : (typeof params.pixel_x === 'number' ? params.pixel_x : undefined),
+        pixelY: typeof params.pixelY === 'number' ? params.pixelY
+          : (typeof params.pixel_y === 'number' ? params.pixel_y : undefined),
+        unit: asString(params.unit),
       }
     }
     case 'mask_maker': {

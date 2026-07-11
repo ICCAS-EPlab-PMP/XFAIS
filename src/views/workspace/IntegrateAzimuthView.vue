@@ -26,6 +26,10 @@
         <!-- Radial range / 径向范围 -->
         <fieldset class="az-fieldset">
           <legend class="az-legend">{{ t('integrateAzimuth.radialRange.title') }}</legend>
+          <label class="az-toggle-label" :title="t('integrateAzimuth.radialRange.overlayHint')">
+            <input v-model="radialOverlayEnabled" type="checkbox" />
+            <span>{{ t('integrateAzimuth.radialRange.overlayToggle') }}</span>
+          </label>
           <div class="az-grid">
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.radialRange.unit') }}</span>
@@ -266,7 +270,7 @@
               <div class="az-preview-image">
                 <ImagePreview
                   :image-b64="previewB64"
-                  :overlays="beamCenterOverlay"
+                  :overlays="imageOverlays"
                   :show-colorbar="true"
                   :colorbar-gradient="colorbarGradient"
                   :colorbar-min-label="colorbarMinLabel"
@@ -518,6 +522,8 @@ const dropEmptyBins = ref(true)
 /** Azimuth integration range in degrees. Default -180..180 = full 360°. */
 const azimuthMin = ref(-180)
 const azimuthMax = ref(180)
+/** Show a gray overlay ring for the selected radial (qmin–qmax) range on the preview. / 在预览图上为所选径向范围（qmin–qmax）显示灰色圆环蒙版。 */
+const radialOverlayEnabled = ref(true)
 
 const filePath = ref<string | null>(null)
 
@@ -672,12 +678,40 @@ const colorbarMaxLabel = computed(() => {
     : autoContrast.value.autoMax.toExponential(3)
 })
 
-const beamCenterOverlay = computed<Overlay[]>(() => {
-  if (!resolvedBeamCenter.value || !previewImageSize.value) return []
-  const px = resolvedBeamCenter.value.x
-  const py = resolvedBeamCenter.value.y
-  if (!Number.isFinite(px) || !Number.isFinite(py)) return []
-  return [{ type: 'beamCenter', x: px, y: py }]
+/** Azimuth-range overlay mask PNG (blob URL), recomputed on range/geometry change. / 方位角范围叠加遮罩 PNG（blob URL），随范围/几何变化重新计算。 */
+const azimuthMaskSrc = ref<string | null>(null)
+const azimuthMaskSize = ref<{ width: number; height: number } | null>(null)
+const azimuthMaskLoading = ref(false)
+let cleanupMaskBinary: (() => void) | null = null
+let cleanupMaskResult: (() => void) | null = null
+let cleanupMaskError: (() => void) | null = null
+let maskDebounceTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Image overlays: optional azimuth-range mask (drawn first, under the crosshair)
+ * + the beam-center crosshair. Modeled on IntegrateCakeView.imageOverlays.
+ * 图像叠加：可选的方位角范围遮罩（先绘制，位于十字准线之下）+ 光束中心十字准线。
+ * 参考 IntegrateCakeView.imageOverlays。
+ */
+const imageOverlays = computed<Overlay[]>(() => {
+  const overlays: Overlay[] = []
+  const size = previewImageSize.value
+  if (radialOverlayEnabled.value && azimuthMaskSrc.value && azimuthMaskSize.value && size) {
+    overlays.push({
+      type: 'imageMask',
+      src: azimuthMaskSrc.value,
+      width: azimuthMaskSize.value.width || size.origWidth,
+      height: azimuthMaskSize.value.height || size.origHeight,
+    })
+  }
+  if (resolvedBeamCenter.value && size) {
+    const px = resolvedBeamCenter.value.x
+    const py = resolvedBeamCenter.value.y
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      overlays.push({ type: 'beamCenter', x: px, y: py })
+    }
+  }
+  return overlays
 })
 
 const beamCenterLabel = computed(() => {
@@ -885,6 +919,9 @@ async function loadPreview(path: string): Promise<void> {
       }
 
       previewLoading.value = false
+      // Image is loaded and its size is known — refresh the azimuth overlay.
+      // 图像已加载且尺寸已知 —— 刷新方位角叠加。
+      scheduleAzimuthMask()
     })
 
     cleanupPreviewError = transport.onTaskError(response.taskId, (payload) => {
@@ -935,6 +972,107 @@ function cleanupPreviewListeners(): void {
   cleanupPreviewError?.()
   cleanupPreviewError = null
 }
+
+// ── Azimuth-range overlay mask / 方位角范围叠加遮罩 ──
+
+function cleanupMaskListeners(): void {
+  cleanupMaskBinary?.()
+  cleanupMaskBinary = null
+  cleanupMaskResult?.()
+  cleanupMaskResult = null
+  cleanupMaskError?.()
+  cleanupMaskError = null
+}
+
+function revokeMaskSrc(): void {
+  if (azimuthMaskSrc.value?.startsWith('blob:')) {
+    URL.revokeObjectURL(azimuthMaskSrc.value)
+  }
+  azimuthMaskSrc.value = null
+}
+
+/**
+ * Request a per-pixel chi-mask PNG for the current azimuth/radial range from the
+ * backend (viewer_config action 'azimuth_mask'), and expose it via
+ * azimuthMaskSrc for the imageOverlays computed. Debounced by the caller.
+ * 向后端（viewer_config 的 'azimuth_mask'）请求当前方位角/径向范围的逐像素 chi 遮罩
+ * PNG，并通过 azimuthMaskSrc 暴露给 imageOverlays 计算属性。由调用方防抖。
+ */
+async function loadAzimuthMask(): Promise<void> {
+  // Need the overlay enabled, a geometry, a loaded image (for shape), and the
+  // beam center resolved.
+  // 需要启用开关、几何参数、已加载图像（用于获取形状）以及已解析的光束中心。
+  if (!radialOverlayEnabled.value) {
+    revokeMaskSrc()
+    azimuthMaskSize.value = null
+    return
+  }
+  if (!previewExpanded.value || !activeFilePath.value || !previewImageSize.value) return
+  if (azimuthValidationError.value || radialValidationError.value) return
+
+  cleanupMaskListeners()
+  azimuthMaskLoading.value = true
+
+  try {
+    const response = await transport.submitTask('viewer_config', {
+      action: 'azimuth_mask',
+      filePath: activeFilePath.value,
+      geometry: buildGeometryPayload(),
+      azimuth_min: azimuthMin.value,
+      azimuth_max: azimuthMax.value,
+      radial_unit: radialUnit.value,
+      radial_min: radialMin.value,
+      radial_max: radialMax.value,
+    })
+
+    cleanupMaskBinary = transport.onTaskBinaryData(response.taskId, (payload) => {
+      if (!payload.data) return
+      revokeMaskSrc()
+      const blob = new Blob([payload.data], { type: payload.mime || 'image/png' })
+      azimuthMaskSrc.value = URL.createObjectURL(blob)
+      const size = previewImageSize.value
+      if (size) {
+        azimuthMaskSize.value = { width: size.origWidth, height: size.origHeight }
+      }
+      azimuthMaskLoading.value = false
+    })
+
+    cleanupMaskResult = transport.onTaskResult(response.taskId, (payload) => {
+      const data = payload.data as { status?: string; message?: string } | undefined
+      if (data?.status === 'error') {
+        azimuthMaskLoading.value = false
+        revokeMaskSrc()
+        toast.push({
+          title: t('integrateAzimuth.title'),
+          message: data.message ?? t('integrateAzimuth.azimuthRange.overlayError'),
+          tone: 'error',
+        })
+      }
+    })
+
+    cleanupMaskError = transport.onTaskError(response.taskId, () => {
+      azimuthMaskLoading.value = false
+    })
+  } catch {
+    azimuthMaskLoading.value = false
+  }
+}
+
+/** Debounced wrapper so rapid numeric typing doesn't fire a request per keystroke. / 防抖包装，避免数字输入逐键触发请求。 */
+function scheduleAzimuthMask(): void {
+  if (maskDebounceTimer) clearTimeout(maskDebounceTimer)
+  maskDebounceTimer = setTimeout(() => {
+    maskDebounceTimer = undefined
+    void loadAzimuthMask()
+  }, 300)
+}
+
+// Recompute the overlay when the selection, geometry, or toggle changes (debounced).
+// 选择范围、几何参数或开关变化时重新计算叠加（防抖）。
+watch(
+  [radialOverlayEnabled, azimuthMin, azimuthMax, radialMin, radialMax, radialUnit, resolvedBeamCenter, activeFilePath],
+  scheduleAzimuthMask,
+)
 
 // ── Thumbnail loading / 缩略图加载 ──
 
@@ -1284,6 +1422,12 @@ onUnmounted(() => {
   if (previewB64.value?.startsWith('blob:')) {
     URL.revokeObjectURL(previewB64.value)
   }
+  if (maskDebounceTimer) {
+    clearTimeout(maskDebounceTimer)
+    maskDebounceTimer = undefined
+  }
+  revokeMaskSrc()
+  cleanupMaskListeners()
   cleanupPreviewListeners()
 })
 </script>

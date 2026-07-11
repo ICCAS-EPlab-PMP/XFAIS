@@ -70,6 +70,8 @@ export interface BeamCenterOverlay {
   type: 'beamCenter'
   x: number
   y: number
+  /** Crosshair color (CSS). Defaults to red; pass e.g. '#eab308' for yellow. / 十字准线颜色（CSS）。默认红色；如 '#eab308' 为黄色。 */
+  color?: string
 }
 
 export interface SectorBoundaryOverlay {
@@ -80,7 +82,15 @@ export interface SectorBoundaryOverlay {
   radius?: number
 }
 
-export type Overlay = BeamCenterOverlay | SectorBoundaryOverlay
+export interface ImageMaskOverlay {
+  type: 'imageMask'
+  /** PNG URL (blob: or data:) of a same-resolution overlay, alpha-encoded. / 与底图同分辨率的叠加 PNG（blob: 或 data:），由 alpha 通道控制透明度。 */
+  src: string
+  width: number
+  height: number
+}
+
+export type Overlay = BeamCenterOverlay | SectorBoundaryOverlay | ImageMaskOverlay
 
 // --- Props ---
 
@@ -98,6 +108,14 @@ const props = withDefaults(defineProps<{
   title?: string
   placeholder?: string
   maxZoom?: number
+  /** Full-resolution target for click→pixel mapping (cols, rows).
+   *  When set (e.g. the displayed image is a downscaled preview but geometry
+   *  is computed at full data resolution), clicks map to this size instead of
+   *  the displayed image's natural pixels. / 点击→像素映射的全分辨率目标（列, 行）。
+   *  当设置时（如显示的是缩小预览图，但几何按全数据分辨率计算），点击映射到此尺寸，
+   *  而非所显示图像的自然像素。 */
+  dataWidth?: number
+  dataHeight?: number
 }>(), {
   imageB64: null,
   imageData: undefined,
@@ -112,6 +130,8 @@ const props = withDefaults(defineProps<{
   title: '',
   placeholder: 'No image loaded',
   maxZoom: 5,
+  dataWidth: undefined,
+  dataHeight: undefined,
 })
 
 // --- Emits ---
@@ -263,9 +283,34 @@ function onImageClick(e: MouseEvent) {
   const displayW = rect.width
   const displayH = rect.height
 
+  // Use the image element's OWN natural dimensions (not the reactive ref, which
+  // can be stale across preview/full-res swaps) to map the click to a pixel.
+  // When dataWidth/dataHeight are provided, map to the FULL data resolution
+  // (the displayed image may be a downscaled preview, but geometry/q are
+  // computed at full resolution) — otherwise clicks land on the wrong pixel.
+  // 使用图像元素自身的自然尺寸（而非可能跨预览/全分辨率切换后滞后的响应式 ref）
+  // 将点击映射到像素坐标。当提供 dataWidth/dataHeight 时，映射到全数据分辨率
+  // （显示的可能是缩小预览图，但几何/q 按全分辨率计算），否则点击会落到错误像素。
+  const dispNatW = img.naturalWidth || naturalWidth.value
+  const dispNatH = img.naturalHeight || naturalHeight.value
+  const targetW = props.dataWidth ?? dispNatW
+  const targetH = props.dataHeight ?? dispNatH
+
   // Map to natural pixel coordinates
-  const pixelX = Math.round((relX / displayW) * naturalWidth.value)
-  const pixelY = Math.round((relY / displayH) * naturalHeight.value)
+  const pixelX = Math.round((relX / displayW) * targetW)
+  const pixelY = Math.round((relY / displayH) * targetH)
+
+  // Diagnostic: log the mapping so misalignment between clicks and geometry
+  // can be traced (open DevTools console). / 诊断：记录映射，便于排查点击与
+  // 几何坐标不一致的问题（打开开发者工具控制台查看）。
+  // eslint-disable-next-line no-console
+  console.warn('[image:click]', {
+    pixelX, pixelY,
+    targetW, targetH, dispNatW, dispNatH,
+    dataWidth: props.dataWidth, dataHeight: props.dataHeight,
+    displayW: displayW.toFixed(1), displayH: displayH.toFixed(1),
+    relX: relX.toFixed(1), relY: relY.toFixed(1),
+  })
 
   emit('image:click', {
     x: e.clientX,
@@ -289,6 +334,40 @@ function captureImageSize() {
 
 let rafId = 0
 
+// Cache decoded overlay images so async loads only happen once per src.
+// When an image finishes loading it schedules a redraw, so the first paint may
+// skip a not-yet-loaded mask and fill it in on the next frame.
+// 缓存已解码的叠加图像，使每个 src 仅异步加载一次。图像加载完成后会触发重绘，
+// 因此首帧可能跳过尚未加载的遮罩，并在下一帧补上。
+// Bounded by insertion order: the oldest entry is evicted once the cap is hit,
+// which keeps the cache from retaining revoked blob: URLs forever as the
+// azimuth mask src changes on every range edit.
+// 按插入顺序限制大小：达到上限后驱逐最旧条目，避免方位角遮罩 src 随范围编辑变化时
+// 缓存永远保留已被回收的 blob: URL。
+const OVERLAY_IMAGE_CACHE_MAX = 8
+const overlayImageCache = new Map<string, HTMLImageElement>()
+
+function loadOverlayImage(src: string): HTMLImageElement {
+  const cached = overlayImageCache.get(src)
+  if (cached) return cached
+  const img = new Image()
+  img.decoding = 'async'
+  // Trigger a redraw once decoded so the mask appears without a state change.
+  // 解码完成后触发重绘，使遮罩在无状态变更的情况下出现。
+  img.onload = () => scheduleOverlayRedraw()
+  img.src = src
+  // Bounded LRU-style insertion: move newest to the end, evict oldest first.
+  // 有界插入：最新条目置于末尾，优先驱逐最旧条目。
+  overlayImageCache.delete(src)
+  overlayImageCache.set(src, img)
+  while (overlayImageCache.size > OVERLAY_IMAGE_CACHE_MAX) {
+    const oldest = overlayImageCache.keys().next().value
+    if (oldest === undefined) break
+    overlayImageCache.delete(oldest)
+  }
+  return img
+}
+
 function drawOverlays() {
   const canvas = overlayCanvasRef.value
   if (!canvas || !naturalWidth.value) return
@@ -299,11 +378,50 @@ function drawOverlays() {
   // Canvas dimensions are set by :width/:height bindings
   ctx.clearRect(0, 0, canvas.width, canvas.height)
 
+  // Vector overlays (beamCenter, sectorBoundary) come in DATA coordinates
+  // (full resolution, matching the geometry). The canvas is sized to the
+  // DISPLAYED image (possibly a downscaled preview). Scale vector coords from
+  // data space → canvas space so the crosshair/sector lines land correctly.
+  // 矢量叠加（光束中心、扇区线）使用数据坐标（全分辨率，与几何一致）。画布尺寸为
+  // 所显示图像（可能是缩小预览）。将矢量坐标从数据空间缩放到画布空间，使十字/扇区线
+  // 落在正确位置。
+  const scaleX = props.dataWidth && props.dataWidth > 0 ? canvas.width / props.dataWidth : 1
+  const scaleY = props.dataHeight && props.dataHeight > 0 ? canvas.height / props.dataHeight : 1
+
+  for (const overlay of props.overlays) {
+    // Raster masks are drawn first so vector overlays (beam center, sector
+    // lines) render on top. The overlay canvas is sized to natural image
+    // pixels, so drawImage at (0,0,w,h) is a 1:1 pixel-aligned composite.
+    // 栅格遮罩先绘制，使矢量叠加（光束中心、扇区线）绘制在其之上。叠加画布尺寸
+    // 等于图像自然像素，故 drawImage(0,0,w,h) 为 1:1 像素对齐合成。
+    if (overlay.type === 'imageMask') {
+      const img = overlayImageCache.get(overlay.src)
+      if (img?.complete && img.naturalWidth > 0) {
+        // Draw to the canvas's own pixel dimensions (= displayed image's
+        // natural pixels), NOT overlay.width/height. The mask PNG and the
+        // displayed image share the same source data shape, so scaling the
+        // mask to canvas.width/height keeps them 1:1 aligned even when the
+        // overlay's width/height props come from metadata that differs from
+        // the actually-displayed (e.g. preview) image size.
+        // 绘制到画布自身的像素尺寸（= 所显示图像的自然像素），而非 overlay.width/height。
+        // 遮罩 PNG 与所显示图像共享同一源数据形状，故按 canvas.width/height 缩放遮罩
+        // 可保持 1:1 对齐，即使 overlay 的 width/height 来自与实际显示图像（如预览图）
+        // 尺寸不一致的元数据。
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height)
+      } else {
+        // Kick off the async decode; onload will redraw once ready.
+        // 启动异步解码，onload 会在就绪后重绘。
+        loadOverlayImage(overlay.src)
+      }
+    }
+  }
+
   for (const overlay of props.overlays) {
     if (overlay.type === 'beamCenter') {
-      const cx = overlay.x
-      const cy = overlay.y
+      const cx = overlay.x * scaleX
+      const cy = overlay.y * scaleY
       const arm = 16
+      const coreColor = overlay.color ?? '#ef4444'
 
       // Cross-hair with white outline for visibility / 带白色描边的十字准线
       ctx.lineCap = 'round'
@@ -319,8 +437,8 @@ function drawOverlays() {
       }
       // White outline / 白色外描边
       draw('#ffffff', 4)
-      // Red core / 红色核心
-      draw('#ef4444', 2)
+      // Colored core (red by default, yellow if requested) / 彩色核心（默认红，可指定黄）
+      draw(coreColor, 2)
     }
 
     if (overlay.type === 'sectorBoundary') {

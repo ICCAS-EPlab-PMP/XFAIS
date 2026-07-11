@@ -69,9 +69,49 @@ class TestImageLoader:
         assert data.shape == (10, 10)
         assert "h5_dataset" in meta
 
-    def test_load_h5_no_dataset(self, h5_path):
+    def test_load_h5_auto_detects_default_dataset(self, tmp_path):
+        """With no h5_dataset_path given, load() auto-selects the default
+        image dataset — the integration routes pass no path, so this is what
+        keeps .h5 files from failing with 'No data loaded'."""
+        h5_path = str(tmp_path / "dectris.h5")
+        with h5py.File(h5_path, "w") as f:
+            f.create_dataset(
+                "entry/data/data",
+                data=(np.arange(100, dtype=np.uint32).reshape(10, 10)),
+            )
+
+        data, dead_mask, meta = ImageLoader.load(h5_path)
+        assert data is not None
+        assert data.shape == (10, 10)
+        assert meta["h5_dataset"] == "entry/data/data"
+
+    def test_load_h5_no_image_dataset_returns_none(self, tmp_path):
+        """If the .h5 has no datasets at all, load() returns None rather than
+        auto-selecting a non-existent dataset."""
+        h5_path = str(tmp_path / "empty.h5")
+        with h5py.File(h5_path, "w") as f:
+            f.create_group("entry/data")  # group only, no datasets
+
         data, dead_mask, meta = ImageLoader.load(h5_path)
         assert data is None
+
+    def test_load_h5_frame_index_selects_frame(self, tmp_path):
+        """For a multi-frame 4-D dataset, frame_index picks the right slice.
+        Each frame is filled with its own index so we can tell them apart."""
+        h5_path = str(tmp_path / "frames.h5")
+        with h5py.File(h5_path, "w") as f:
+            # (n_frames=2, n_channels=3, H=4, W=4); frame i filled with value i+1
+            stack = np.stack([
+                np.full((3, 4, 4), i + 1, dtype=np.uint32) for i in range(2)
+            ])
+            f.create_dataset("entry/data/data", data=stack)
+
+        data0, _, meta0 = ImageLoader.load(h5_path, frame_index=0)
+        data1, _, meta1 = ImageLoader.load(h5_path, frame_index=1)
+        assert data0.shape == (4, 4)
+        assert data0[0, 0] == 1.0
+        assert data1[0, 0] == 2.0
+        assert meta1["frame_index"] == 1
 
     def test_load_missing_file(self):
         with pytest.raises(IOError):
