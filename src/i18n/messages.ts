@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.1.0'
+      version: 'v0.2.2'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.1.0',
+      kicker: '桌面集成版 v0.2.2',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -89,7 +89,8 @@ export const messages = {
         newVersion: '当前版本 {current}，最新版本 {latest}，请前往 Release 页面下载',
         upToDate: '当前版本 {version} 已是最新',
         noRelease: '尚未发布任何版本，请稍后再试',
-        failed: '检查更新失败：{error}'
+        failed: '检查更新失败：{error}',
+        linkCopied: '下载链接已自动复制到剪贴板'
       },
       cards: {
         integrate1d: {
@@ -112,13 +113,9 @@ export const messages = {
           title: '图像查看器',
           description: 'EDF/TIFF/HDF5 图像浏览、色图控制、缩略图导航与批量 PNG 导出'
         },
-        h5convert: {
-          title: 'H5 格式转换',
-          description: '批量将 H5 数据集转换为 TIFF、CSV 或 DAT 格式'
-        },
-        h5extract: {
-          title: 'H5 文件提取汇总',
-          description: '从嵌套目录中递归提取并汇总 H5 文件'
+        h5toolkit: {
+          title: 'H5 格式处理',
+          description: 'H5 数据集格式转换与文件提取汇总'
         },
         pngGenerate: {
           title: '批量 PNG 生成',
@@ -139,6 +136,10 @@ export const messages = {
         bgSubtract: {
           title: '2D 背景扣除',
           description: '有参考背景扣除：result = sample / T - background，支持电离室匹配与批量处理'
+        },
+        imageMath: {
+          title: '图像运算',
+          description: '对两张图像进行算术运算：result = image1 × 系数 ± image2 × 系数'
         },
         poniImporter: {
           title: 'PONI 文件转化',
@@ -163,7 +164,9 @@ export const messages = {
         title: '径向范围',
         unit: '径向单位',
         min: '径向下限',
-        max: '径向上限'
+        max: '径向上限',
+        overlayToggle: '在预览图上显示径向范围蒙版',
+        overlayHint: '开启后，预览图上会以灰色半透明圆环标出所选径向范围（qmin–qmax）对应的像素区域。'
       },
       chiUnit: {
         title: '方位角输出单位',
@@ -180,7 +183,8 @@ export const messages = {
         hint: '0° = 正右方向（X轴正方向），逆时针增加。留空则全360°积分。',
         min: '起始方位角 (°)',
         max: '终止方位角 (°)',
-        errorMinMax: '起始方位角必须小于终止方位角。'
+        errorMinMax: '起始方位角必须小于终止方位角。',
+        overlayError: '方位角范围叠加加载失败。'
       },
       errors: {
         radialRange: '径向下限必须小于上限。'
@@ -335,7 +339,9 @@ export const messages = {
         layoutPerFile: '按文件分目录',
         dpi: 'DPI',
         showAxes: '显示坐标轴',
-        showColorbar: '显示色标'
+        showColorbar: '显示色标',
+        chartLine: '线图',
+        chartPoints: '点图'
       },
       fileTypes: {
         title: '文件类型过滤'
@@ -473,6 +479,21 @@ export const messages = {
       exportSingle: '导出当前帧',
       exportBatch: '批量导出文件夹',
       exporting: '导出中…',
+      exportDisabledByPixelMode: '像素信息模式开启时不可导出（两者互斥）。',
+      pixelInfoMode: '像素信息读取模式',
+      pixelInfoEnable: '开启像素信息读取',
+      pixelInfoHint: '开启后可填入/上传 PONI 几何参数，显示 q 范围圆环，并点击像素读取 (q, 2θ, χ, I)。与 PNG 导出互斥。',
+      pixelInfoDisabledByExport: 'PNG 导出进行中，无法开启像素信息模式。',
+      beamCenter: '光束中心 (px)',
+      showRing: '显示 q 范围圆环',
+      showBeamCenter: '显示光斑中心十字（黄）',
+      pixelInfoClickHint: '点击图像上的像素读取信息',
+      pixelInfoLoading: '读取中…',
+      pixelInfoQ: 'q',
+      pixelInfoI: '强度 I',
+      pixelInfo2theta: '2θ',
+      pixelInfoChi: 'χ',
+      pixelInfoError: '读取像素信息失败。',
       batchSourceFolder: '源文件夹',
       batchOutputFolder: '输出文件夹',
       batchRecursive: '递归扫描子文件夹',
@@ -509,6 +530,14 @@ export const messages = {
         append: '追加',
         replaceTooltip: '清除现有文件列表，仅使用新选择的文件',
         appendTooltip: '将新选择的文件追加到现有文件列表中'
+      },
+      h5: {
+        title: 'HDF5 选择',
+        dataset: '数据集',
+        channel: '通道',
+        frame: '帧',
+        frameOf: '第 {current} / {total} 帧',
+        hint: '选择对积分生效，多文件统一应用；默认第一帧、通道 0'
       },
       sections: {
         maskImport: '掩膜导入',
@@ -567,6 +596,8 @@ export const messages = {
         radialMax: '径向最大值',
         unit: '单位',
         correctSolidAngle: '立体角校正',
+        dropEmptyBins: '剔除空 bin',
+        dropEmptyBinsHint: '开启后，完全被遮蔽、无有效像素的 bin 将从曲线与导出中去除，避免把 0 误读为真实零信号',
         algorithm: '积分算法',
         integrator: '积分器引擎'
       },
@@ -594,94 +625,77 @@ export const messages = {
         elapsed: '耗时'
       }
     },
-    h5convert: {
-      title: 'H5 格式转换',
-      subtitle: '批量将 H5 数据集转换为 TIFF、CSV 或 DAT 格式。',
-      step1: '步骤一：选择目录',
-      step2: '步骤二：扫描 H5 文件',
-      step3: '步骤三：选择数据集',
-      step4: '步骤四：导出设置',
+    h5toolkit: {
+      title: 'H5 格式处理',
+      subtitle: 'H5 数据集格式转换与文件提取汇总，一站式处理 HDF5 文件。',
+      sourceSection: '源目录',
       sourceDir: '源目录（包含 H5 文件）',
-      outputDir: '输出目录',
       recursive: '递归扫描子文件夹',
-      refSuffix: '参考文件后缀',
-      scanBtn: '扫描并加载',
-      scanning: '扫描中...',
-      scanResult: '共 {total} 个 H5 | 目标文件：{target} | 参考：{ref}',
-      scanFailed: '扫描失败，请检查目录和后缀。',
-      selectAll: '全选',
-      deselectAll: '全不选',
-      colExport: '导出',
-      colPath: '数据集路径',
-      colShape: '形状',
-      colType: '数据类型',
-      colKind: '类型',
-      colChannels: '通道',
-      allFrames: '全部帧',
-      toTable: '→ 表格文件',
-      imageFormat: '图像数据导出格式',
-      tableFormat: '非图像数据导出格式',
-      startExport: '开始导出',
-      kindScalar: '标量',
-      kind1d: '1维',
-      kind2d: '2D 图像',
-      kind3d: '3D 图像',
-      kind4d: '4D 图像',
-      kindImage: '图像',
-      kindTable: '表格',
-      fileList: {
-        title: '扫描文件列表',
-        expand: '展开文件列表（{total} 个文件）',
-        collapse: '收起文件列表',
-        empty: '未扫描到文件',
+      tabConvert: '格式转换',
+      tabExtract: '文件提取',
+      convert: {
+        step2: '输出与扫描',
+        step3: '步骤三：选择数据集',
+        step4: '步骤四：导出设置',
+        outputDir: '输出目录',
+        refSuffix: '参考文件后缀',
+        scanBtn: '扫描并加载',
         scanning: '扫描中...',
-        scanBtn: '扫描 H5 文件',
-        pageSize: '每页 {size} 条',
-        pageOf: '第 {current} / {total} 页',
-        prevPage: '上一页',
-        nextPage: '下一页',
-        colIndex: '#',
-        colFileName: '文件名',
-        colPath: '路径',
-        colSize: '大小',
-        totalFiles: '共 {total} 个 H5 文件'
-      }
-    },
-    h5extract: {
-      title: 'H5 文件提取汇总',
-      subtitle: '从嵌套目录中提取并汇总 H5 文件。',
-      dirSection: '路径设置',
-      rulesSection: '提取规则',
-      sourceDir: '扫描源目录',
-      targetDir: '输出目录',
-      recursive: '递归扫描子文件夹',
-      suffixFilter: '后缀过滤',
-      suffixPlaceholder: '_master',
-      suffixHint: '（例如 "_master"，留空则提取所有 .h5）',
-      prependFolder: '文件名前附加所在父文件夹名称（推荐，避免同名覆盖）',
-      prefix: '文件名前缀',
-      prefixPlaceholder: '可选前缀...',
-      conflictPolicy: '冲突处理',
-      conflictRename: '自动重命名（追加序号）',
-      conflictSkip: '跳过已存在文件',
-      conflictOverwrite: '覆盖已存在文件',
-      startExtract: '开始提取',
-      fileList: {
-        title: '扫描文件列表',
-        expand: '展开文件列表（{total} 个文件）',
-        collapse: '收起文件列表',
-        empty: '未扫描到文件',
-        scanning: '扫描中...',
-        scanBtn: '扫描 H5 文件',
-        pageSize: '每页 {size} 条',
-        pageOf: '第 {current} / {total} 页',
-        prevPage: '上一页',
-        nextPage: '下一页',
-        colIndex: '#',
-        colFileName: '文件名',
-        colPath: '路径',
-        colSize: '大小',
-        totalFiles: '共 {total} 个 H5 文件'
+        scanResult: '共 {total} 个 H5 | 目标文件：{target} | 参考：{ref}',
+        scanFailed: '扫描失败，请检查目录和后缀。',
+        selectAll: '全选',
+        deselectAll: '全不选',
+        imageFormat: '图像数据导出格式',
+        tableFormat: '非图像数据导出格式',
+        startExport: '开始导出',
+        kindScalar: '标量',
+        kind1d: '1维',
+        kind2d: '2D 图像',
+        kind3d: '3D 图像',
+        kind4d: '4D 图像',
+        kindImage: '图像',
+        kindTable: '表格',
+        fileList: {
+          title: '扫描文件列表',
+          collapse: '收起文件列表',
+          totalFiles: '共 {total} 个 H5 文件',
+          pageOf: '第 {current} / {total} 页',
+          prevPage: '上一页',
+          nextPage: '下一页',
+          colIndex: '#',
+          colFileName: '文件名',
+          colPath: '路径',
+          colSize: '大小'
+        }
+      },
+      extract: {
+        rulesSection: '提取规则',
+        targetDir: '输出目录',
+        suffixFilter: '后缀过滤',
+        suffixPlaceholder: '_master',
+        suffixHint: '（例如 "_master"，留空则提取所有 .h5）',
+        prependFolder: '文件名前附加所在父文件夹名称（推荐，避免同名覆盖）',
+        prefix: '文件名前缀',
+        prefixPlaceholder: '可选前缀...',
+        conflictPolicy: '冲突处理',
+        conflictRename: '自动重命名（追加序号）',
+        conflictSkip: '跳过已存在文件',
+        conflictOverwrite: '覆盖已存在文件',
+        startExtract: '开始提取',
+        fileList: {
+          title: '扫描文件列表',
+          collapse: '收起文件列表',
+          totalFiles: '共 {total} 个 H5 文件',
+          scanning: '扫描中...',
+          scanBtn: '扫描 H5 文件',
+          pageOf: '第 {current} / {total} 页',
+          prevPage: '上一页',
+          nextPage: '下一页',
+          colIndex: '#',
+          colFileName: '文件名',
+          colPath: '路径',
+          colSize: '大小'
+        }
       }
     },
     calibrantGenerator: {
@@ -910,6 +924,42 @@ export const messages = {
       transPerFile: '分别设置透射率',
       tooManyFilesWarning: '文件超过 10 张，分别设置透射率已禁用，请使用统一手动输入或电离室匹配',
     },
+    imageMath: {
+      title: '图像运算',
+      subtitle: '对两张图像进行算术运算：result = image1 × 系数 ± image2 × 系数',
+      description: '图像加减运算工具',
+      operation: '运算模式',
+      opAdd: '加法',
+      opSubtract: '减法',
+      image1: '图像 1',
+      image2: '图像 2',
+      selectFile: '选择文件',
+      factor: '系数',
+      noFileSelected: '未选择文件',
+      export: '导出',
+      outputDir: '输出目录',
+      outputFormat: '输出格式',
+      execute: '执行运算',
+      saveResult: '保存结果',
+      tabImage1: '图像 1',
+      tabImage2: '图像 2',
+      tabResult: '运算结果',
+      loading: '加载中...',
+      noPreview: '无预览',
+      noImage: '无图像',
+      colormap: '色图',
+      logScale: '对数标度',
+      contrastAuto: '自动',
+      contrastManual: '手动',
+      errorTitle: '错误',
+      successTitle: '成功',
+      computeComplete: '运算完成',
+      emptyState: '请选择两张图像开始',
+      errorPrefix: '错误: ',
+      formula: '公式',
+      formulaSubtract: 'result = image1 × {f1} − image2 × {f2}',
+      formulaAdd: 'result = image1 × {f1} + image2 × {f2}',
+    },
     poniImporter: {
       title: 'PONI 文件转化',
       subtitle: '手动创建 pyFAI .poni 校准文件',
@@ -927,8 +977,8 @@ export const messages = {
       detectorDistance: '探测器距离',
       wavelength: '波长',
       pixelSize: '像素尺寸',
-      beamCenterX: '光束中心 X (poni1, 像素)',
-      beamCenterY: '光束中心 Y (poni2, 像素)',
+      beamCenterX: '光束中心 X (poni2, 像素)',
+      beamCenterY: '光束中心 Y (poni1, 像素)',
       rot1: '旋转 1 (rad)',
       rot2: '旋转 2 (rad)',
       rot3: '旋转 3 (rad)',
@@ -936,6 +986,14 @@ export const messages = {
       detectorConfig: '探测器配置',
       detectorPreset: '探测器预设',
       detectorCustom: '自定义',
+      detectorPresetHint: '选择一个探测器预设以确保 .poni 文件可被 pyFAI 正确加载。',
+      detectorNamePlaceholder: '例如：Pilatus1M、Eiger2_4M',
+      detectorRequired: '请先选择一个探测器预设。',
+      detectorCustomLabel: '探测器名称（自定义）',
+      detectorCustomPlaceholder: '例如：自制 CCD、实验室平板探测器',
+      detectorCustomHint: 'pyFAI 不支持任意探测器名，故使用其通用 Detector 类并套用你输入的像素尺寸与阵列大小；此名称仅作为备注写入文件注释。',
+      detectorShape: '阵列尺寸 (行 × 列)',
+      detectorShapeHint: '可选。探测器完整像素阵列的行数 × 列数（如 2167 × 2070），将写入 max_shape。',
       createBtn: '导出',
       createSuccessTitle: 'PONI 预览',
     },
@@ -961,7 +1019,7 @@ export const messages = {
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.1.0'
+      version: 'v0.2.2'
     },
     shell: {
       sections: {
@@ -995,7 +1053,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.1.0',
+      kicker: 'Desktop Edition v0.2.2',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -1046,7 +1104,8 @@ export const messages = {
         newVersion: 'Current version {current}, latest version {latest}. Please visit the Release page to download.',
         upToDate: 'You are on the latest version ({version})',
         noRelease: 'No releases have been published yet. Please check back later.',
-        failed: 'Update check failed: {error}'
+        failed: 'Update check failed: {error}',
+        linkCopied: 'The download link has been copied to your clipboard'
       },
       cards: {
         integrate1d: {
@@ -1069,13 +1128,9 @@ export const messages = {
           title: 'Image Viewer',
           description: 'Browse EDF/TIFF/HDF5 images, colormap control, thumbnail navigation and batch PNG export'
         },
-        h5convert: {
-          title: 'H5 Format Converter',
-          description: 'Batch convert H5 datasets to TIFF, CSV or DAT format'
-        },
-        h5extract: {
-          title: 'H5 File Extraction',
-          description: 'Recursively extract and aggregate H5 files from nested directories'
+        h5toolkit: {
+          title: 'H5 Format Toolkit',
+          description: 'H5 dataset format conversion and file extraction'
         },
         pngGenerate: {
           title: 'Batch PNG Generation',
@@ -1096,6 +1151,10 @@ export const messages = {
         bgSubtract: {
           title: '2D Background Subtraction',
           description: 'Reference-based background subtraction: result = sample / T - background, with ion chamber matching and batch processing'
+        },
+        imageMath: {
+          title: 'Image Math',
+          description: 'Arithmetic on two images: result = image1 × factor ± image2 × factor'
         },
         poniImporter: {
           title: 'Switch to PONI',
@@ -1120,7 +1179,9 @@ export const messages = {
         title: 'Radial Range',
         unit: 'Radial Unit',
         min: 'Radial Min',
-        max: 'Radial Max'
+        max: 'Radial Max',
+        overlayToggle: 'Show radial range overlay on preview',
+        overlayHint: 'When on, the preview marks the pixels of the selected radial range (qmin–qmax) as a semi-transparent gray ring.'
       },
       chiUnit: {
         title: 'Azimuthal Output Unit',
@@ -1137,7 +1198,8 @@ export const messages = {
         hint: '0° = positive X direction (right), counterclockwise. Leave empty to integrate full 360°.',
         min: 'Start Azimuth (°)',
         max: 'End Azimuth (°)',
-        errorMinMax: 'Start azimuth must be less than end azimuth.'
+        errorMinMax: 'Start azimuth must be less than end azimuth.',
+        overlayError: 'Failed to load the azimuthal range overlay.'
       },
       errors: {
         radialRange: 'Radial min must be less than radial max.'
@@ -1292,7 +1354,9 @@ export const messages = {
         layoutPerFile: 'Per-File Directory',
         dpi: 'DPI',
         showAxes: 'Show Axes',
-        showColorbar: 'Show Colorbar'
+        showColorbar: 'Show Colorbar',
+        chartLine: 'Line',
+        chartPoints: 'Points'
       },
       fileTypes: {
         title: 'File Type Filter'
@@ -1430,6 +1494,21 @@ export const messages = {
       exportSingle: 'Export Current Frame',
       exportBatch: 'Batch Export Folder',
       exporting: 'Exporting…',
+      exportDisabledByPixelMode: 'Export is unavailable while pixel-info mode is on (mutually exclusive).',
+      pixelInfoMode: 'Pixel Info Mode',
+      pixelInfoEnable: 'Enable pixel info readout',
+      pixelInfoHint: 'When on, enter/upload PONI geometry, show the q-range ring, and click a pixel to read (q, 2θ, χ, I). Mutually exclusive with PNG export.',
+      pixelInfoDisabledByExport: 'PNG export in progress — cannot enable pixel-info mode.',
+      beamCenter: 'Beam center (px)',
+      showRing: 'Show q-range ring',
+      showBeamCenter: 'Show beam-center crosshair (yellow)',
+      pixelInfoClickHint: 'Click a pixel on the image to read its info',
+      pixelInfoLoading: 'Reading…',
+      pixelInfoQ: 'q',
+      pixelInfoI: 'Intensity I',
+      pixelInfo2theta: '2θ',
+      pixelInfoChi: 'χ',
+      pixelInfoError: 'Failed to read pixel info.',
       batchSourceFolder: 'Source Folder',
       batchOutputFolder: 'Output Folder',
       batchRecursive: 'Recursive Subfolder Scan',
@@ -1466,6 +1545,14 @@ export const messages = {
         append: 'Append',
         replaceTooltip: 'Clear existing file list and use only newly selected files',
         appendTooltip: 'Append newly selected files to the existing file list'
+      },
+      h5: {
+        title: 'HDF5 Selection',
+        dataset: 'Dataset',
+        channel: 'Channel',
+        frame: 'Frame',
+        frameOf: 'Frame {current} / {total}',
+        hint: 'Applies to integration across all files; defaults to first frame, channel 0'
       },
       sections: {
         maskImport: 'Mask Import',
@@ -1524,6 +1611,8 @@ export const messages = {
         radialMax: 'Radial Max',
         unit: 'Unit',
         correctSolidAngle: 'Solid Angle Correction',
+        dropEmptyBins: 'Drop empty bins',
+        dropEmptyBinsHint: 'Remove fully-masked bins (no valid pixels) from the curve and export, so their 0 is not misread as real zero signal',
         algorithm: 'Integration Algorithm',
         integrator: 'Integrator Engine'
       },
@@ -1551,94 +1640,77 @@ export const messages = {
         elapsed: 'Elapsed'
       }
     },
-    h5convert: {
-      title: 'H5 Format Converter',
-      subtitle: 'Batch convert H5 datasets to TIFF, CSV, or DAT format.',
-      step1: 'Step 1: Select Directory',
-      step2: 'Step 2: Scan H5 Files',
-      step3: 'Step 3: Select Datasets',
-      step4: 'Step 4: Export Settings',
+    h5toolkit: {
+      title: 'H5 Format Toolkit',
+      subtitle: 'H5 dataset format conversion and file extraction, all-in-one HDF5 handling.',
+      sourceSection: 'Source Directory',
       sourceDir: 'Source Directory (containing H5 files)',
-      outputDir: 'Output Directory',
       recursive: 'Recursive Subfolder Scan',
-      refSuffix: 'Reference File Suffix',
-      scanBtn: 'Scan & Load',
-      scanning: 'Scanning...',
-      scanResult: '{total} H5 files | Target: {target} | Reference: {ref}',
-      scanFailed: 'Scan failed. Please check the directory and suffix.',
-      selectAll: 'Select All',
-      deselectAll: 'Deselect All',
-      colExport: 'Export',
-      colPath: 'Dataset Path',
-      colShape: 'Shape',
-      colType: 'Data Type',
-      colKind: 'Kind',
-      colChannels: 'Channels',
-      allFrames: 'All Frames',
-      toTable: '→ Table File',
-      imageFormat: 'Image Data Export Format',
-      tableFormat: 'Non-image Data Export Format',
-      startExport: 'Start Export',
-      kindScalar: 'Scalar',
-      kind1d: '1D',
-      kind2d: '2D Image',
-      kind3d: '3D Image',
-      kind4d: '4D Image',
-      kindImage: 'Image',
-      kindTable: 'Table',
-      fileList: {
-        title: 'Scanned File List',
-        expand: 'Expand file list ({total} files)',
-        collapse: 'Collapse file list',
-        empty: 'No files scanned',
+      tabConvert: 'Format Conversion',
+      tabExtract: 'File Extraction',
+      convert: {
+        step2: 'Output & Scan',
+        step3: 'Step 3: Select Datasets',
+        step4: 'Step 4: Export Settings',
+        outputDir: 'Output Directory',
+        refSuffix: 'Reference File Suffix',
+        scanBtn: 'Scan & Load',
         scanning: 'Scanning...',
-        scanBtn: 'Scan H5 Files',
-        pageSize: '{size} per page',
-        pageOf: 'Page {current} / {total}',
-        prevPage: 'Previous',
-        nextPage: 'Next',
-        colIndex: '#',
-        colFileName: 'File Name',
-        colPath: 'Path',
-        colSize: 'Size',
-        totalFiles: '{total} H5 files in total'
-      }
-    },
-    h5extract: {
-      title: 'H5 File Extraction',
-      subtitle: 'Extract and aggregate H5 files from nested directories.',
-      dirSection: 'Path Settings',
-      rulesSection: 'Extraction Rules',
-      sourceDir: 'Source Directory',
-      targetDir: 'Output Directory',
-      recursive: 'Recursive Subfolder Scan',
-      suffixFilter: 'Suffix Filter',
-      suffixPlaceholder: '_master',
-      suffixHint: '(e.g. "_master"; leave empty to extract all .h5)',
-      prependFolder: 'Prepend parent folder name to filename (recommended to avoid overwrites)',
-      prefix: 'Filename Prefix',
-      prefixPlaceholder: 'Optional prefix...',
-      conflictPolicy: 'Conflict Handling',
-      conflictRename: 'Auto-rename (append sequence number)',
-      conflictSkip: 'Skip existing files',
-      conflictOverwrite: 'Overwrite existing files',
-      startExtract: 'Start Extraction',
-      fileList: {
-        title: 'Scanned File List',
-        expand: 'Expand file list ({total} files)',
-        collapse: 'Collapse file list',
-        empty: 'No files scanned',
-        scanning: 'Scanning...',
-        scanBtn: 'Scan H5 Files',
-        pageSize: '{size} per page',
-        pageOf: 'Page {current} / {total}',
-        prevPage: 'Previous',
-        nextPage: 'Next',
-        colIndex: '#',
-        colFileName: 'File Name',
-        colPath: 'Path',
-        colSize: 'Size',
-        totalFiles: '{total} H5 files in total'
+        scanResult: '{total} H5 files | Target: {target} | Reference: {ref}',
+        scanFailed: 'Scan failed. Please check the directory and suffix.',
+        selectAll: 'Select All',
+        deselectAll: 'Deselect All',
+        imageFormat: 'Image Data Export Format',
+        tableFormat: 'Non-image Data Export Format',
+        startExport: 'Start Export',
+        kindScalar: 'Scalar',
+        kind1d: '1D',
+        kind2d: '2D Image',
+        kind3d: '3D Image',
+        kind4d: '4D Image',
+        kindImage: 'Image',
+        kindTable: 'Table',
+        fileList: {
+          title: 'Scanned File List',
+          collapse: 'Collapse file list',
+          totalFiles: '{total} H5 files in total',
+          pageOf: 'Page {current} / {total}',
+          prevPage: 'Previous',
+          nextPage: 'Next',
+          colIndex: '#',
+          colFileName: 'File Name',
+          colPath: 'Path',
+          colSize: 'Size'
+        }
+      },
+      extract: {
+        rulesSection: 'Extraction Rules',
+        targetDir: 'Output Directory',
+        suffixFilter: 'Suffix Filter',
+        suffixPlaceholder: '_master',
+        suffixHint: '(e.g. "_master"; leave empty to extract all .h5)',
+        prependFolder: 'Prepend parent folder name to filename (recommended to avoid overwrites)',
+        prefix: 'Filename Prefix',
+        prefixPlaceholder: 'Optional prefix...',
+        conflictPolicy: 'Conflict Handling',
+        conflictRename: 'Auto-rename (append sequence number)',
+        conflictSkip: 'Skip existing files',
+        conflictOverwrite: 'Overwrite existing files',
+        startExtract: 'Start Extraction',
+        fileList: {
+          title: 'Scanned File List',
+          collapse: 'Collapse file list',
+          totalFiles: '{total} H5 files in total',
+          scanning: 'Scanning...',
+          scanBtn: 'Scan H5 Files',
+          pageOf: 'Page {current} / {total}',
+          prevPage: 'Previous',
+          nextPage: 'Next',
+          colIndex: '#',
+          colFileName: 'File Name',
+          colPath: 'Path',
+          colSize: 'Size'
+        }
       }
     },
     calibrantGenerator: {
@@ -1867,6 +1939,42 @@ export const messages = {
       transPerFile: 'Per-file Transmission',
       tooManyFilesWarning: 'More than 10 files selected. Per-file transmission is disabled. Use manual input or ionchamber matching instead.',
     },
+    imageMath: {
+      title: 'Image Math',
+      subtitle: 'Arithmetic on two images: result = image1 × factor ± image2 × factor',
+      description: 'Image arithmetic tool',
+      operation: 'Operation',
+      opAdd: 'Add',
+      opSubtract: 'Subtract',
+      image1: 'Image 1',
+      image2: 'Image 2',
+      selectFile: 'Select File',
+      factor: 'Factor',
+      noFileSelected: 'No file selected',
+      export: 'Export',
+      outputDir: 'Output Directory',
+      outputFormat: 'Output Format',
+      execute: 'Execute',
+      saveResult: 'Save Result',
+      tabImage1: 'Image 1',
+      tabImage2: 'Image 2',
+      tabResult: 'Result',
+      loading: 'Loading...',
+      noPreview: 'No Preview',
+      noImage: 'No Image',
+      colormap: 'Colormap',
+      logScale: 'Log Scale',
+      contrastAuto: 'Auto',
+      contrastManual: 'Manual',
+      errorTitle: 'Error',
+      successTitle: 'Success',
+      computeComplete: 'Computation Complete',
+      emptyState: 'Select two images to begin',
+      errorPrefix: 'Error: ',
+      formula: 'Formula',
+      formulaSubtract: 'result = image1 × {f1} − image2 × {f2}',
+      formulaAdd: 'result = image1 × {f1} + image2 × {f2}',
+    },
     poniImporter: {
       title: 'Switch to PONI',
       subtitle: 'Create pyFAI .poni calibration files manually',
@@ -1883,8 +1991,8 @@ export const messages = {
       detectorDistance: 'Detector Distance',
       wavelength: 'Wavelength',
       pixelSize: 'Pixel Size',
-      beamCenterX: 'Beam Center X (poni1, px)',
-      beamCenterY: 'Beam Center Y (poni2, px)',
+      beamCenterX: 'Beam Center X (poni2, px)',
+      beamCenterY: 'Beam Center Y (poni1, px)',
       rot1: 'Rotation 1 (rad)',
       rot2: 'Rotation 2 (rad)',
       rot3: 'Rotation 3 (rad)',
@@ -1892,6 +2000,14 @@ export const messages = {
       detectorConfig: 'Detector Config',
       detectorPreset: 'Detector Preset',
       detectorCustom: 'Custom',
+      detectorPresetHint: 'Pick a detector preset to ensure the .poni file loads correctly in pyFAI.',
+      detectorNamePlaceholder: 'e.g. Pilatus1M, Eiger2_4M',
+      detectorRequired: 'Please pick a detector preset before exporting.',
+      detectorCustomLabel: 'Detector name (custom)',
+      detectorCustomPlaceholder: 'e.g. Homemade CCD, Lab flat-panel',
+      detectorCustomHint: "pyFAI cannot store an arbitrary detector name, so it uses its generic Detector class with the pixel size and array size you enter; this name is saved only as a note in the file.",
+      detectorShape: 'Array size (rows × cols)',
+      detectorShapeHint: 'Optional. Full pixel array of the detector, rows × cols (e.g. 2167 × 2070); written as max_shape.',
       createBtn: 'Export',
       createSuccessTitle: 'PONI Preview',
     },

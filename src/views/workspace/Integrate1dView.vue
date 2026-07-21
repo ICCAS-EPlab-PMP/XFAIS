@@ -139,6 +139,13 @@
             </div>
           </div>
 
+        <!-- HDF5 dataset/channel/frame selector (only for .h5 with image datasets) / HDF5 选择器 -->
+        <H5Selector
+          v-model="h5Selection"
+          :datasets="h5Datasets"
+          @change="onH5SelectionChange"
+        />
+
         <!-- Image preview (collapsible, default collapsed) / 图像预览（可折叠，默认收起） -->
         <div class="i1d-collapsible">
           <div class="i1d-section-toggle" @click="onPreviewToggle">
@@ -304,6 +311,8 @@ import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
 import PolarizationForm from '@/components/business/PolarizationForm.vue'
+import H5Selector from '@/components/business/H5Selector.vue'
+import type { H5DatasetInfo, H5Selection } from '@/components/business/H5Selector.vue'
 import AdvancedOptionsForm from '@/components/business/AdvancedOptionsForm.vue'
 import { UNIT_OPTIONS } from '@/components/business/AdvancedOptionsForm.vue'
 import type { AdvancedOptions, IntegrationUnit, IntegrationAlgorithm, IntegratorType } from '@/components/business/AdvancedOptionsForm.vue'
@@ -336,6 +345,12 @@ interface PreviewMetadata {
   metadata?: {
     width?: number
     height?: number
+    h5Datasets?: H5DatasetInfo[]
+    selectedDataset?: string
+    selectedChannel?: number
+    nChannels?: number
+    totalFrames?: number
+    frameIndex?: number
   }
 }
 
@@ -407,6 +422,7 @@ const advancedOptions = reactive<AdvancedOptions>({
   radialMax: null,
   unit: 'q_A',
   correctSolidAngle: true,
+  dropEmptyBins: true,
   algorithm: 'splitpixel',
   integrator: 'ng',
 })
@@ -454,6 +470,8 @@ function clearAllFiles(): void {
   previewImageSize.value = null
   selectedPreviewIndex.value = 0
   thumbnailItems.value = []
+  h5Datasets.value = []
+  h5Selection.value = { dataset: '', channel: 0, frame: 0 }
 }
 
 // === Preview state / 预览状态 ===
@@ -465,6 +483,11 @@ const previewLoading = ref(false)
 const selectedPreviewIndex = ref(0)
 const resolvedBeamCenter = ref<{ x: number; y: number } | null>({ x: geometryParams.value.centerX, y: geometryParams.value.centerY })
 const previewImageSize = ref<{ width: number; height: number; origWidth: number; origHeight: number } | null>(null)
+
+// === H5 dataset/channel/frame selection / H5 数据集/通道/帧选择 ===
+
+const h5Datasets = ref<H5DatasetInfo[]>([])
+const h5Selection = ref<H5Selection>({ dataset: '', channel: 0, frame: 0 })
 
 // === Display settings / 显示设置 ===
 
@@ -581,8 +604,21 @@ function formatSci(value: number): string {
 function submitAndWait(route: string, params: Record<string, unknown>): Promise<unknown> {
   return new Promise((resolve, reject) => {
     transport.submitTask(route, params).then(response => {
-      transport.onTaskResult(response.taskId, (p) => resolve(p.data))
-      transport.onTaskError(response.taskId, (p) => reject(new Error(p.error)))
+      // Register both listeners, but unsubscribe whichever fires first so we
+      // never leak handlers across a long session of preview/thumbnail calls.
+      // 注册两个监听器，先触发的负责清理双方，避免预览/缩略图长会话中累积泄漏。
+      let offResult: (() => void) | null = null
+      let offError: (() => void) | null = null
+      let settled = false
+      const finish = (fn: () => void): void => {
+        if (settled) return
+        settled = true
+        offResult?.()
+        offError?.()
+        fn()
+      }
+      offResult = transport.onTaskResult(response.taskId, p => finish(() => resolve(p.data)))
+      offError = transport.onTaskError(response.taskId, p => finish(() => reject(new Error(p.error))))
     }).catch(reject)
   })
 }
@@ -665,6 +701,8 @@ async function handleChooseFiles(): Promise<void> {
   importFolderPath.value = null
   selectedPreviewIndex.value = 0
   thumbnailItems.value = []
+  h5Datasets.value = []
+  h5Selection.value = { dataset: '', channel: 0, frame: 0 }
   await loadPreviewIfExpanded()
   loadThumbnailPageIfExpanded()
 }
@@ -697,6 +735,8 @@ async function rescanFolder(): Promise<void> {
     }
     selectedPreviewIndex.value = 0
     thumbnailItems.value = []
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
     await loadPreviewIfExpanded()
     loadThumbnailPageIfExpanded()
   } catch (err) {
@@ -724,10 +764,18 @@ async function loadPreview(filePath: string): Promise<void> {
 
   try {
     await resolveBeamCenter()
+    // 4D h5: pass dataset/channel/frame so the preview reflects the user's selection.
+    // On first load of a file h5Datasets is empty (reset by the file-change handler),
+    // so no dataset is sent and the backend auto-detects the default.
+    const isH5 = h5Datasets.value.length > 0
     const response = await transport.submitTask('viewer_config', {
       action: 'open_file',
       filePath,
-      frame: 0,
+      frame: h5Selection.value.frame,
+      ...(isH5 ? {
+        dataset: h5Selection.value.dataset || undefined,
+        channel: h5Selection.value.channel,
+      } : {}),
       settings: buildRenderSettings(),
     })
 
@@ -752,6 +800,21 @@ async function loadPreview(filePath: string): Promise<void> {
         origWidth: data.metadata?.width ?? 0,
         origHeight: data.metadata?.height ?? 0,
       }
+
+      // Capture H5 dataset metadata for the selector / 同步 HDF5 数据集元数据
+      const md = data.metadata
+      h5Datasets.value = Array.isArray(md?.h5Datasets) ? md!.h5Datasets! : []
+      if (h5Datasets.value.length > 0) {
+        const sel = md?.selectedDataset ?? h5Datasets.value[0]?.path ?? ''
+        // Sync selection to the backend-rendered dataset on new-file loads.
+        // Selection-change reloads already request this dataset, so no reset (no loop).
+        if (sel && h5Selection.value.dataset !== sel) {
+          h5Selection.value = { dataset: sel, channel: 0, frame: 0 }
+        }
+      } else if (h5Selection.value.dataset) {
+        h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+      }
+
       previewLoading.value = false
     })
 
@@ -788,6 +851,14 @@ function onPreviewToggle(): void {
   }
 }
 
+/** Reload preview when the H5 dataset/channel/frame selection changes */
+function onH5SelectionChange(): void {
+  if (previewExpanded.value && files.value.length > 0) {
+    const path = files.value[selectedPreviewIndex.value] ?? files.value[0]
+    if (path) loadPreview(path)
+  }
+}
+
 // === Thumbnail loading / 缩略图加载 ===
 
 async function loadThumbnailPage(page?: number): Promise<void> {
@@ -810,25 +881,38 @@ async function loadThumbnailPage(page?: number): Promise<void> {
       const parts = path.split(sep)
       const label = parts[parts.length - 1] || path
 
-      const result = await submitAndWait('viewer_config', {
-        action: 'preview',
-        filePath: path,
-        thumb_render_settings: buildThumbRenderSettings(),
-      })
+      try {
+        const result = await submitAndWait('viewer_config', {
+          action: 'preview',
+          filePath: path,
+          thumb_render_settings: buildThumbRenderSettings(),
+        })
 
-      const thumbData = result as { b64?: string; previewB64?: string }
-      items.push({
-        index: start + i,
-        b64: typeof thumbData?.b64 === 'string'
-          ? thumbData.b64
-          : (typeof thumbData?.previewB64 === 'string' ? thumbData.previewB64 : ''),
-        label,
-      })
+        const thumbData = result as { b64?: string; previewB64?: string }
+        // Per-item try/catch: a single unreadable/corrupt file pushes a
+        // placeholder instead of blanking the whole page. The previous
+        // blanket catch made any one failure look like "no thumbnails".
+        // 逐项捕获：单个不可读/损坏的文件仅占位，不再清空整页。
+        items.push({
+          index: start + i,
+          b64: typeof thumbData?.b64 === 'string'
+            ? thumbData.b64
+            : (typeof thumbData?.previewB64 === 'string' ? thumbData.previewB64 : ''),
+          label,
+        })
+      } catch (err) {
+        console.error(`[Integrate1d] thumbnail render failed for "${label}":`, err)
+        items.push({ index: start + i, b64: '', label })
+      }
     }
 
     thumbnailItems.value = items
-  } catch {
-    thumbnailItems.value = []
+  } catch (err) {
+    // Only catastrophic (non-render) failures reach here — keep whatever
+    // items we have rather than wiping them silently.
+    // 仅灾难性（非渲染）失败到达此处，保留已得项而非静默清空。
+    console.error('[Integrate1d] loadThumbnailPage aborted:', err)
+    if (items.length) thumbnailItems.value = items
   } finally {
     thumbLoading.value = false
   }
@@ -851,6 +935,9 @@ function handleThumbSelect(index: number): void {
   selectedPreviewIndex.value = index
   const filePath = files.value[index]
   if (filePath) {
+    // Switching to a different file: reset H5 selection so a stale dataset isn't sent
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
     loadPreview(filePath)
   }
 }
@@ -901,6 +988,10 @@ async function handleRun(): Promise<void> {
   const params: Record<string, unknown> = {
     files: [...files.value],
     filePath: files.value[0] ?? undefined,
+    // 4D h5 selection — forwarded to the backend integration handler
+    dataset: h5Selection.value.dataset || undefined,
+    channel: h5Selection.value.channel,
+    frame: h5Selection.value.frame,
     geometry: {
       poniPath: geometryParams.value.poniPath ?? undefined,
       pixel1: geometryParams.value.pixel1,
@@ -924,6 +1015,7 @@ async function handleRun(): Promise<void> {
       radialMax: advancedOptions.radialMax,
       unit: advancedOptions.unit,
       correctSolidAngle: advancedOptions.correctSolidAngle,
+      dropEmptyBins: advancedOptions.dropEmptyBins,
       algorithm: advancedOptions.algorithm ?? 'splitpixel',
       integrator: advancedOptions.integrator ?? 'ng',
     },

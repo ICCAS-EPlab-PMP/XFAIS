@@ -63,6 +63,7 @@ API_ROUTES: list[str] = [
     "/api/list_space_groups",
     "/api/bg_subtract",
     "/api/poni_importer",
+    "/api/image_math",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -134,6 +135,7 @@ fabio = _LazyImportProxy("fabio")
 Cell = _LazyImportProxy("pyFAI.crystallography.cell", "Cell")
 BgSubtractor = _LazyImportProxy("python.services.bg_subtractor")
 PoniImporter = _LazyImportProxy("python.services.poni_importer")
+ImageMath = _LazyImportProxy("python.services.image_math")
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +550,25 @@ async def _run_blocking(fn, *args, **kwargs):
     return await loop.run_in_executor(None, lambda: fn(*args, **kwargs))
 
 
+def _orient_to_data(arr, ai) -> Any:
+    """No-op passthrough retained for call-site clarity.
+
+    pyFAI's ``array_from_unit`` already returns coordinates aligned with the
+    data storage order (``data[row, col]``) — verified against
+    ``calc_pos_zyx`` (pyFAI's own pixel→physics mapping) across orientations
+    1–4. Earlier code flipped the array for orientation 3, but that was based
+    on a flawed synthetic-data test; the real ground truth confirms no flip is
+    needed. This helper is kept as a documented no-op so the reasoning is not
+    lost.
+
+    pyFAI 的 array_from_unit 返回的坐标已与数据存储顺序（data[row,col]）对齐 ——
+    已通过 calc_pos_zyx（pyFAI 自身的像素→物理映射）在 orientation 1–4 下验证。
+    早期代码对 orientation 3 做了翻转，但那基于有缺陷的合成数据测试；
+    真实 ground truth 证明不需要翻转。保留此 no-op 辅助函数以记录该结论。
+    """
+    return arr
+
+
 def _render_thumbnail_item(
     frame_data: Any,
     index: int,
@@ -922,6 +943,26 @@ async def handle_export_integration(
         return {"success": False, "error": str(exc)}
 
 
+def _drop_empty_bins(res, drop: bool):
+    """Drop fully-masked bins that have no contributing pixels.
+
+    剔除完全被 mask 遮蔽的空 bin——此时 pyFAI 把强度置为 `_empty`（默认 0.0），
+    会显示成误导性的零点。判定依据是 `res.count == 0`（有效像素归一化计数为 0），
+    而非 `intensity == 0`，以免误删真实低信号 bin。
+
+    Returns ``(radial_list, intensity_list)``. When ``drop`` is False, or when the
+    result lacks a usable ``count`` array, the original arrays are returned as-is.
+    """
+    radial = res.radial
+    intensity = res.intensity
+    count = getattr(res, "count", None) if drop else None
+    if drop and count is not None:
+        keep = count > 0  # empty bin 的 count 恰为 0
+        radial = radial[keep]
+        intensity = intensity[keep]
+    return radial.tolist(), intensity.tolist()
+
+
 async def handle_integrate1d(
     payload: dict[str, Any],
     send_progress: Callable[[float, str], Awaitable[None]],
@@ -974,6 +1015,7 @@ async def handle_integrate1d(
             data, dead_mask, meta = await _run_blocking(
                 ImageLoader.load, fpath,
                 payload.get("h5_dataset_path"), payload.get("h5_channel"),
+                payload.get("frame_index", 0),
             )
             if data is None:
                 failed.append({"file": fpath, "reason": "No data loaded"})
@@ -1006,14 +1048,17 @@ async def handle_integrate1d(
                 res = ai.integrate1d_ng(**integrate_kwargs)
             else:
                 res = ai.integrate1d(**integrate_kwargs)
+            radial_list, intensity_list = _drop_empty_bins(
+                res, opts.get("drop_empty_bins", True)
+            )
             results.append({
-                "radial": res.radial.tolist(),
-                "intensity": res.intensity.tolist(),
+                "radial": radial_list,
+                "intensity": intensity_list,
                 "label": meta.get("filename", fpath),
                 "filename": meta.get("filename", fpath),
                 "unit": opts.get("unit", "q_nm^-1"),
             })
-            print(f"[integrate1d] OK ({i+1}/{len(files)}): {fpath} → {len(res.radial)} points", flush=True)
+            print(f"[integrate1d] OK ({i+1}/{len(files)}): {fpath} → {len(radial_list)} points (of {len(res.radial)})", flush=True)
         except Exception as file_exc:
             failed.append({"file": fpath, "reason": str(file_exc)})
             print(f"[integrate1d] ERROR on {fpath}: {file_exc}", flush=True)
@@ -1057,6 +1102,7 @@ async def handle_integrate_azimuth(
             data, dead_mask, meta = await _run_blocking(
                 ImageLoader.load, fpath,
                 payload.get("h5_dataset_path"), payload.get("h5_channel"),
+                payload.get("frame_index", 0),
             )
             if data is None:
                 failed.append({"file": fpath, "reason": "No data loaded"})
@@ -1078,7 +1124,11 @@ async def handle_integrate_azimuth(
             kw: dict[str, Any] = {
                 "data": data,
                 "npt": opts.get("npt", 360),
+                "npt_rad": opts.get("npt_rad", 100),
                 "unit": opts.get("unit", "chi_deg"),
+                # radial_unit 决定 radial_range 的单位。pyFAI 默认为 q_nm^-1，
+                # 若不显式传入，用户按 q_A^-1 / 2th_deg / r_mm 填的范围会被误当作 nm^-1。
+                "radial_unit": opts.get("radial_unit", "q_nm^-1"),
                 "mask": mask.astype(np.uint8),
                 "method": opts.get("method", "splitpixel"),
             }
@@ -1091,12 +1141,15 @@ async def handle_integrate_azimuth(
             if radial_min is not None and radial_max is not None:
                 kw["radial_range"] = (float(radial_min), float(radial_max))
             res = ai.integrate_radial(**kw)
+            radial_list, intensity_list = _drop_empty_bins(
+                res, opts.get("drop_empty_bins", True)
+            )
             results.append({
-                "radial": res.radial.tolist(),
-                "intensity": res.intensity.tolist(),
+                "radial": radial_list,
+                "intensity": intensity_list,
                 "label": meta.get("filename", fpath),
                 "filename": meta.get("filename", fpath),
-                "chi": res.radial.tolist(),
+                "chi": radial_list,
                 "unit": opts.get("unit", "chi_deg"),
             })
         except Exception as file_exc:
@@ -1141,6 +1194,7 @@ async def handle_integrate_cake(
             data, dead_mask, meta = await _run_blocking(
                 ImageLoader.load, fpath,
                 payload.get("h5_dataset_path"), payload.get("h5_channel"),
+                payload.get("frame_index", 0),
             )
             if data is None:
                 failed.append({"file": fpath, "reason": "No data loaded"})
@@ -1181,9 +1235,12 @@ async def handle_integrate_cake(
             res = ai.integrate1d(
                 **integrate_kwargs,
             )
+            x_list, y_list = _drop_empty_bins(
+                res, opts.get("drop_empty_bins", True)
+            )
             traces.append({
-                "x": res.radial.tolist(),
-                "y": res.intensity.tolist(),
+                "x": x_list,
+                "y": y_list,
                 "name": meta.get("filename", "") or Path(fpath).name,
             })
         except Exception as file_exc:
@@ -1399,9 +1456,226 @@ async def handle_viewer_config(
                     float(geo.get("centerX", 512.0)),
                     float(geo.get("centerY", 512.0)),
                 )
+            # center_x/y already align with data storage order (verified against
+            # pyFAI calc_pos_zyx); no orientation transform needed.
+            # center_x/y 已与数据存储顺序对齐（经 pyFAI calc_pos_zyx 验证），无需 orientation 转换。
             return {"status": "ok", "centerX": center_x, "centerY": center_y}
         except Exception as exc:
             return {"status": "error", "message": f"Failed to resolve geometry center: {exc}"}
+
+    # ── azimuth_mask: render the selected radial-range (qmin–qmax) ring overlay ─
+    # Computes a per-pixel radial map via pyFAI (q / 2θ / r in the user's unit),
+    # centered on the beam center, and fills the [rad_min, rad_max] band as a
+    # semi-transparent gray ring — exactly the pixels integrate_azimuth uses.
+    # Optional azimuthal [az_min, az_max] crop narrows the ring to a sector.
+    # Result is returned as a binary PNG via the __binary_png__ contract.
+    # 通过 pyFAI 计算逐像素径向图（q / 2θ / r，按用户单位），以光束中心为圆心，
+    # 将 [rad_min, rad_max] 带填充为半透明灰色圆环 —— 即 integrate_azimuth 实际
+    # 积分的像素。可选方位角 [az_min, az_max] 裁剪将圆环收窄为扇区。
+    # 结果经 __binary_png__ 二进制帧返回。
+    if action == "azimuth_mask":
+        await send_progress(0.0, "Computing overlay...")
+
+        def _compute_azimuth_mask(pl: dict[str, Any]) -> dict[str, Any]:
+            geo = pl.get("geometry", {}) or {}
+            if geo.get("poniPath") or geo.get("poni_path"):
+                ai, _cx, _cy = IntegratorFactory.from_poni_path(
+                    geo.get("poniPath") or geo.get("poni_path")
+                )
+            elif geo.get("manual"):
+                m = geo["manual"]
+                ai, _cx, _cy = IntegratorFactory.from_manual_params(
+                    m.get("pixel_size_um", 172.0), m.get("dist_mm", 200.0),
+                    m.get("wavelength_A", 1.5418), m.get("center_x_px", 512.0),
+                    m.get("center_y_px", 512.0), m.get("rot1_deg", 0.0),
+                    m.get("rot2_deg", 0.0), m.get("rot3_deg", 0.0),
+                )
+            else:
+                # Mirror resolve_geometry_center's manual path so a PONI-less
+                # geometry (pixel1/pixel2/distance/wavelength/centerX/Y) works.
+                # 镜像 resolve_geometry_center 的手动路径，使无 PONI 文件的几何可用。
+                ai, _cx, _cy = IntegratorFactory.from_manual_params(
+                    float(geo.get("pixel1", geo.get("pixel_size_um", 172.0))),
+                    float(geo.get("distance", geo.get("dist_mm", 200.0))),
+                    float(geo.get("wavelength", geo.get("wavelength_A", 1.5418))),
+                    float(geo.get("centerX", geo.get("center_x_px", 512.0))),
+                    float(geo.get("centerY", geo.get("center_y_px", 512.0))),
+                )
+
+            # Determine image shape (rows, cols) / 确定图像形状 (行, 列)
+            shape = pl.get("shape")
+            if shape and isinstance(shape, (list, tuple)) and len(shape) >= 2:
+                rows, cols = int(shape[0]), int(shape[1])
+            else:
+                fpath = pl.get("filePath", "")
+                if not fpath:
+                    raise ValueError("azimuth_mask requires either 'shape' or 'filePath'")
+                info = ImageLoader.probe(fpath)
+                rows = int(info["height"])
+                cols = int(info["width"])
+            img_shape = (rows, cols)
+
+            # Radial range (qmin–qmax) in the user's unit → the gray ring band.
+            # 径向范围（qmin–qmax，按用户单位）→ 灰色圆环带。
+            rad_unit = pl.get("radial_unit")
+            rad_min = pl.get("radial_min")
+            rad_max = pl.get("radial_max")
+            print(
+                f"[azimuth_mask] shape={img_shape} rad_unit={rad_unit!r} "
+                f"rad_min={rad_min!r} rad_max={rad_max!r} "
+                f"beamCenter=({ai.poni2/ai.pixel2:.1f},{ai.poni1/ai.pixel1:.1f}) "
+                f"poniPath={geo.get('poniPath') or geo.get('poni_path')}",
+                flush=True,
+            )
+
+            if (
+                isinstance(rad_unit, str) and rad_unit
+                and rad_min is not None and rad_max is not None
+                and float(rad_min) < float(rad_max)
+            ):
+                r = _orient_to_data(ai.array_from_unit(img_shape, typ="center", unit=rad_unit), ai)
+                mask = (r >= float(rad_min)) & (r <= float(rad_max))
+                print(f"[azimuth_mask] mask pixels: {int(mask.sum())}/{mask.size}", flush=True)
+            else:
+                # No (valid) radial range → no ring to draw.
+                # 无（有效）径向范围 → 无圆环可绘制。
+                mask = np.zeros(img_shape, dtype=bool)
+
+            # Optional azimuthal crop narrows the ring to a sector.
+            # 可选方位角裁剪将圆环收窄为扇区。
+            az_min = pl.get("azimuth_min")
+            az_max = pl.get("azimuth_max")
+            if az_min is not None and az_max is not None:
+                a_lo, a_hi = float(az_min), float(az_max)
+                if not (a_lo <= -180.0 and a_hi >= 180.0):
+                    chi = _orient_to_data(ai.array_from_unit(img_shape, typ="center", unit="chi_deg"), ai)
+                    center = 0.5 * (a_lo + a_hi)
+                    half = 0.5 * (a_hi - a_lo)
+                    d = (chi - center + 180.0) % 360.0 - 180.0
+                    mask = mask & (np.abs(d) <= half)
+
+            png = ImageRenderer.render_mask_png(mask)
+            return {
+                "__binary_png__": png, "width": cols, "height": rows,
+                "mime": "image/png", "status": "ok",
+                "metadata": {
+                    "radial_unit": rad_unit, "radial_min": rad_min, "radial_max": rad_max,
+                    "shape": [rows, cols],
+                },
+            }
+
+        try:
+            result = await _run_blocking(_compute_azimuth_mask, payload)
+            await send_progress(1.0, "Done")
+            return result
+        except Exception as exc:
+            traceback.print_exc()
+            return {"status": "error", "message": f"Failed to compute azimuth mask: {exc}"}
+
+    # ── pixel_info: read (q, 2θ, chi, intensity) at a clicked pixel ──────
+    # Loads the frame, builds the same pyFAI integrator as azimuth_mask, and
+    # returns the radial/azimuthal coordinates + intensity for one pixel.
+    # 返回单个像素的 (q, 2θ, chi, 强度)，几何与 azimuth_mask 同源。
+    if action == "pixel_info":
+        await send_progress(0.0, "Reading pixel info...")
+
+        def _compute_pixel_info(pl: dict[str, Any]) -> dict[str, Any]:
+            geo = pl.get("geometry", {}) or {}
+            if geo.get("poniPath") or geo.get("poni_path"):
+                ai, _cx, _cy = IntegratorFactory.from_poni_path(
+                    geo.get("poniPath") or geo.get("poni_path")
+                )
+            elif geo.get("manual"):
+                m = geo["manual"]
+                ai, _cx, _cy = IntegratorFactory.from_manual_params(
+                    m.get("pixel_size_um", 172.0), m.get("dist_mm", 200.0),
+                    m.get("wavelength_A", 1.5418), m.get("center_x_px", 512.0),
+                    m.get("center_y_px", 512.0), m.get("rot1_deg", 0.0),
+                    m.get("rot2_deg", 0.0), m.get("rot3_deg", 0.0),
+                )
+            else:
+                ai, _cx, _cy = IntegratorFactory.from_manual_params(
+                    float(geo.get("pixel1", geo.get("pixel_size_um", 172.0))),
+                    float(geo.get("distance", geo.get("dist_mm", 200.0))),
+                    float(geo.get("wavelength", geo.get("wavelength_A", 1.5418))),
+                    float(geo.get("centerX", geo.get("center_x_px", 512.0))),
+                    float(geo.get("centerY", geo.get("center_y_px", 512.0))),
+                )
+
+            fpath = pl.get("filePath", "")
+            if not fpath:
+                raise ValueError("pixel_info requires 'filePath'")
+            frame_index = max(0, int(pl.get("frame", 0) or 0))
+            dataset_path = pl.get("dataset")
+            h5_channel = pl.get("channel")
+
+            ext = os.path.splitext(fpath)[1].lower()
+            if ext in {".h5", ".hdf5"}:
+                if not dataset_path:
+                    datasets = H5Handler.find_datasets(fpath)
+                    entries = _serialize_h5_datasets(datasets)
+                    dataset_path = H5Handler.pick_default_dataset(
+                        [item["path"] for item in entries]
+                    )
+                    if not dataset_path:
+                        raise ValueError("No image dataset found")
+                data, _dead = H5Handler.load_frame(fpath, dataset_path, frame_index, h5_channel)
+            else:
+                data, _dead, _meta = ImageLoader.load(fpath, dataset_path, h5_channel)
+            if data is None:
+                raise ValueError("Failed to load frame")
+
+            rows, cols = int(data.shape[0]), int(data.shape[1])
+            # pixelX = column, pixelY = row (ImagePreview's image:click convention).
+            # pixelX = 列, pixelY = 行（ImagePreview 的 image:click 约定）。
+            col = int(pl.get("pixelX", -1))
+            row = int(pl.get("pixelY", -1))
+            if not (0 <= row < rows and 0 <= col < cols):
+                raise ValueError(
+                    f"Pixel ({col},{row}) out of bounds for shape ({rows},{cols})"
+                )
+
+            shape = (rows, cols)
+            # Rotate geometry arrays into data/display space so q[row, col]
+            # matches data[row, col] intensity and the pixel the user clicked.
+            # 将几何数组旋转到数据/显示空间，使 q[row,col] 与 data[row,col] 强度及用户点击的像素一致。
+            q = _orient_to_data(ai.array_from_unit(shape, typ="center", unit="q_A^-1"), ai)
+            two_theta = _orient_to_data(ai.array_from_unit(shape, typ="center", unit="2th_deg"), ai)
+            chi = _orient_to_data(ai.array_from_unit(shape, typ="center", unit="chi_deg"), ai)
+            intensity = float(data[row, col])
+            bcx = ai.poni2 / ai.pixel2
+            bcy = ai.poni1 / ai.pixel1
+
+            result = {
+                "status": "ok",
+                "pixelX": col,
+                "pixelY": row,
+                "row": row,
+                "col": col,
+                "q": float(q[row, col]),
+                "twoTheta": float(two_theta[row, col]),
+                "chi": float(chi[row, col]),
+                "intensity": intensity,
+                "unit": "q_A^-1",
+                "shape": [rows, cols],
+                "beamCenterX": float(bcx),
+                "beamCenterY": float(bcy),
+            }
+            print(
+                f"[pixel_info] ({col},{row}) q={result['q']:.4f} 2th={result['twoTheta']:.4f} "
+                f"chi={result['chi']:.4f} I={intensity} | beamCenter=({bcx:.1f},{bcy:.1f}) "
+                f"dist={((col-bcx)**2+(row-bcy)**2)**0.5:.1f}px",
+                flush=True,
+            )
+            return result
+
+        try:
+            result = await _run_blocking(_compute_pixel_info, payload)
+            await send_progress(1.0, "Done")
+            return result
+        except Exception as exc:
+            traceback.print_exc()
+            return {"status": "error", "message": f"Failed to read pixel info: {exc}"}
 
     # ── png_export: render a single frame with custom settings ──────────
     if action == "png_export":
@@ -3761,6 +4035,27 @@ async def _handle_poni_importer_export(
     if not poni_data:
         return {"status": "error", "message": "Missing poni_data"}
 
+    # export_to_poni always emits a valid `Detector:` line: a registered
+    # pyFAI name when one is given, otherwise the generic `Detector` class
+    # configured with pixel1/pixel2 (+ optional max_shape). The only hard
+    # precondition is a usable pixel size for that generic fallback, so we
+    # validate that instead of requiring a preset detector name — this lets
+    # users export a custom (non-registry) detector from the PONI importer.
+    if export_format == "poni":
+        pixel_size = poni_data.get("pixel_size")
+        try:
+            pixel_ok = pixel_size is not None and float(pixel_size) > 0
+        except (TypeError, ValueError):
+            pixel_ok = False
+        if not pixel_ok:
+            return {
+                "status": "error",
+                "message": (
+                    "Missing or invalid pixel_size — enter a pixel size in "
+                    "the PONI importer before exporting a .poni file."
+                ),
+            }
+
     await send_progress(0.5, "Exporting...")
 
     try:
@@ -3816,6 +4111,276 @@ async def handle_poni_importer(
         return {"status": "error", "message": f"Unknown action: {action}"}
 
 
+# ---------------------------------------------------------------------------
+# Image Math handler / 图像运算处理函数
+# ---------------------------------------------------------------------------
+
+
+async def _handle_image_math_compute(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Compute image arithmetic: result = image1 * factor1 ± image2 * factor2.
+    计算图像运算：result = image1 * factor1 ± image2 * factor2。"""
+    await send_progress(0.0, "Loading image 1...")
+    image1_path = payload.get("image1_path", "")
+    image2_path = payload.get("image2_path", "")
+    factor1 = float(payload.get("factor1", 1.0))
+    factor2 = float(payload.get("factor2", 1.0))
+    operation = payload.get("operation", "subtract")
+
+    if not image1_path:
+        return {"status": "error", "message": "Missing image1_path"}
+    if not image2_path:
+        return {"status": "error", "message": "Missing image2_path"}
+
+    # Load image 1 / 加载图像1
+    img1_result = await _run_blocking(ImageLoader.load, image1_path)
+    if isinstance(img1_result, tuple):
+        img1_data = img1_result[0]
+    elif isinstance(img1_result, dict):
+        img1_data = img1_result.get("data")
+    else:
+        img1_data = img1_result
+    if img1_data is None:
+        return {"status": "error", "message": f"Failed to load image1: {image1_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Load image 2 / 加载图像2
+    await send_progress(0.3, "Loading image 2...")
+    img2_result = await _run_blocking(ImageLoader.load, image2_path)
+    if isinstance(img2_result, tuple):
+        img2_data = img2_result[0]
+    elif isinstance(img2_result, dict):
+        img2_data = img2_result.get("data")
+    else:
+        img2_data = img2_result
+    if img2_data is None:
+        return {"status": "error", "message": f"Failed to load image2: {image2_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Perform arithmetic / 执行运算
+    await send_progress(0.6, "Computing image arithmetic...")
+    result = await _run_blocking(
+        ImageMath.image_arithmetic, img1_data, img2_data, factor1, factor2, operation,
+    )
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Render preview PNG / 渲染预览PNG
+    await send_progress(0.8, "Rendering preview...")
+    stats = ImageRenderer.compute_stats(result)
+    auto_clim = (stats.get("autoMin", 0.0), stats.get("autoMax", 1.0))
+    render_settings = {
+        "cmap": "viridis",
+        "use_log": False,
+        "clim": auto_clim,
+    }
+    png_bytes = await _run_blocking(ImageRenderer.render_png, result, render_settings)
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "__binary_png__": png_bytes,
+        "mime": "image/png",
+        "width": int(result.shape[-1]),
+        "height": int(result.shape[-2]),
+        "stats": stats,
+        "result": {
+            "shape": list(result.shape),
+            "dtype": str(result.dtype),
+            "min": float(np.nanmin(result)),
+            "max": float(np.nanmax(result)),
+        },
+    }
+
+
+async def _handle_image_math_preview(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Preview an image file for image math. 预览图像运算中的图像文件。"""
+    file_path = (
+        payload.get("file_path")
+        or payload.get("image1_path")
+        or payload.get("image2_path")
+        or ""
+    )
+    if not file_path:
+        return {"status": "error", "message": "Missing file_path"}
+
+    if not os.path.isfile(file_path):
+        return {"status": "error", "message": f"File not found: {file_path}"}
+
+    await send_progress(0.2, "Loading image...")
+    load_result = await _run_blocking(ImageLoader.load, file_path)
+    if isinstance(load_result, tuple):
+        data = load_result[0]
+    elif isinstance(load_result, dict):
+        data = load_result.get("data")
+    else:
+        data = load_result
+    if data is None:
+        return {"status": "error", "message": f"Failed to load image: {file_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    await send_progress(0.6, "Rendering preview...")
+    stats = ImageRenderer.compute_stats(data)
+    auto_clim = (stats.get("autoMin", 0.0), stats.get("autoMax", 1.0))
+
+    cmap = payload.get("cmap", "viridis") or "viridis"
+    use_log = bool(payload.get("use_log", False))
+    clim_min = payload.get("clim_min")
+    clim_max = payload.get("clim_max")
+    if clim_min is not None and clim_max is not None:
+        clim = (float(clim_min), float(clim_max))
+    else:
+        clim = auto_clim
+
+    render_settings = {
+        "cmap": cmap,
+        "use_log": use_log,
+        "clim": clim,
+    }
+    png_bytes = await _run_blocking(ImageRenderer.render_png, data, render_settings)
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "__binary_png__": png_bytes,
+        "mime": "image/png",
+        "width": int(data.shape[-1]),
+        "height": int(data.shape[-2]),
+        "stats": stats,
+        "result": {
+            "shape": list(data.shape),
+            "dtype": str(data.dtype),
+            "min": float(np.nanmin(data)),
+            "max": float(np.nanmax(data)),
+        },
+    }
+
+
+async def _handle_image_math_preview_result(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Compute and preview the arithmetic result. 计算并预览运算结果。"""
+    image1_path = payload.get("image1_path", "")
+    image2_path = payload.get("image2_path", "")
+    factor1 = float(payload.get("factor1", 1.0))
+    factor2 = float(payload.get("factor2", 1.0))
+    operation = payload.get("operation", "subtract")
+
+    if not image1_path:
+        return {"status": "error", "message": "Missing image1_path"}
+    if not image2_path:
+        return {"status": "error", "message": "Missing image2_path"}
+
+    # Load both images / 加载两张图像
+    await send_progress(0.1, "Loading images...")
+    img1_result = await _run_blocking(ImageLoader.load, image1_path)
+    if isinstance(img1_result, tuple):
+        img1_data = img1_result[0]
+    elif isinstance(img1_result, dict):
+        img1_data = img1_result.get("data")
+    else:
+        img1_data = img1_result
+    if img1_data is None:
+        return {"status": "error", "message": f"Failed to load image1: {image1_path}"}
+
+    img2_result = await _run_blocking(ImageLoader.load, image2_path)
+    if isinstance(img2_result, tuple):
+        img2_data = img2_result[0]
+    elif isinstance(img2_result, dict):
+        img2_data = img2_result.get("data")
+    else:
+        img2_data = img2_result
+    if img2_data is None:
+        return {"status": "error", "message": f"Failed to load image2: {image2_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Compute / 计算
+    await send_progress(0.5, "Computing...")
+    result = await _run_blocking(
+        ImageMath.image_arithmetic, img1_data, img2_data, factor1, factor2, operation,
+    )
+
+    # Render / 渲染
+    await send_progress(0.7, "Rendering preview...")
+    stats = ImageRenderer.compute_stats(result)
+    auto_clim = (stats.get("autoMin", 0.0), stats.get("autoMax", 1.0))
+
+    cmap = payload.get("cmap", "viridis") or "viridis"
+    use_log = bool(payload.get("use_log", False))
+    clim_min = payload.get("clim_min")
+    clim_max = payload.get("clim_max")
+    if clim_min is not None and clim_max is not None:
+        clim = (float(clim_min), float(clim_max))
+    else:
+        clim = auto_clim
+
+    render_settings = {
+        "cmap": cmap,
+        "use_log": use_log,
+        "clim": clim,
+    }
+    png_bytes = await _run_blocking(ImageRenderer.render_png, result, render_settings)
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "__binary_png__": png_bytes,
+        "mime": "image/png",
+        "width": int(result.shape[-1]),
+        "height": int(result.shape[-2]),
+        "stats": stats,
+        "result": {
+            "shape": list(result.shape),
+            "dtype": str(result.dtype),
+            "min": float(np.nanmin(result)),
+            "max": float(np.nanmax(result)),
+        },
+    }
+
+
+async def handle_image_math(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Handle image math (arithmetic) requests. 图像运算（算术）请求处理函数。
+
+    Actions:
+      - compute: Load two images, perform arithmetic, return stats + preview PNG
+      - preview_image1: Preview image1 file
+      - preview_image2: Preview image2 file
+      - preview_result: Compute and preview the arithmetic result
+    """
+    action = payload.get("action", "compute")
+
+    if action == "compute":
+        return await _handle_image_math_compute(payload, send_progress, cancel_event)
+    elif action in ("preview_image1", "preview_image2"):
+        return await _handle_image_math_preview(payload, send_progress, cancel_event)
+    elif action == "preview_result":
+        return await _handle_image_math_preview_result(payload, send_progress, cancel_event)
+    else:
+        return {"status": "error", "message": f"Unknown action: {action}"}
+
+
 # Route → handler mapping / 路由→处理函数映射
 ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/integrate1d": handle_integrate1d,
@@ -3835,6 +4400,7 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/list_space_groups": handle_list_space_groups,
     "/api/bg_subtract": handle_bg_subtract,
     "/api/poni_importer": handle_poni_importer,
+    "/api/image_math": handle_image_math,
 }
 
 

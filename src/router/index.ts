@@ -64,24 +64,23 @@ const router = createRouter({
       }
     },
     {
-      path: '/workspace/h5convert',
-      name: 'h5convert',
-      component: () => import('@/views/workspace/H5ConvertView.vue'),
+      path: '/workspace/h5-toolkit',
+      name: 'h5-toolkit',
+      component: () => import('@/views/workspace/H5ToolkitView.vue'),
       meta: {
-        titleKey: 'h5convert.title',
+        titleKey: 'h5toolkit.title',
         sectionKey: 'shell.sections.workspace',
-        descriptionKey: 'h5convert.subtitle'
+        descriptionKey: 'h5toolkit.subtitle'
       }
+    },
+    // Legacy routes redirect to the merged toolkit page / 旧路由重定向到合并后的工具页
+    {
+      path: '/workspace/h5convert',
+      redirect: { name: 'h5-toolkit' }
     },
     {
       path: '/workspace/h5-extract',
-      name: 'h5-extract',
-      component: () => import('@/views/workspace/H5ExtractView.vue'),
-      meta: {
-        titleKey: 'h5extract.title',
-        sectionKey: 'shell.sections.workspace',
-        descriptionKey: 'h5extract.subtitle'
-      }
+      redirect: { name: 'h5-toolkit' }
     },
     {
       path: '/workspace/mask-maker',
@@ -131,6 +130,16 @@ const router = createRouter({
         titleKey: 'bgSubtract.title',
         sectionKey: 'shell.sections.workspace',
         descriptionKey: 'bgSubtract.description',
+      },
+    },
+    {
+      path: '/workspace/image-math',
+      name: 'image-math',
+      component: () => import('@/views/workspace/ImageMathView.vue'),
+      meta: {
+        titleKey: 'imageMath.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'imageMath.description',
       },
     },
     {

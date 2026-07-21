@@ -314,10 +314,13 @@ class ImageLoader:
         file_path: str | Path,
         h5_dataset_path: Optional[str] = None,
         h5_channel: Optional[str] = None,
+        frame_index: int = 0,
     ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], dict]:
         """Load image data from a file path.
         从文件路径加载图像数据。
 
+        ``frame_index`` selects which frame of a multi-frame (3-D/4-D) HDF5
+        dataset to read (default first frame). For EDF/TIFF it is ignored.
         Returns (data, dead_mask, meta). dead_mask is non-None only for HDF5.
         """
         file_path = Path(file_path)
@@ -326,12 +329,22 @@ class ImageLoader:
 
         try:
             if ext == ".h5":
+                # Auto-select the default image dataset when none is specified —
+                # the integration routes have no dataset selector in the UI, so
+                # without this every .h5 file fails with "No data loaded".
+                # Mirrors the viewer/open_file flow (H5Handler.find_datasets +
+                # pick_default_dataset).
+                if not h5_dataset_path:
+                    datasets = H5Handler.find_datasets(str(file_path))
+                    h5_dataset_path = H5Handler.pick_default_dataset(list(datasets.keys()))
                 if not h5_dataset_path:
                     return None, None, meta
                 data, dead_mask = H5Handler.load_frame(
-                    str(file_path), h5_dataset_path, frame_index=0, channel=h5_channel
+                    str(file_path), h5_dataset_path,
+                    frame_index=frame_index, channel=h5_channel,
                 )
                 meta["h5_dataset"] = h5_dataset_path
+                meta["frame_index"] = max(0, int(frame_index))
                 if h5_channel:
                     meta["h5_channel"] = h5_channel
                 return data, dead_mask, meta

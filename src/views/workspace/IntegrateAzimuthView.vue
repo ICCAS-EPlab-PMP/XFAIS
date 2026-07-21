@@ -26,6 +26,10 @@
         <!-- Radial range / 径向范围 -->
         <fieldset class="az-fieldset">
           <legend class="az-legend">{{ t('integrateAzimuth.radialRange.title') }}</legend>
+          <label class="az-toggle-label" :title="t('integrateAzimuth.radialRange.overlayHint')">
+            <input v-model="radialOverlayEnabled" type="checkbox" />
+            <span>{{ t('integrateAzimuth.radialRange.overlayToggle') }}</span>
+          </label>
           <div class="az-grid">
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.radialRange.unit') }}</span>
@@ -163,6 +167,10 @@
               />
             </label>
           </div>
+          <label class="az-toggle-label" :title="t('business.advancedOptions.dropEmptyBinsHint')">
+            <input v-model="dropEmptyBins" type="checkbox" :data-testid="testIds.azimuthDropEmptyBins" />
+            <span>{{ t('business.advancedOptions.dropEmptyBins') }}</span>
+          </label>
         </fieldset>
 
         <!-- Display settings (collapsible, default collapsed) / 显示设置（可折叠，默认收起） -->
@@ -241,6 +249,13 @@
           </div>
         </div>
 
+        <!-- HDF5 dataset/channel/frame selector (only for .h5 with image datasets) / HDF5 选择器 -->
+        <H5Selector
+          v-model="h5Selection"
+          :datasets="h5Datasets"
+          @change="onH5SelectionChange"
+        />
+
         <!-- Image preview (collapsible) / 图像预览（可折叠） -->
         <div class="az-collapsible">
           <div class="az-section-toggle" @click="onPreviewToggle">
@@ -255,7 +270,7 @@
               <div class="az-preview-image">
                 <ImagePreview
                   :image-b64="previewB64"
-                  :overlays="beamCenterOverlay"
+                  :overlays="imageOverlays"
                   :show-colorbar="true"
                   :colorbar-gradient="colorbarGradient"
                   :colorbar-min-label="colorbarMinLabel"
@@ -405,6 +420,8 @@ import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
 import PolarizationForm from '@/components/business/PolarizationForm.vue'
+import H5Selector from '@/components/business/H5Selector.vue'
+import type { H5DatasetInfo, H5Selection } from '@/components/business/H5Selector.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ExportDialog from '@/components/business/ExportDialog.vue'
 import type { ExportFormat, ExportMode } from '@/components/business/ExportDialog.vue'
@@ -426,6 +443,12 @@ interface PreviewMetadata {
   metadata?: {
     width?: number
     height?: number
+    h5Datasets?: H5DatasetInfo[]
+    selectedDataset?: string
+    selectedChannel?: number
+    nChannels?: number
+    totalFrames?: number
+    frameIndex?: number
   }
 }
 
@@ -489,14 +512,18 @@ const maskConfig = ref<MaskConfig>({
 const polarizationFactor = ref<number | null>(null)
 
 const radialUnit = ref('q_A^-1')
-const radialMin = ref(1.0)
-const radialMax = ref(20.0)
+const radialMin = ref(0.98)
+const radialMax = ref(1.02)
 const chiUnit = ref<'chi_deg' | 'chi_rad'>('chi_deg')
 const npt = ref(360)
 const nptRad = ref(100)
+/** Drop fully-masked empty bins from the result (default on). / 剔除完全遮蔽的空 bin（默认开）。 */
+const dropEmptyBins = ref(true)
 /** Azimuth integration range in degrees. Default -180..180 = full 360°. */
 const azimuthMin = ref(-180)
 const azimuthMax = ref(180)
+/** Show a gray overlay ring for the selected radial (qmin–qmax) range on the preview. / 在预览图上为所选径向范围（qmin–qmax）显示灰色圆环蒙版。 */
+const radialOverlayEnabled = ref(true)
 
 const filePath = ref<string | null>(null)
 
@@ -549,6 +576,8 @@ function clearAllFiles(): void {
   previewImageSize.value = null
   selectedPreviewIndex.value = 0
   thumbnailItems.value = []
+  h5Datasets.value = []
+  h5Selection.value = { dataset: '', channel: 0, frame: 0 }
 }
 
 // ── Preview state / 预览状态 ──
@@ -561,6 +590,11 @@ const resolvedBeamCenter = ref<{ x: number; y: number } | null>(
   { x: geometry.value.centerX, y: geometry.value.centerY }
 )
 const previewImageSize = ref<{ width: number; height: number; origWidth: number; origHeight: number } | null>(null)
+
+// ── H5 dataset/channel/frame selection / H5 数据集/通道/帧选择 ──
+
+const h5Datasets = ref<H5DatasetInfo[]>([])
+const h5Selection = ref<H5Selection>({ dataset: '', channel: 0, frame: 0 })
 
 // ── Display settings / 显示设置 ──
 
@@ -644,12 +678,40 @@ const colorbarMaxLabel = computed(() => {
     : autoContrast.value.autoMax.toExponential(3)
 })
 
-const beamCenterOverlay = computed<Overlay[]>(() => {
-  if (!resolvedBeamCenter.value || !previewImageSize.value) return []
-  const px = resolvedBeamCenter.value.x
-  const py = resolvedBeamCenter.value.y
-  if (!Number.isFinite(px) || !Number.isFinite(py)) return []
-  return [{ type: 'beamCenter', x: px, y: py }]
+/** Azimuth-range overlay mask PNG (blob URL), recomputed on range/geometry change. / 方位角范围叠加遮罩 PNG（blob URL），随范围/几何变化重新计算。 */
+const azimuthMaskSrc = ref<string | null>(null)
+const azimuthMaskSize = ref<{ width: number; height: number } | null>(null)
+const azimuthMaskLoading = ref(false)
+let cleanupMaskBinary: (() => void) | null = null
+let cleanupMaskResult: (() => void) | null = null
+let cleanupMaskError: (() => void) | null = null
+let maskDebounceTimer: ReturnType<typeof setTimeout> | undefined
+
+/**
+ * Image overlays: optional azimuth-range mask (drawn first, under the crosshair)
+ * + the beam-center crosshair. Modeled on IntegrateCakeView.imageOverlays.
+ * 图像叠加：可选的方位角范围遮罩（先绘制，位于十字准线之下）+ 光束中心十字准线。
+ * 参考 IntegrateCakeView.imageOverlays。
+ */
+const imageOverlays = computed<Overlay[]>(() => {
+  const overlays: Overlay[] = []
+  const size = previewImageSize.value
+  if (radialOverlayEnabled.value && azimuthMaskSrc.value && azimuthMaskSize.value && size) {
+    overlays.push({
+      type: 'imageMask',
+      src: azimuthMaskSrc.value,
+      width: azimuthMaskSize.value.width || size.origWidth,
+      height: azimuthMaskSize.value.height || size.origHeight,
+    })
+  }
+  if (resolvedBeamCenter.value && size) {
+    const px = resolvedBeamCenter.value.x
+    const py = resolvedBeamCenter.value.y
+    if (Number.isFinite(px) && Number.isFinite(py)) {
+      overlays.push({ type: 'beamCenter', x: px, y: py })
+    }
+  }
+  return overlays
 })
 
 const beamCenterLabel = computed(() => {
@@ -668,8 +730,21 @@ function formatSci(value: number): string {
 function submitAndWait(route: string, params: Record<string, unknown>): Promise<unknown> {
   return new Promise((resolve, reject) => {
     transport.submitTask(route, params).then(response => {
-      transport.onTaskResult(response.taskId, (p) => resolve(p.data))
-      transport.onTaskError(response.taskId, (p) => reject(new Error(p.error)))
+      // Register both listeners, but unsubscribe whichever fires first so we
+      // never leak handlers across a long session of preview/thumbnail calls.
+      // 注册两个监听器，先触发的负责清理双方，避免预览/缩略图长会话中累积泄漏。
+      let offResult: (() => void) | null = null
+      let offError: (() => void) | null = null
+      let settled = false
+      const finish = (fn: () => void): void => {
+        if (settled) return
+        settled = true
+        offResult?.()
+        offError?.()
+        fn()
+      }
+      offResult = transport.onTaskResult(response.taskId, p => finish(() => resolve(p.data)))
+      offError = transport.onTaskError(response.taskId, p => finish(() => reject(new Error(p.error))))
     }).catch(reject)
   })
 }
@@ -732,6 +807,8 @@ async function handleChooseFiles(): Promise<void> {
   importFolderPath.value = null
   selectedPreviewIndex.value = 0
   thumbnailItems.value = []
+  h5Datasets.value = []
+  h5Selection.value = { dataset: '', channel: 0, frame: 0 }
   await loadPreviewIfExpanded()
   loadThumbnailPageIfExpanded()
 }
@@ -762,6 +839,8 @@ async function rescanFolder(): Promise<void> {
     }
     selectedPreviewIndex.value = 0
     thumbnailItems.value = []
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
     await loadPreviewIfExpanded()
     loadThumbnailPageIfExpanded()
   } catch (err) {
@@ -789,10 +868,18 @@ async function loadPreview(path: string): Promise<void> {
 
   try {
     await resolveBeamCenter()
+    // 4D h5: pass dataset/channel/frame so the preview reflects the user's selection.
+    // On first load of a file h5Datasets is empty (reset by the file-change handler),
+    // so no dataset is sent and the backend auto-detects the default.
+    const isH5 = h5Datasets.value.length > 0
     const response = await transport.submitTask('viewer_config', {
       action: 'open_file',
       filePath: path,
-      frame: 0,
+      frame: h5Selection.value.frame,
+      ...(isH5 ? {
+        dataset: h5Selection.value.dataset || undefined,
+        channel: h5Selection.value.channel,
+      } : {}),
       settings: buildRenderSettings(),
     })
 
@@ -816,7 +903,25 @@ async function loadPreview(path: string): Promise<void> {
         origWidth: data.metadata?.width ?? 0,
         origHeight: data.metadata?.height ?? 0,
       }
+
+      // Capture H5 dataset metadata for the selector / 同步 HDF5 数据集元数据
+      const md = data.metadata
+      h5Datasets.value = Array.isArray(md?.h5Datasets) ? md!.h5Datasets! : []
+      if (h5Datasets.value.length > 0) {
+        const sel = md?.selectedDataset ?? h5Datasets.value[0]?.path ?? ''
+        // Sync selection to the backend-rendered dataset on new-file loads.
+        // Selection-change reloads already request this dataset, so no reset (no loop).
+        if (sel && h5Selection.value.dataset !== sel) {
+          h5Selection.value = { dataset: sel, channel: 0, frame: 0 }
+        }
+      } else if (h5Selection.value.dataset) {
+        h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+      }
+
       previewLoading.value = false
+      // Image is loaded and its size is known — refresh the azimuth overlay.
+      // 图像已加载且尺寸已知 —— 刷新方位角叠加。
+      scheduleAzimuthMask()
     })
 
     cleanupPreviewError = transport.onTaskError(response.taskId, (payload) => {
@@ -850,6 +955,13 @@ function onPreviewToggle(): void {
   }
 }
 
+/** Reload preview when the H5 dataset/channel/frame selection changes */
+function onH5SelectionChange(): void {
+  if (previewExpanded.value && activeFilePath.value) {
+    loadPreview(activeFilePath.value)
+  }
+}
+
 // ── Cleanup / 清理 ──
 
 function cleanupPreviewListeners(): void {
@@ -860,6 +972,107 @@ function cleanupPreviewListeners(): void {
   cleanupPreviewError?.()
   cleanupPreviewError = null
 }
+
+// ── Azimuth-range overlay mask / 方位角范围叠加遮罩 ──
+
+function cleanupMaskListeners(): void {
+  cleanupMaskBinary?.()
+  cleanupMaskBinary = null
+  cleanupMaskResult?.()
+  cleanupMaskResult = null
+  cleanupMaskError?.()
+  cleanupMaskError = null
+}
+
+function revokeMaskSrc(): void {
+  if (azimuthMaskSrc.value?.startsWith('blob:')) {
+    URL.revokeObjectURL(azimuthMaskSrc.value)
+  }
+  azimuthMaskSrc.value = null
+}
+
+/**
+ * Request a per-pixel chi-mask PNG for the current azimuth/radial range from the
+ * backend (viewer_config action 'azimuth_mask'), and expose it via
+ * azimuthMaskSrc for the imageOverlays computed. Debounced by the caller.
+ * 向后端（viewer_config 的 'azimuth_mask'）请求当前方位角/径向范围的逐像素 chi 遮罩
+ * PNG，并通过 azimuthMaskSrc 暴露给 imageOverlays 计算属性。由调用方防抖。
+ */
+async function loadAzimuthMask(): Promise<void> {
+  // Need the overlay enabled, a geometry, a loaded image (for shape), and the
+  // beam center resolved.
+  // 需要启用开关、几何参数、已加载图像（用于获取形状）以及已解析的光束中心。
+  if (!radialOverlayEnabled.value) {
+    revokeMaskSrc()
+    azimuthMaskSize.value = null
+    return
+  }
+  if (!previewExpanded.value || !activeFilePath.value || !previewImageSize.value) return
+  if (azimuthValidationError.value || radialValidationError.value) return
+
+  cleanupMaskListeners()
+  azimuthMaskLoading.value = true
+
+  try {
+    const response = await transport.submitTask('viewer_config', {
+      action: 'azimuth_mask',
+      filePath: activeFilePath.value,
+      geometry: buildGeometryPayload(),
+      azimuth_min: azimuthMin.value,
+      azimuth_max: azimuthMax.value,
+      radial_unit: radialUnit.value,
+      radial_min: radialMin.value,
+      radial_max: radialMax.value,
+    })
+
+    cleanupMaskBinary = transport.onTaskBinaryData(response.taskId, (payload) => {
+      if (!payload.data) return
+      revokeMaskSrc()
+      const blob = new Blob([payload.data], { type: payload.mime || 'image/png' })
+      azimuthMaskSrc.value = URL.createObjectURL(blob)
+      const size = previewImageSize.value
+      if (size) {
+        azimuthMaskSize.value = { width: size.origWidth, height: size.origHeight }
+      }
+      azimuthMaskLoading.value = false
+    })
+
+    cleanupMaskResult = transport.onTaskResult(response.taskId, (payload) => {
+      const data = payload.data as { status?: string; message?: string } | undefined
+      if (data?.status === 'error') {
+        azimuthMaskLoading.value = false
+        revokeMaskSrc()
+        toast.push({
+          title: t('integrateAzimuth.title'),
+          message: data.message ?? t('integrateAzimuth.azimuthRange.overlayError'),
+          tone: 'error',
+        })
+      }
+    })
+
+    cleanupMaskError = transport.onTaskError(response.taskId, () => {
+      azimuthMaskLoading.value = false
+    })
+  } catch {
+    azimuthMaskLoading.value = false
+  }
+}
+
+/** Debounced wrapper so rapid numeric typing doesn't fire a request per keystroke. / 防抖包装，避免数字输入逐键触发请求。 */
+function scheduleAzimuthMask(): void {
+  if (maskDebounceTimer) clearTimeout(maskDebounceTimer)
+  maskDebounceTimer = setTimeout(() => {
+    maskDebounceTimer = undefined
+    void loadAzimuthMask()
+  }, 300)
+}
+
+// Recompute the overlay when the selection, geometry, or toggle changes (debounced).
+// 选择范围、几何参数或开关变化时重新计算叠加（防抖）。
+watch(
+  [radialOverlayEnabled, azimuthMin, azimuthMax, radialMin, radialMax, radialUnit, resolvedBeamCenter, activeFilePath],
+  scheduleAzimuthMask,
+)
 
 // ── Thumbnail loading / 缩略图加载 ──
 
@@ -890,25 +1103,38 @@ async function loadThumbnailPage(page?: number): Promise<void> {
       const parts = path.split(sep)
       const label = parts[parts.length - 1] || path
 
-      const result = await submitAndWait('viewer_config', {
-        action: 'preview',
-        filePath: path,
-        thumb_render_settings: buildThumbRenderSettings(),
-      })
+      try {
+        const result = await submitAndWait('viewer_config', {
+          action: 'preview',
+          filePath: path,
+          thumb_render_settings: buildThumbRenderSettings(),
+        })
 
-      const thumbData = result as { b64?: string; previewB64?: string }
-      items.push({
-        index: start + i,
-        b64: typeof thumbData?.b64 === 'string'
-          ? thumbData.b64
-          : (typeof thumbData?.previewB64 === 'string' ? thumbData.previewB64 : ''),
-        label,
-      })
+        const thumbData = result as { b64?: string; previewB64?: string }
+        // Per-item try/catch: a single unreadable/corrupt file pushes a
+        // placeholder instead of blanking the whole page. The previous
+        // blanket catch made any one failure look like "no thumbnails".
+        // 逐项捕获：单个不可读/损坏的文件仅占位，不再清空整页。
+        items.push({
+          index: start + i,
+          b64: typeof thumbData?.b64 === 'string'
+            ? thumbData.b64
+            : (typeof thumbData?.previewB64 === 'string' ? thumbData.previewB64 : ''),
+          label,
+        })
+      } catch (err) {
+        console.error(`[IntegrateAzimuth] thumbnail render failed for "${label}":`, err)
+        items.push({ index: start + i, b64: '', label })
+      }
     }
 
     thumbnailItems.value = items
-  } catch {
-    thumbnailItems.value = []
+  } catch (err) {
+    // Only catastrophic (non-render) failures reach here — keep whatever
+    // items we have rather than wiping them silently.
+    // 仅灾难性（非渲染）失败到达此处，保留已得项而非静默清空。
+    console.error('[IntegrateAzimuth] loadThumbnailPage aborted:', err)
+    if (items.length) thumbnailItems.value = items
   } finally {
     thumbLoading.value = false
   }
@@ -931,6 +1157,9 @@ function handleThumbSelect(index: number): void {
   selectedPreviewIndex.value = index
   const fPath = files.value[index]
   if (fPath) {
+    // Switching to a different file: reset H5 selection so a stale dataset isn't sent
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
     loadPreview(fPath)
   }
 }
@@ -970,7 +1199,7 @@ function onRadialUnitChange(event: Event): void {
   // Sensible defaults based on unit / 根据单位设置合理默认值
   const defaults: Record<string, [number, number]> = {
     'q_nm^-1': [1.0, 20.0],
-    'q_A^-1': [0.1, 2.0],
+    'q_A^-1': [0.98, 1.02],
     '2th_deg': [1.0, 30.0],
     'r_mm': [5.0, 100.0],
   }
@@ -1009,6 +1238,10 @@ async function handleRun(): Promise<void> {
     const params: Record<string, unknown> = {
       filePath: activeFilePath.value,
       files: [...files.value],
+      // 4D h5 selection — forwarded to the backend integration handler
+      dataset: h5Selection.value.dataset || undefined,
+      channel: h5Selection.value.channel,
+      frame: h5Selection.value.frame,
       geometry: { ...geometry.value },
       mask: { ...maskConfig.value },
       polarizationFactor: polarizationFactor.value,
@@ -1020,6 +1253,7 @@ async function handleRun(): Promise<void> {
       chiUnit: chiUnit.value,
       npt: npt.value,
       nptRad: nptRad.value,
+      dropEmptyBins: dropEmptyBins.value,
     }
 
     const response = await transport.submitTask('integrate_azimuth', params)
@@ -1188,6 +1422,12 @@ onUnmounted(() => {
   if (previewB64.value?.startsWith('blob:')) {
     URL.revokeObjectURL(previewB64.value)
   }
+  if (maskDebounceTimer) {
+    clearTimeout(maskDebounceTimer)
+    maskDebounceTimer = undefined
+  }
+  revokeMaskSrc()
+  cleanupMaskListeners()
   cleanupPreviewListeners()
 })
 </script>

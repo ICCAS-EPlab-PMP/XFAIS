@@ -6,7 +6,7 @@ PONI文件导入服务模块。
 
 Provides functionality to:
 1. Parse pyFAI .poni files
-2. Export to various formats (JSON, manual parameters)
+2. Export to various formats (JSON, manual parameters, .poni)
 
 PONI file format reference / PONI文件格式参考:
 https://pyfai.readthedocs.io/en/latest/api/geometry.html#poni-file
@@ -15,12 +15,61 @@ https://pyfai.readthedocs.io/en/latest/api/geometry.html#poni-file
 from __future__ import annotations
 
 import os
+import re
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# PONI file format constants / PONI文件格式常量
+# ---------------------------------------------------------------------------
+
+# These fields hold string values in pyFAI's standard PONI format, but the
+# value is written WITHOUT surrounding quotes. Writing them quoted (e.g.
+# `Detector: "Pilatus1M"`) works for the official parser, but `Detector_config`
+# is a JSON blob and any extra outer quotes break `json.loads` downstream.
+# All other string fields retain quotes for safety.
+_PONI_QUOTED_FIELDS = {"Detector_config"}
+
+# poni_data keys that carry detector metadata but are NOT pyFAI poni fields.
+# They must not leak into the `.poni` body as bogus `Key: value` lines.
+_NONPONI_DATA_KEYS = {"detector_shape", "detector_label"}
+
+# A custom detector's friendly name is persisted as a comment because pyFAI's
+# factory rejects any non-registry name — the comment is the only channel that
+# round-trips the label. The parser reads it back into `detector_label`.
+_DETECTOR_LABEL_RE = re.compile(r"^#\s*Detector\s+label\s*:\s*(.+)$", re.IGNORECASE)
+
+# PyFAI registry lookup is lazy-imported to avoid hard dependency at module
+# import time (keeps tests / parse-only paths importable without pyFAI).
+_detector_registry_cache: Optional[set] = None
+
+
+def _get_pyfai_detector_registry() -> set:
+    """Return the set of detector names known to pyFAI, or an empty set if
+    pyFAI is unavailable. Case-sensitive canonical names from
+    `pyFAI.detectors.ALL_DETECTORS`. / 返回 pyFAI 已注册的所有探测器名。"""
+    global _detector_registry_cache
+    if _detector_registry_cache is not None:
+        return _detector_registry_cache
+    try:
+        import pyFAI.detectors as _detectors  # type: ignore
+        names = set(getattr(_detectors, "ALL_DETECTORS", {}) or {})
+    except Exception as exc:  # pragma: no cover - depends on environment
+        logger.warning("pyFAI detector registry unavailable: %s", exc)
+        names = set()
+    _detector_registry_cache = names
+    return names
+
+
+def reset_pyfai_detector_registry_cache() -> None:
+    """Test hook: clear the cached detector registry. / 测试钩子：清空缓存。"""
+    global _detector_registry_cache
+    _detector_registry_cache = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,7 +118,15 @@ def parse_poni_file(file_path: str) -> Optional[Dict[str, Any]]:
         for line in lines:
             line = line.strip()
             # Skip comments and empty lines / 跳过注释和空行
-            if not line or line.startswith('#'):
+            if not line:
+                continue
+            if line.startswith('#'):
+                # Read back a custom detector's friendly name (written by
+                # export_to_poni). pyFAI ignores comments; this is our own
+                # round-trip channel for custom detector labels.
+                label_match = _DETECTOR_LABEL_RE.match(line)
+                if label_match:
+                    result['detector_label'] = label_match.group(1).strip()
                 continue
 
             # Parse key: value format / 解析 key: value 格式
@@ -84,11 +141,21 @@ def parse_poni_file(file_path: str) -> Optional[Dict[str, Any]]:
                 elif value.startswith("'") and value.endswith("'"):
                     value = value[1:-1]
 
-                # Convert to float for numeric values / 数值转换为float
+                # Try to parse as a float; for tuple-style values (e.g.
+                # `PixelSize: 1.72e-04, 1.72e-04`) keep the first element.
+                # 优先尝试作为数字解析；元组风格的值（如 PixelSize）保留第一个元素。
                 try:
                     value = float(value)
                 except ValueError:
-                    pass
+                    # Handle pyFAI's "x, y" tuple form / 处理 pyFAI 的 "x, y" 元组
+                    if ',' in value:
+                        parts = [p.strip() for p in value.split(',')]
+                        try:
+                            value = [float(p) for p in parts]
+                        except ValueError:
+                            pass
+                    else:
+                        pass
 
                 result[key] = value
 
@@ -213,6 +280,94 @@ def export_to_json(poni_data: Dict[str, Any], output_path: Optional[str] = None)
     return json_str
 
 
+# ---------------------------------------------------------------------------
+# Detector resolution / 探测器解析
+# ---------------------------------------------------------------------------
+
+def _coerce_shape(detector_shape: Any) -> Optional[List[int]]:
+    """Normalize a shape spec into ``[rows, cols]`` positive ints, or None.
+    将形状规范统一为 ``[行, 列]`` 正整数列表，非法输入返回 None。"""
+    if isinstance(detector_shape, (list, tuple)) and len(detector_shape) >= 2:
+        try:
+            dims = [int(detector_shape[0]), int(detector_shape[1])]
+        except (TypeError, ValueError):
+            return None
+        if dims[0] > 0 and dims[1] > 0:
+            return dims
+    return None
+
+
+def resolve_detector_name(
+    detector_name: str,
+    pixel_size_m: float,
+    detector_shape: Any = None,
+) -> Tuple[str, str, Optional[str]]:
+    """Resolve a detector selection to a ``(name, config_json, label)`` triple.
+    解析探测器选择为 ``(name, config_json, label)`` 三元组。
+
+    Strategy / 策略:
+      1. If ``detector_name`` is non-empty and matches a pyFAI-registered
+         detector (case-insensitive), return it with an empty config ``{}``.
+         ``detector_shape`` is ignored — registered detectors define their
+         own geometry.
+      2. Otherwise (unknown name, empty name, or a user-defined "custom"
+         detector), fall back to pyFAI's generic ``Detector`` class. The
+         pixel size goes into ``Detector_config``; ``detector_shape`` (if
+         valid) becomes ``max_shape``. A non-empty *unknown* name is kept
+         only as a human-readable ``label`` — pyFAI's factory raises
+         ``RuntimeError`` on any non-registry name, so the ``Detector:``
+         line MUST stay the generic ``Detector`` for the file to load.
+
+    Parameters
+    ----------
+    detector_name : str
+        Raw detector name (empty, a known pyFAI name, or a custom label).
+    pixel_size_m : float
+        Pixel size in meters, used to populate ``Detector_config`` for the
+        generic fallback.
+    detector_shape : any, optional
+        ``[rows, cols]`` for a custom detector → written as ``max_shape``.
+        Ignored when ``detector_name`` resolves to a registered detector.
+
+    Returns
+    -------
+    (name, config_str, label)
+        ``name`` — canonical name for the ``Detector:`` line (always
+        loadable). ``config_str`` — bare JSON for ``Detector_config:``
+        (``{}`` for known detectors, else ``{"pixel1","pixel2"[,
+        "max_shape"]}``). ``label`` — user-facing name to persist as a
+        comment, or None.
+    """
+    registry = _get_pyfai_detector_registry()
+    name_clean = (detector_name or "").strip()
+
+    if name_clean:
+        # Exact match first (preserves correct casing in output).
+        if name_clean in registry:
+            return name_clean, "{}", None
+        # Case-insensitive fallback.
+        for name in registry:
+            if name.lower() == name_clean.lower():
+                return name, "{}", None
+
+    # Unknown / empty / custom: use pyFAI's generic Detector class so the
+    # file always loads. An arbitrary user-typed name CANNOT be the
+    # `Detector:` value (pyFAI's factory rejects non-registry names), so we
+    # keep it only as a comment label.
+    config: Dict[str, Any] = {"pixel1": pixel_size_m, "pixel2": pixel_size_m}
+    shape = _coerce_shape(detector_shape)
+    if shape is not None:
+        config["max_shape"] = shape
+    label = name_clean or None
+    if name_clean:
+        logger.info(
+            "Detector %r is not in the pyFAI registry; using the generic "
+            "Detector class with the form's geometry (label saved as a comment).",
+            name_clean,
+        )
+    return "Detector", json.dumps(config), label
+
+
 def export_to_poni(poni_data: Dict[str, Any], output_path: str) -> str:
     """
     Export PONI data to .poni file format.
@@ -230,10 +385,34 @@ def export_to_poni(poni_data: Dict[str, Any], output_path: str) -> str:
     str
         Output file path.
     """
+    # Resolve detector info BEFORE writing, so the output always has a valid
+    # `Detector:` line even when the caller didn't pick a preset. We copy
+    # `poni_data` to avoid mutating the caller's dict.
+    pixel_size_m = float(poni_data.get("pixel_size") or 0.0)
+    resolved = dict(poni_data)
+    if not resolved.get("detector_name") or not resolved.get("detector_config"):
+        name, config, label = resolve_detector_name(
+            resolved.get("detector_name", "") or "",
+            pixel_size_m,
+            resolved.get("detector_shape"),
+        )
+        resolved["detector_name"] = name
+        resolved["detector_config"] = config
+        if label:
+            resolved["_detector_label"] = label
+
     lines = [
         "# PONI file generated by X-FAIS",
         "# Generated from imported PONI data",
     ]
+
+    # Persist a custom detector's user-facing name as a comment. pyFAI can't
+    # store an arbitrary detector name (its factory rejects non-registry
+    # names), so this comment is the only place the label round-trips; the
+    # parser reads it back into `detector_label`.
+    label = resolved.pop("_detector_label", None)
+    if label:
+        lines.append(f"# Detector label: {label}")
 
     # Write standard fields in pyFAI order / 按pyFAI顺序写入标准字段
     field_order = [
@@ -249,28 +428,45 @@ def export_to_poni(poni_data: Dict[str, Any], output_path: str) -> str:
         ('detector_config', 'Detector_config'),
     ]
 
+    written_keys: set = set()
     for key, poni_key in field_order:
-        if key in poni_data:
-            value = poni_data[key]
-            if isinstance(value, str):
-                lines.append(f"{poni_key}: \"{value}\"")
-            else:
-                lines.append(f"{poni_key}: {value}")
+        if key in resolved:
+            value = resolved[key]
+            lines.append(_format_poni_field(poni_key, value))
+            written_keys.add(key)
 
     # Write any additional fields / 写入任何其他字段
-    written_keys = {k for k, _ in field_order if k in poni_data}
-    for key, value in poni_data.items():
-        if key not in written_keys and not key.startswith('_'):
-            if isinstance(value, str):
-                lines.append(f"{key}: \"{value}\"")
-            else:
-                lines.append(f"{key}: {value}")
+    for key, value in resolved.items():
+        if key not in written_keys and not key.startswith('_') and key not in _NONPONI_DATA_KEYS:
+            lines.append(_format_poni_field(key, value))
 
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
 
     logger.info(f"Exported PONI data to file: {output_path}")
     return output_path
+
+
+def _format_poni_field(poni_key: str, value: Any) -> str:
+    """Format a single PONI field line in pyFAI-canonical style.
+
+    按pyFAI规范格式化单个字段：
+    - `PixelSize` → `(x, y)` tuple
+    - `Detector` / `Detector_config` → no surrounding quotes
+    - other strings → quoted; numbers / booleans → raw repr
+    """
+    if poni_key == 'PixelSize':
+        # pyFAI expects a 2-tuple: "1.72e-04, 1.72e-04"
+        ps = float(value)
+        return f'PixelSize: {ps:g}, {ps:g}'
+
+    if isinstance(value, str):
+        if poni_key in _PONI_QUOTED_FIELDS or poni_key in {"Detector"}:
+            # Bare value, no outer quotes.
+            return f'{poni_key}: {value}'
+        return f'{poni_key}: "{value}"'
+
+    return f'{poni_key}: {value}'
 
 
 def export_to_manual_params(poni_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -365,6 +561,14 @@ def create_poni_from_params(
     dict
         PONI data dictionary.
     """
+    # Resolve detector info up front so the returned dict (and any
+    # subsequently-written .poni file) always has a valid Detector pair.
+    # Note: this function preserves the original pixel-valued poni1/poni2
+    # contract; downstream consumers convert via pixel_size as needed.
+    pixel_size_m = pixel_size * 1e-6  # µm to m (only used for detector config)
+    resolved_name, resolved_config, label = resolve_detector_name(
+        detector_name, pixel_size_m
+    )
     poni_data = {
         'distance': detector_distance / 1000.0,  # mm to m
         'wavelength': wavelength / 1e10,  # A to m
@@ -374,10 +578,127 @@ def create_poni_from_params(
         'rot1': rot1 * 3.141592653589793 / 180,  # deg to rad
         'rot2': rot2 * 3.141592653589793 / 180,
         'rot3': rot3 * 3.141592653589793 / 180,
-        'detector_name': detector_name,
+        'detector_name': resolved_name,
+        'detector_config': resolved_config,
     }
+    # Propagate a custom detector's label so export_to_poni can write the
+    # comment line (it skips re-resolution since name+config are already set).
+    if label:
+        poni_data['_detector_label'] = label
 
     if output_path:
         export_to_poni(poni_data, output_path)
 
     return poni_data
+
+
+# ---------------------------------------------------------------------------
+# Self-test / 自检
+# ---------------------------------------------------------------------------
+
+if __name__ == '__main__':
+    """Quick sanity check: generate a few .poni files and verify they load
+    via pyFAI's AzimuthalIntegrator.  Run with:
+        python -m python.services.poni_importer
+    """
+    import sys
+    import tempfile
+
+    # Reset the cached registry so we exercise the lookup path.
+    reset_pyfai_detector_registry_cache()
+
+    try:
+        from pyFAI.integrator.azimuthal import AzimuthalIntegrator
+    except ImportError:
+        print("pyFAI is not installed; skipping load verification.")
+        sys.exit(0)
+
+    base_params = dict(
+        detector_distance=100.0,  # mm
+        wavelength=1.5418,        # Å (Cu Kα)
+        pixel_size=172.0,         # µm
+        beam_center_x=512.0,      # px
+        beam_center_y=512.0,      # px
+        rot1=0.0, rot2=0.0, rot3=0.0,
+    )
+
+    cases = [
+        ("empty_name",   ""),
+        ("valid_preset", "Pilatus1M"),
+        ("unknown_name", "MyCustomDetector"),
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        all_ok = True
+        for label, det in cases:
+            print(f"\n=== Case: {label} (detector={det!r}) ===")
+            out_path = os.path.join(tmp, f"{label}.poni")
+            data = create_poni_from_params(
+                detector_name=det, output_path=out_path, **base_params
+            )
+            with open(out_path, "r", encoding="utf-8") as fh:
+                contents = fh.read()
+            print(contents)
+
+            # Re-parse via the project's own parser to confirm round-trip.
+            parsed = parse_poni_file(out_path)
+            assert parsed is not None, f"parse_poni_file failed for {label}"
+            print(
+                f"parsed: detector={parsed.get('detector_name')!r}, "
+                f"pixel_size={parsed.get('pixel_size')}, "
+                f"poni1={parsed.get('poni1')}, "
+                f"label={parsed.get('detector_label')!r}"
+            )
+
+            # A custom (non-registry) detector name must map to the generic
+            # `Detector` class + a label comment — this is the regression
+            # test for the bug where unknown names produced an un-loadable
+            # `Detector: <user_name>` line.
+            if label == "unknown_name":
+                assert "Detector: Detector" in contents, \
+                    "unknown detector must resolve to generic Detector"
+                assert "# Detector label: MyCustomDetector" in contents, \
+                    "custom detector label comment must be written"
+                assert parsed.get("detector_label") == "MyCustomDetector", \
+                    "parser must round-trip the custom detector label"
+
+            # Load via pyFAI's own AzimuthalIntegrator (the downstream
+            # consumer). Every case now loads: known detectors use their
+            # real class; custom/empty names fall back to the generic
+            # `Detector` class with a pixel-size config.
+            try:
+                ai = AzimuthalIntegrator()
+                ai.load(out_path)
+                print(f"pyFAI load: OK (detector={ai.detector.name})")
+            except Exception as exc:
+                print(f"pyFAI load: FAILED — {exc}")
+                all_ok = False
+
+        # Exercise a custom detector with an explicit array size → the
+        # `max_shape` must land in `Detector_config` and the file must load.
+        print("\n=== Case: custom_shape (Homemade CCD, 512x512) ===")
+        shape_path = os.path.join(tmp, "custom_shape.poni")
+        shape_data = dict(
+            distance=0.1, wavelength=1.5418e-10, pixel_size=75e-6,
+            poni1=0.0384, poni2=0.0384, rot1=0.0, rot2=0.0, rot3=0.0,
+            detector_name="Homemade CCD",
+            detector_shape=[512, 512],
+        )
+        export_to_poni(shape_data, shape_path)
+        with open(shape_path, "r", encoding="utf-8") as fh:
+            shape_contents = fh.read()
+        print(shape_contents)
+        assert "Detector: Detector" in shape_contents
+        assert '"max_shape": [512, 512]' in shape_contents, \
+            "detector_shape must be written as max_shape"
+        try:
+            ai = AzimuthalIntegrator()
+            ai.load(shape_path)
+            print(f"pyFAI load: OK (detector={ai.detector.name}, "
+                  f"shape={ai.detector.max_shape})")
+        except Exception as exc:
+            print(f"pyFAI load: FAILED — {exc}")
+            all_ok = False
+
+        print("\n" + ("ALL OK" if all_ok else "SOME FAILED"))
+        sys.exit(0 if all_ok else 1)

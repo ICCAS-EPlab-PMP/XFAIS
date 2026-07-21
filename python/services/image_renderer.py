@@ -76,6 +76,103 @@ class ImageRenderer:
         return buf.getvalue()
 
     @staticmethod
+    def render_mask_png(
+        mask: np.ndarray,
+        fill_rgba: tuple[int, int, int, int] = (128, 128, 128, 90),
+        edge_rgba: tuple[int, int, int, int] = (30, 30, 30, 217),
+        edge_width: int = 1,
+    ) -> bytes:
+        """Render a boolean mask as a transparent PNG with fill + dark edge.
+
+        将布尔遮罩渲染为透明 PNG（半透明填充 + 深色边界线）。
+
+        Used to overlay the selected azimuthal-range wedge on a detector image.
+        The mask pixels are filled with a semi-transparent gray, and the outer
+        boundary band (``edge_width`` px wide, computed by morphological
+        dilation) is overdrawn with a dark edge color for clarity.
+
+        用于在探测器图上叠加用户选择的方位角范围。遮罩区域填充半透明灰色，
+        外缘 ``edge_width`` 像素宽的边界带（由形态学膨胀求得）用深色描边以增强可见性。
+
+        Parameters / 参数
+        ----------
+        mask : ndarray
+            2-D boolean array (True = inside the selection).
+            二维布尔数组（True = 选中区域内）。
+        fill_rgba : tuple
+            Fill color (R, G, B, A) for inside-mask pixels.
+            遮罩内部填充色 (R, G, B, A)。
+        edge_rgba : tuple
+            Edge color (R, G, B, A) for the boundary band.
+            边界带颜色 (R, G, B, A)。
+        edge_width : int
+            Boundary band thickness in pixels.
+            边界带厚度（像素）。
+
+        Returns / 返回
+        -------
+        bytes
+            PNG image data (RGBA, same H×W as ``mask``; fully transparent where
+            the mask is False).
+            PNG 图像数据（RGBA，与 ``mask`` 同 H×W；遮罩为 False 处全透明）。
+        """
+        m = np.asarray(mask, dtype=bool)
+        if m.ndim != 2:
+            raise ValueError(f"mask must be 2-D, got shape {m.shape}")
+
+        h, w = m.shape
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+
+        if m.any():
+            # Boundary band: pixels just outside the mask (morphological gradient).
+            # Use scipy if available for robust dilation; fall back to a numpy
+            # max-filter approximation (slower but dependency-free).
+            # 边界带：遮罩外缘的像素（形态学梯度）。优先 scipy，回退 numpy 最大滤波。
+            eroded = ImageRenderer._erode_mask(m, iterations=edge_width)
+            edge = m & ~eroded  # inner ring of `edge_width` px → crisp outline / 内缘环
+
+            rgba[m] = fill_rgba
+            rgba[edge] = edge_rgba
+
+        img = Image.fromarray(rgba, mode="RGBA")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+
+    @staticmethod
+    def _erode_mask(mask: np.ndarray, iterations: int = 1) -> np.ndarray:
+        """Erode a boolean mask by ``iterations`` pixels.
+
+        将布尔遮罩腐蚀 ``iterations`` 个像素。
+
+        Uses scipy.ndimage when available (fast C implementation); otherwise
+        falls back to a numpy-based repeated minimum-filter that needs no extra
+        dependency.
+        优先使用 scipy.ndimage（C 实现，快）；否则回退到基于 numpy 的重复最小滤波，
+        无需额外依赖。
+        """
+        if iterations <= 0:
+            return mask.copy()
+        try:
+            from scipy.ndimage import binary_erosion
+
+            return binary_erosion(mask, iterations=iterations)
+        except Exception:
+            # Dependency-free fallback / 无依赖回退
+            out = mask.copy()
+            for _ in range(iterations):
+                up = np.zeros_like(out)
+                up[1:, :] = out[:-1, :]
+                down = np.zeros_like(out)
+                down[:-1, :] = out[1:, :]
+                left = np.zeros_like(out)
+                left[:, 1:] = out[:, :-1]
+                right = np.zeros_like(out)
+                right[:, :-1] = out[:, 1:]
+                out = out & up & down & left & right
+            return out
+
+    @staticmethod
     def render_thumbnail(
         data: np.ndarray,
         settings: dict,

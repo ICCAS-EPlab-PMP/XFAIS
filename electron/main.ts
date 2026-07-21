@@ -734,6 +734,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   manual_calibrant_generate: '/api/manual_calibrant_generate',
   list_space_groups: '/api/list_space_groups',
   bg_subtract: '/api/bg_subtract',
+  image_math: '/api/image_math',
   poni_importer: '/api/poni_importer'
 }
 
@@ -885,11 +886,12 @@ const handleBinaryFrame = (data: Buffer): void => {
     return
   }
 
-  // Create a clean ArrayBuffer copy that is guaranteed structured-clone compatible.
+  // Create a clean Buffer copy that is guaranteed structured-clone compatible.
   // Node.js Buffers backed by a shared pool produce ArrayBuffers that fail
   // Electron's structured clone algorithm ("An object could not be cloned").
-  const cleanBuf = new ArrayBuffer(pngData.byteLength)
-  new Uint8Array(cleanBuf).set(pngData)
+  // Using Buffer.from() creates a new Uint8Array subclass with its own backing
+  // store, which Electron 35+ handles reliably in main→renderer IPC.
+  const cleanBuf = Buffer.from(pngData)
 
   mainWindow?.webContents.send(IPC_CHANNELS.taskBinaryData, {
     taskId,

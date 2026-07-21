@@ -193,8 +193,14 @@ export class PythonServiceManager {
       // Mirror the same PATH augmentation used in runtime.ts runProcessDirect
       // so Python's sibling DLLs (python311.dll, vcruntime140.dll, etc.) are
       // resolvable. The Windows system paths are kept for general OS tooling.
+      // Derive the Windows root from the env (SystemRoot / windir) instead of
+      // hardcoding C:\WINDOWS — wrong on machines where Windows is on another
+      // drive.
+      const windowsRoot = isWindows
+        ? (process.env.SystemRoot || process.env.windir || 'C:\\WINDOWS').replace(/[\\/]+$/, '')
+        : 'C:\\WINDOWS'
       const systemPathPrefixes = isWindows
-        ? ['C:\\WINDOWS\\system32', 'C:\\WINDOWS', 'C:\\WINDOWS\\System32\\Wbem']
+        ? [`${windowsRoot}\\system32`, windowsRoot, `${windowsRoot}\\System32\\Wbem`]
         : []
       const pathEnv = process.env.PATH ?? process.env.Path ?? ''
       const augmentedPath = [exeDir, ...systemPathPrefixes, pathEnv]

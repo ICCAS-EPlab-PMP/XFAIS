@@ -1,6 +1,6 @@
 {
   "name": "x-fais-electron",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "private": true,
   "type": "module",
   "main": "dist-electron/main/index.js",
@@ -64,6 +64,7 @@
       "output": "dist-electron-builder"
     },
     "icon": "ICON/icon.ico",
+    "afterPack": "build/afterPack.cjs",
     "mac": {
       "icon": "ICON/icon.icns",
       "category": "public.app-category.productivity",

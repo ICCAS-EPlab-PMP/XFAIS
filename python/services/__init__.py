@@ -22,6 +22,7 @@ from .bg_subtractor import (
     subtract_h5_stack,
     find_h5_transmissions,
 )
+from .image_math import image_arithmetic
 
 __all__ = [
     "H5Handler",
@@ -44,4 +45,5 @@ __all__ = [
     "match_ionchamber",
     "subtract_h5_stack",
     "find_h5_transmissions",
+    "image_arithmetic",
 ]

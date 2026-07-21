@@ -44,6 +44,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   manual_calibrant_generate: '/api/manual_calibrant_generate',
   list_space_groups: '/api/list_space_groups',
   bg_subtract: '/api/bg_subtract',
+  image_math: '/api/image_math',
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -536,7 +537,7 @@ export class WebTransport implements ITransport {
   async getAppMeta(): Promise<AppMeta> {
     // Try reading version from meta tag injected at build time
     const metaTag = document.querySelector('meta[name="app-version"]')
-    const version = metaTag?.getAttribute('content') ?? '0.1.0'
+    const version = metaTag?.getAttribute('content') ?? '0.2.1'
 
     return {
       appName: 'X-FAIS',

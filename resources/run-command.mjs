@@ -2,7 +2,9 @@
  * run-command.mjs — ASAR-safe process launcher helper.
  *
  * Launched via child_process.fork() with ELECTRON_RUN_AS_NODE=1 so that
- * this script runs as plain Node.js (no Electron, no ASAR wrapper).
+ * this script runs as plain Node.js. It still MAY inherit Electron's
+ * asar-aware child_process patch when forked from the main process, so we
+ * force process.noAsar = true below to be safe.
  * Receives a command via IPC, spawns it, and sends back the result.
  *
  * Protocol (IPC messages):
@@ -11,6 +13,13 @@
  *                   | { error: string }
  */
 import { spawn } from 'node:child_process';
+
+// Defense-in-depth: when this helper is forked from Electron's main process it
+// may inherit the asar-aware child_process patch. Forcing noAsar disables any
+// asar interception of our spawn, so the external executable launches via the
+// plain CreateProcessW path. (In a fresh ELECTRON_RUN_AS_NODE process this
+// property is undefined and the line is a harmless no-op.)
+try { process.noAsar = true; } catch {}
 
 process.on('message', (msg) => {
   if (!msg || msg.type !== 'run') return;
@@ -22,15 +31,16 @@ process.on('message', (msg) => {
   let stderrBuf = '';
 
   try {
+    // This helper runs as plain Node.js (ELECTRON_RUN_AS_NODE=1), so there is
+    // no ASAR wrapper to intercept the spawn — spawn directly via CreateProcessW
+    // (Unicode-safe). Do NOT use shell:true: it routes through cmd.exe, which
+    // corrupts non-ASCII paths via codepage conversion and can itself fail with
+    // ENOENT when cmd.exe isn't resolvable at the expected system path.
     const child = spawn(cmd, args, {
       cwd,
       env,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      // shell:true is required on Windows in packaged Electron 35 apps;
-      // the parent runtime.ts/manager.ts pre-augment PATH with
-      // C:\WINDOWS\system32 so cmd.exe is resolvable.
-      shell: true,
     });
 
     child.stdout.setEncoding('utf8');

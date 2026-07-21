@@ -79,6 +79,15 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
   const activeMask = Object.keys(mask).length > 0 ? mask : maskConfig
   const polarizationFactor = asOptionalNumber(params.polarizationFactor)
 
+  // H5 dataset/frame/channel — forwarded to the integration handlers so users
+  // can pick which dataset, frame (4-D), and channel to integrate. Defaults:
+  // auto-detected dataset, first frame, channel 0. See H5Selector.vue.
+  const h5DatasetPath = asString(params.dataset) ?? asString(params.h5Dataset)
+  const h5Channel = typeof params.channel === 'number' || typeof params.channel === 'string'
+    ? params.channel
+    : undefined
+  const frameIndex = asNumber(params.frame, 0)
+
   switch (command) {
     case 'integrate1d': {
       const advanced = asRecord(params.advanced)
@@ -91,6 +100,9 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         valid_min: asNumber(activeMask.valueRangeMin, 0),
         valid_max: asNumber(activeMask.valueRangeMax, 1e10),
         custom_mask_path: asString(activeMask.customMaskPath),
+        h5_dataset_path: h5DatasetPath,
+        h5_channel: h5Channel,
+        frame_index: frameIndex,
         options: {
           npt: asNumber(advanced.nptRad, 1000),
           npt_azim: asNumber(advanced.nptAzim, 360),
@@ -100,6 +112,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           radial_min: asOptionalNumber(advanced.radialMin),
           radial_max: asOptionalNumber(advanced.radialMax),
           correct_solid_angle: asBoolean(advanced.correctSolidAngle, true),
+          drop_empty_bins: asBoolean(advanced.dropEmptyBins, true),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -116,6 +129,9 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         valid_min: asNumber(activeMask.valueRangeMin, 0),
         valid_max: asNumber(activeMask.valueRangeMax, 1e10),
         custom_mask_path: asString(activeMask.customMaskPath),
+        h5_dataset_path: h5DatasetPath,
+        h5_channel: h5Channel,
+        frame_index: frameIndex,
         options: {
           npt: asNumber(params.npt, 360),
           npt_rad: asNumber(params.nptRad, 100),
@@ -126,6 +142,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           azimuth_min: asOptionalNumber(params.azimuthMin),
           azimuth_max: asOptionalNumber(params.azimuthMax),
           correct_solid_angle: true,
+          drop_empty_bins: asBoolean(params.dropEmptyBins, true),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -143,6 +160,9 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         valid_min: asNumber(activeMask.valueRangeMin, 0),
         valid_max: asNumber(activeMask.valueRangeMax, 1e10),
         custom_mask_path: asString(activeMask.customMaskPath),
+        h5_dataset_path: h5DatasetPath,
+        h5_channel: h5Channel,
+        frame_index: frameIndex,
         options: {
           npt_rad: asNumber(advanced.nptRad, 1000),
           npt_azim: asNumber(advanced.nptAzim, 360),
@@ -152,6 +172,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           azimuth_min: asOptionalNumber(params.azimuthMin),
           azimuth_max: asOptionalNumber(params.azimuthMax),
           correct_solid_angle: asBoolean(advanced.correctSolidAngle, true),
+          drop_empty_bins: asBoolean(advanced.dropEmptyBins, true),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -228,7 +249,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         output_path: asString(params.output_path) ?? asString(params.outputPath),
         batchCachePath: asString(params.batchCachePath),
         batch_cache_path: asString(params.batchCachePath) ?? asString(params.batch_cache_path),
-        resultIndex: typeof params.resultIndex === 'number' ? params.resultIndex : params.resultIndex,
+        resultIndex: typeof params.resultIndex === 'number' ? params.resultIndex : params.result_index,
         result_index: typeof params.resultIndex === 'number' ? params.resultIndex : params.result_index,
         thumbnailOnly: typeof params.thumbnailOnly === 'boolean' ? params.thumbnailOnly : undefined,
         thumbnail_only: typeof params.thumbnailOnly === 'boolean' ? params.thumbnailOnly : (typeof params.thumbnail_only === 'boolean' ? params.thumbnail_only : undefined),
@@ -242,6 +263,26 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         thumb_render_settings: params.thumb_render_settings,
         start: params.start,
         count: params.count,
+        // azimuth_mask overlay fields (passed through verbatim; consumed only
+        // by the viewer_config 'azimuth_mask' action). / 方位角遮罩叠加字段
+        // （原样透传，仅被 viewer_config 的 'azimuth_mask' action 消费）。
+        azimuth_min: typeof params.azimuth_min === 'number' ? params.azimuth_min
+          : (typeof params.azimuthMin === 'number' ? params.azimuthMin : undefined),
+        azimuth_max: typeof params.azimuth_max === 'number' ? params.azimuth_max
+          : (typeof params.azimuthMax === 'number' ? params.azimuthMax : undefined),
+        radial_unit: asString(params.radial_unit) ?? asString(params.radialUnit),
+        radial_min: typeof params.radial_min === 'number' ? params.radial_min
+          : (typeof params.radialMin === 'number' ? params.radialMin : undefined),
+        radial_max: typeof params.radial_max === 'number' ? params.radial_max
+          : (typeof params.radialMax === 'number' ? params.radialMax : undefined),
+        // pixel_info overlay fields (passed through verbatim; consumed only by
+        // the viewer_config 'pixel_info' action). / 像素信息字段（原样透传，
+        // 仅被 viewer_config 的 'pixel_info' action 消费）。
+        pixelX: typeof params.pixelX === 'number' ? params.pixelX
+          : (typeof params.pixel_x === 'number' ? params.pixel_x : undefined),
+        pixelY: typeof params.pixelY === 'number' ? params.pixelY
+          : (typeof params.pixel_y === 'number' ? params.pixel_y : undefined),
+        unit: asString(params.unit),
       }
     }
     case 'mask_maker': {
