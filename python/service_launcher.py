@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import math
 import importlib
 import importlib.metadata
 import io
@@ -64,6 +65,7 @@ API_ROUTES: list[str] = [
     "/api/bg_subtract",
     "/api/poni_importer",
     "/api/image_math",
+    "/api/image_stitch",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -119,6 +121,7 @@ class _LazyImportProxy:
 # Lightweight proxies so health checks do not import the full processing stack.
 # 轻量代理，避免健康检查提前导入整套处理栈。
 np = _LazyImportProxy("numpy")
+map_coordinates = _LazyImportProxy("scipy.ndimage", "map_coordinates")
 H5Handler = _LazyImportProxy("python.services.image_loader", "H5Handler")
 ImageLoader = _LazyImportProxy("python.services.image_loader", "ImageLoader")
 IntegratorFactory = _LazyImportProxy("python.services.integrator", "IntegratorFactory")
@@ -136,6 +139,7 @@ Cell = _LazyImportProxy("pyFAI.crystallography.cell", "Cell")
 BgSubtractor = _LazyImportProxy("python.services.bg_subtractor")
 PoniImporter = _LazyImportProxy("python.services.poni_importer")
 ImageMath = _LazyImportProxy("python.services.image_math")
+ImageStitch = _LazyImportProxy("python.services.image_stitch")
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +573,94 @@ def _orient_to_data(arr, ai) -> Any:
     return arr
 
 
+def _sample_line_profile(
+    data: Any,
+    row0: float,
+    col0: float,
+    row1: float,
+    col1: float,
+    width: int = 1,
+    aggregate: str = "mean",
+    n_samples: int = 0,
+) -> dict[str, Any]:
+    """Sample a 2D array along a line segment, optionally across a width band.
+
+    Pure-NumPy/SciPy core used by the ``line_profile`` viewer_config action.
+    Kept module-level so it can be unit-tested without spinning up the service.
+    Geometry-free: q/2θ/χ projection is done by the caller.
+
+    沿线段（可选带宽）采样 2D 数组。供 viewer_config 的 ``line_profile`` action
+    调用的纯 NumPy/SciPy 核心。保持模块级以便无需启动服务即可单测。
+    不含几何：q/2θ/χ 的投影由调用方完成。
+
+    Returns a dict with ``distance_px`` (along-line pixel distance from start),
+    ``intensity`` (aggregated values), ``grid_rows``/``grid_cols`` (the actual
+    sample coordinates, shape ``(width, n_samples)`` — reused by the caller to
+    project physics maps onto the identical grid), plus length/n_samples/width.
+    """
+    rows, cols = int(data.shape[0]), int(data.shape[1])
+    # Clamp endpoints into bounds (drawing can slightly overshoot).
+    row0 = max(0.0, min(rows - 1.0, float(row0)))
+    row1 = max(0.0, min(rows - 1.0, float(row1)))
+    col0 = max(0.0, min(cols - 1.0, float(col0)))
+    col1 = max(0.0, min(cols - 1.0, float(col1)))
+
+    width = max(1, int(width))
+    aggregate = str(aggregate or "mean").lower()
+
+    dr = row1 - row0
+    dc = col1 - col0
+    length_px = float(math.hypot(dr, dc))
+    if length_px < 1e-9:
+        n_samples = 1
+    else:
+        # Default: one sample per pixel along the line. A length-L segment
+        # spans L+1 integer pixel centers (e.g. columns 0..9 → 10 points),
+        # matching the conventional "line profile" semantics (ImageJ etc.).
+        # 默认：沿线条每像素一个采样点。长度为 L 的线段覆盖 L+1 个整数像素中心
+        # （如列 0..9 共 10 个点），与惯例的"线剖面"语义一致（ImageJ 等）。
+        n_samples = max(2, int(n_samples) or (int(math.ceil(length_px)) + 1))
+
+    ts = np.linspace(0.0, 1.0, n_samples)
+    row_c = row0 + ts * dr
+    col_c = col0 + ts * dc
+
+    if width == 1:
+        rows_grid = row_c[np.newaxis, :]
+        cols_grid = col_c[np.newaxis, :]
+    else:
+        # Perpendicular to the line direction (dr, dc) in (row, col) space is
+        # (-dc, dr) (a 90° rotation). Normalized by length. A horizontal line
+        # (dr=0) thus spreads the band across ROWS, a vertical line across COLS.
+        # 线方向 (dr, dc) 在 (row, col) 空间的垂直方向是 (-dc, dr)（旋转 90°），
+        # 除以长度归一化。水平线（dr=0）的带宽沿行方向展开，垂直线沿列方向展开。
+        nx = -dc / length_px
+        ny = dr / length_px
+        offsets = (np.arange(width) - (width - 1) / 2.0)
+        rows_grid = row_c[np.newaxis, :] + nx * offsets[:, np.newaxis]
+        cols_grid = col_c[np.newaxis, :] + ny * offsets[:, np.newaxis]
+
+    block = map_coordinates(
+        data, [rows_grid, cols_grid], order=1, mode="nearest"
+    )  # shape: (width, n_samples)
+    if aggregate == "sum":
+        intensity = block.sum(axis=0)
+    else:
+        intensity = block.mean(axis=0)
+    distance_px = np.linspace(0.0, length_px, n_samples)
+
+    return {
+        "distance_px": distance_px,
+        "intensity": np.asarray(intensity, dtype=float),
+        "grid_rows": rows_grid,
+        "grid_cols": cols_grid,
+        "length_px": length_px,
+        "n_samples": int(n_samples),
+        "width": width,
+        "aggregate": aggregate,
+    }
+
+
 def _render_thumbnail_item(
     frame_data: Any,
     index: int,
@@ -839,6 +931,66 @@ async def handle_export_integration(
             batch_cache_path = payload.get("batchCachePath")
             unit_ip = payload.get("unitIp", "qip_nm^-1")
             unit_oop = payload.get("unitOop", "qoop_nm^-1")
+            # PNG export options / PNG 导出选项
+            png_opts = payload.get("pngOptions", {}) or {}
+            png_show_labels = bool(png_opts.get("showLabels", True))
+            png_font_size = int(png_opts.get("fontSize", 12))
+            png_cmap = str(png_opts.get("cmap", "viridis"))
+            png_use_log = bool(png_opts.get("useLog", False))
+            png_clim = png_opts.get("clim")  # [vmin, vmax] or None
+            png_dpi = int(png_opts.get("dpi", 150))
+            png_no_data_bg = str(png_opts.get("noDataBg", "white"))
+            # Publication-style extras / 出版风格附加项
+            png_show_colorbar = bool(png_opts.get("showColorbar", True))
+            png_show_title = bool(png_opts.get("showTitle", False))
+            png_border_width = float(png_opts.get("borderWidth", 1.0) or 0)
+            png_edge_color = str(png_opts.get("edgeColor", "black"))
+            source_stem = str(payload.get("sourceFile") or "")
+            # Custom axis titles + font / 自定义轴标题与字体
+            png_x_label = png_opts.get("xLabel") if png_opts.get("xLabel") is not None else None
+            png_y_label = png_opts.get("yLabel") if png_opts.get("yLabel") is not None else None
+            png_font_family = png_opts.get("fontFamily") or None
+            png_show_axis_title = bool(png_opts.get("showAxisTitle", True))
+            png_show_ticks = bool(png_opts.get("showTicks", True))
+            # Bold + axis flip / 加粗与轴反转
+            png_title_bold = bool(png_opts.get("titleBold", False))
+            png_axis_title_bold = bool(png_opts.get("axisTitleBold", False))
+            png_tick_bold = bool(png_opts.get("tickBold", False))
+            png_flip_x = bool(png_opts.get("flipX", True))
+            png_flip_y = bool(png_opts.get("flipY", True))
+
+            def _export_png(intensity, axis_ip, axis_oop):
+                """Render a 2D GIWAXS result as annotated PNG."""
+                clim_tuple = tuple(png_clim) if png_clim and len(png_clim) == 2 else None
+                title_str = source_stem if png_show_title and source_stem else None
+                return ImageRenderer.render_png_mpl(
+                    intensity,
+                    cmap_name=png_cmap,
+                    use_log=png_use_log,
+                    clim=clim_tuple,
+                    dpi=png_dpi,
+                    axis_ip=axis_ip,
+                    axis_oop=axis_oop,
+                    unit_ip=unit_ip,
+                    unit_oop=unit_oop,
+                    show_labels=png_show_labels,
+                    font_size=png_font_size,
+                    title=title_str,
+                    no_data_bg=png_no_data_bg,
+                    show_colorbar=png_show_colorbar,
+                    border_width=png_border_width,
+                    edge_color=png_edge_color,
+                    x_label=png_x_label,
+                    y_label=png_y_label,
+                    font_family=png_font_family,
+                    show_axis_title=png_show_axis_title,
+                    show_ticks=png_show_ticks,
+                    title_bold=png_title_bold,
+                    axis_title_bold=png_axis_title_bold,
+                    tick_bold=png_tick_bold,
+                    flip_x=png_flip_x,
+                    flip_y=png_flip_y,
+                )
 
             if batch_cache_path:
                 try:
@@ -881,18 +1033,54 @@ async def handle_export_integration(
                                     for j, ip_val in enumerate(axis_ip):
                                         val = intensity[i][j] if i < len(intensity) and j < len(intensity[i]) else ""
                                         writer.writerow([i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
+                        elif fmt == "png":
+                            p = out_dir / f"{safe_stem}.png"
+                            p.write_bytes(_export_png(intensity, axis_ip, axis_oop))
                         else:
                             return {"success": False, "error": f"Unsupported format for fiber: {fmt}"}
                         written.append(str(p))
                     await send_progress(1.0, f"Exported {len(written)} files to {out_dir}")
                     return {"success": True, "path": output_path, "files": written}
 
+                # single/merge mode: export as one file
                 if fmt in ("hdf5", "h5"):
                     ExportHelper.write_hdf5_batch_2d_streaming(
                         output_path, batch_results, unit_ip=unit_ip, unit_oop=unit_oop
                     )
                 else:
-                    return {"success": False, "error": f"Format {fmt} only supports separate export for batch GIWAXS."}
+                    # For non-mergeable formats (tiff/edf/npy), pick the result at resultIndex
+                    # or the first one. CSV merges all.
+                    result_idx = max(0, int(payload.get("resultIndex", 0) or 0))
+                    if result_idx >= len(batch_results):
+                        result_idx = 0
+                    item = batch_results[result_idx]
+                    intensity = item["intensity"]
+                    axis_ip = item["axis_ip"]
+                    axis_oop = item["axis_oop"]
+
+                    if fmt in ("tiff", "tif"):
+                        Path(output_path).write_bytes(ExportHelper.to_image_bytes(intensity, fmt="tiff"))
+                    elif fmt == "edf":
+                        Path(output_path).write_bytes(ExportHelper.to_image_bytes(intensity, fmt="edf"))
+                    elif fmt == "npy":
+                        Path(output_path).write_bytes(ExportHelper.to_npy_dict(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
+                    elif fmt == "csv":
+                        import csv
+                        with open(output_path, "w", newline="", encoding="utf-8") as f:
+                            writer = csv.writer(f)
+                            writer.writerow(["result_index", "oop_index", "ip_index", "axis_oop", "axis_ip", "intensity"])
+                            for ri, item2 in enumerate(batch_results):
+                                I = item2["intensity"]
+                                aip = item2["axis_ip"]
+                                aoop = item2["axis_oop"]
+                                for i, oop_val in enumerate(aoop):
+                                    for j, ip_val in enumerate(aip):
+                                        val = I[i][j] if i < len(I) and j < len(I[i]) else ""
+                                        writer.writerow([ri, i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
+                    elif fmt == "png":
+                        Path(output_path).write_bytes(_export_png(intensity, axis_ip, axis_oop))
+                    else:
+                        return {"success": False, "error": f"Unsupported format for fiber: {fmt}"}
             else:
                 # 2D fiber: single result payload
                 intensity = np.array(payload.get("intensity", []), dtype=np.float64)
@@ -902,7 +1090,7 @@ async def handle_export_integration(
                 if intensity.size == 0 or axis_ip.size == 0 or axis_oop.size == 0:
                     return {"success": False, "error": "No valid 2D data to export."}
 
-                intensity = np.where(intensity is None, np.nan, intensity).astype(np.float32)
+                intensity = np.nan_to_num(intensity, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
                 if fmt in ("hdf5", "h5"):
                     h5_bytes = ExportHelper.to_hdf5_2d_bytes(
@@ -929,6 +1117,8 @@ async def handle_export_integration(
                             for j, ip_val in enumerate(axis_ip):
                                 val = intensity[i][j] if i < len(intensity) and j < len(intensity[i]) else ""
                                 writer.writerow([i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
+                elif fmt == "png":
+                    Path(output_path).write_bytes(_export_png(intensity, axis_ip, axis_oop))
                 else:
                     return {"success": False, "error": f"Unsupported format for fiber: {fmt}"}
         else:
@@ -1677,6 +1867,175 @@ async def handle_viewer_config(
             traceback.print_exc()
             return {"status": "error", "message": f"Failed to read pixel info: {exc}"}
 
+    # ── line_profile: extract mean intensity along a user-drawn line ────
+    # pyFAI has no native "integrate along an arbitrary line segment" API
+    # (all its integrators are centered on the beam center). We sample the
+    # 2D array directly with scipy.ndimage.map_coordinates; if a PONI/manual
+    # geometry is supplied we additionally project q / 2θ / χ onto the line
+    # via ai.array_from_unit (same source as pixel_info).
+    # pyFAI 没有"沿任意线段积分"的原生 API（所有积分都以光束中心为圆心）。
+    # 这里直接用 scipy.ndimage.map_coordinates 采样 2D 数组；若提供 PONI/手动
+    # 几何，再用 ai.array_from_unit（与 pixel_info 同源）把 q/2θ/χ 投影到线上。
+    if action == "line_profile":
+        await send_progress(0.0, "Computing line profile...")
+
+        def _compute_line_profile(pl: dict[str, Any]) -> dict[str, Any]:
+            # --- geometry / file / frame parsing (mirrors pixel_info) ---
+            geo = pl.get("geometry", {}) or {}
+            ai = None
+            try:
+                if geo.get("poniPath") or geo.get("poni_path"):
+                    ai, _cx, _cy = IntegratorFactory.from_poni_path(
+                        geo.get("poniPath") or geo.get("poni_path")
+                    )
+                elif geo.get("manual"):
+                    m = geo["manual"]
+                    ai, _cx, _cy = IntegratorFactory.from_manual_params(
+                        m.get("pixel_size_um", 172.0), m.get("dist_mm", 200.0),
+                        m.get("wavelength_A", 1.5418), m.get("center_x_px", 512.0),
+                        m.get("center_y_px", 512.0), m.get("rot1_deg", 0.0),
+                        m.get("rot2_deg", 0.0), m.get("rot3_deg", 0.0),
+                    )
+                else:
+                    # Fall back to manual params from flat geometry fields.
+                    # 从扁平几何字段回退到手动参数。
+                    has_any = any(
+                        geo.get(k) is not None
+                        for k in ("pixel1", "pixel2", "distance", "wavelength",
+                                  "centerX", "centerY")
+                    )
+                    if has_any:
+                        ai, _cx, _cy = IntegratorFactory.from_manual_params(
+                            float(geo.get("pixel1", geo.get("pixel_size_um", 172.0))),
+                            float(geo.get("distance", geo.get("dist_mm", 200.0))),
+                            float(geo.get("wavelength", geo.get("wavelength_A", 1.5418))),
+                            float(geo.get("centerX", geo.get("center_x_px", 512.0))),
+                            float(geo.get("centerY", geo.get("center_y_px", 512.0))),
+                        )
+            except Exception as exc:  # noqa: BLE001 — geometry is optional
+                print(f"[line_profile] geometry unavailable, pixel-only mode: {exc}", flush=True)
+                ai = None
+
+            fpath = pl.get("filePath", "")
+            if not fpath:
+                raise ValueError("line_profile requires 'filePath'")
+            frame_index = max(0, int(pl.get("frame", 0) or 0))
+            dataset_path = pl.get("dataset")
+            h5_channel = pl.get("channel")
+
+            ext = os.path.splitext(fpath)[1].lower()
+            if ext in {".h5", ".hdf5"}:
+                if not dataset_path:
+                    datasets = H5Handler.find_datasets(fpath)
+                    entries = _serialize_h5_datasets(datasets)
+                    dataset_path = H5Handler.pick_default_dataset(
+                        [item["path"] for item in entries]
+                    )
+                    if not dataset_path:
+                        raise ValueError("No image dataset found")
+                data, _dead = H5Handler.load_frame(fpath, dataset_path, frame_index, h5_channel)
+            else:
+                data, _dead, _meta = ImageLoader.load(fpath, dataset_path, h5_channel)
+            if data is None:
+                raise ValueError("Failed to load frame")
+
+            rows, cols = int(data.shape[0]), int(data.shape[1])
+            # pixelX = column, pixelY = row (same convention as pixel_info).
+            col0 = int(pl.get("col0", pl.get("pixelX0", -1)))
+            row0 = int(pl.get("row0", pl.get("pixelY0", -1)))
+            col1 = int(pl.get("col1", pl.get("pixelX1", -1)))
+            row1 = int(pl.get("row1", pl.get("pixelY1", -1)))
+            for v, name in ((row0, "row0"), (col0, "col0"), (row1, "row1"), (col1, "col1")):
+                if v < 0:
+                    raise ValueError(f"line_profile: missing or invalid '{name}'")
+            # Clamp endpoints into bounds (drawing can slightly overshoot).
+            row0 = max(0, min(rows - 1, row0))
+            row1 = max(0, min(rows - 1, row1))
+            col0 = max(0, min(cols - 1, col0))
+            col1 = max(0, min(cols - 1, col1))
+
+            width = max(1, int(pl.get("width", 1) or 1))
+            aggregate = str(pl.get("aggregate", "mean") or "mean").lower()
+            n_samples_user = int(pl.get("n_samples", 0) or 0)
+
+            # --- sample the line in pixel space (core in _sample_line_profile) ---
+            sampled = _sample_line_profile(
+                data, row0, col0, row1, col1,
+                width=width, aggregate=aggregate, n_samples=n_samples_user,
+            )
+            intensity = sampled["intensity"]
+            distance_px = sampled["distance_px"]
+            rows_grid = sampled["grid_rows"]
+            cols_grid = sampled["grid_cols"]
+            length_px = sampled["length_px"]
+            n_samples = sampled["n_samples"]
+
+            # --- optional geometry-based x-axis (q / 2θ / χ) ---
+            q = two_theta = chi = None
+            beam_center = None
+            has_geometry = False
+            if ai is not None:
+                try:
+                    shape = (rows, cols)
+                    q_arr = _orient_to_data(ai.array_from_unit(shape, typ="center", unit="q_A^-1"), ai)
+                    twoth_arr = _orient_to_data(ai.array_from_unit(shape, typ="center", unit="2th_deg"), ai)
+                    chi_arr = _orient_to_data(ai.array_from_unit(shape, typ="center", unit="chi_deg"), ai)
+                    bcx = float(ai.poni2 / ai.pixel2)
+                    bcy = float(ai.poni1 / ai.pixel1)
+                    beam_center = {"x": bcx, "y": bcy}
+                    has_geometry = True
+                    # Project each physics map onto the same sampling grid and
+                    # aggregate identically to intensity (mean over width).
+                    for arr, agg_name in (
+                        (q_arr, "q"), (twoth_arr, "two_theta"), (chi_arr, "chi"),
+                    ):
+                        blk = map_coordinates(
+                            arr, [rows_grid, cols_grid], order=1, mode="nearest"
+                        )
+                        vals = blk.sum(axis=0) if aggregate == "sum" else blk.mean(axis=0)
+                        if agg_name == "q":
+                            q = vals
+                        elif agg_name == "two_theta":
+                            two_theta = vals
+                        else:
+                            chi = vals
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[line_profile] geometry projection failed: {exc}", flush=True)
+                    has_geometry = False
+
+            result = {
+                "status": "ok",
+                "distance_px": distance_px.tolist(),
+                "intensity": np.asarray(intensity, dtype=float).tolist(),
+                "q": q.tolist() if q is not None else None,
+                "two_theta": two_theta.tolist() if two_theta is not None else None,
+                "chi": chi.tolist() if chi is not None else None,
+                "length_px": length_px,
+                "n_samples": int(n_samples),
+                "width": width,
+                "aggregate": aggregate,
+                "endpoints": {"row0": row0, "col0": col0, "row1": row1, "col1": col1},
+                "has_geometry": has_geometry,
+                "beamCenterX": beam_center["x"] if beam_center else None,
+                "beamCenterY": beam_center["y"] if beam_center else None,
+                "unit": "q_A^-1",
+                "shape": [rows, cols],
+            }
+            print(
+                f"[line_profile] ({row0},{col0})->({row1},{col1}) L={length_px:.1f}px "
+                f"n={n_samples} w={width} agg={aggregate} geo={has_geometry}",
+                flush=True,
+            )
+            return result
+
+        try:
+            result = await _run_blocking(_compute_line_profile, payload)
+            await send_progress(1.0, "Done")
+            return result
+        except Exception as exc:
+            traceback.print_exc()
+            return {"status": "error", "message": f"Failed to compute line profile: {exc}"}
+
     # ── png_export: render a single frame with custom settings ──────────
     if action == "png_export":
         await send_progress(0.0, "Rendering PNG export...")
@@ -1888,12 +2247,118 @@ async def handle_viewer_config(
             "previewB64": preview_b64,
             "axisIp": item["axis_ip"].tolist(),
             "axisOop": item["axis_oop"].tolist(),
+            "imageData": _serialize_image_data(intensity),
             "filename": item.get("filename", ""),
             "stem": item.get("stem", ""),
         }
         if thumbnail_only:
+            # 缩略图模式不需要发送完整的 intensity 数据以节省带宽
+            result_payload.pop("imageData", None)
             return result_payload
         return result_payload
+
+    # ── fiber_result_mpl_preview: matplotlib-rendered preview with axes / 带坐标轴的出版质量预览 ──
+    # Renders the cached 2D result via render_png_mpl so the user sees exactly
+    # what the exported PNG will look like (axes, colorbar, no-data fill).
+    # 通过 render_png_mpl 渲染缓存结果，所见即所得（与导出 PNG 一致）。
+    if action == "fiber_result_mpl_preview":
+        await send_progress(0.0, "Rendering annotated preview...")
+        cache_path = payload.get("batchCachePath") or payload.get("batch_cache_path") or ""
+        if not cache_path:
+            return {"status": "error", "message": "No batchCachePath provided"}
+
+        result_index = max(0, int(payload.get("resultIndex", payload.get("result_index", 0)) or 0))
+        try:
+            batch_results = await _run_blocking(_load_fiber_batch_cache, cache_path)
+        except Exception as exc:
+            return {"status": "error", "message": f"Failed to load GIWAXS batch cache: {exc}"}
+
+        if result_index >= len(batch_results):
+            return {"status": "error", "message": f"Invalid result index: {result_index}"}
+
+        item = batch_results[result_index]
+        intensity = item["intensity"]
+        axis_ip = item["axis_ip"]
+        axis_oop = item["axis_oop"]
+        unit_ip = str(payload.get("unitIp", "qip_nm^-1"))
+        unit_oop = str(payload.get("unitOop", "qoop_nm^-1"))
+
+        opts = payload.get("pngOptions", {}) or payload.get("png_options", {}) or {}
+        cmap_name = str(opts.get("cmap", opts.get("colormap", "viridis")))
+        use_log = bool(opts.get("useLog", opts.get("use_log", False)))
+        show_labels = bool(opts.get("showLabels", opts.get("show_labels", True)))
+        font_size = int(opts.get("fontSize", opts.get("font_size", 12)))
+        no_data_bg = str(opts.get("noDataBg", opts.get("no_data_bg", "white")))
+        dpi = int(opts.get("dpi", 150))
+        # Publication-style extras / 出版风格附加项
+        show_colorbar = bool(opts.get("showColorbar", opts.get("show_colorbar", True)))
+        show_title = bool(opts.get("showTitle", opts.get("show_title", False)))
+        border_width = float(opts.get("borderWidth", opts.get("border_width", 1.0)) or 0)
+        edge_color = str(opts.get("edgeColor", opts.get("edge_color", "black")))
+        title_str = opts.get("title") if show_title else None
+        # Custom axis titles + font / 自定义轴标题与字体
+        x_label = opts.get("xLabel") if opts.get("xLabel") is not None else None
+        y_label = opts.get("yLabel") if opts.get("yLabel") is not None else None
+        font_family = opts.get("fontFamily") or None
+        show_axis_title = bool(opts.get("showAxisTitle", True))
+        show_ticks = bool(opts.get("showTicks", True))
+        # Bold + axis flip / 加粗与轴反转
+        title_bold = bool(opts.get("titleBold", False))
+        axis_title_bold = bool(opts.get("axisTitleBold", False))
+        tick_bold = bool(opts.get("tickBold", False))
+        flip_x = bool(opts.get("flipX", True))
+        flip_y = bool(opts.get("flipY", True))
+
+        # Resolve clim: forwarded value wins, else auto from data / 解析对比度
+        clim_raw = opts.get("clim")
+        if clim_raw and len(clim_raw) == 2 and clim_raw[0] is not None and clim_raw[1] is not None:
+            clim_tuple = (float(clim_raw[0]), float(clim_raw[1]))
+        else:
+            stats_ = ImageRenderer.compute_stats(intensity)
+            if use_log:
+                clim_tuple = (max(float(stats_["min"]), 1e-6),
+                              float(stats_["adjustedMax"] or stats_["max"]) or 1.0)
+            else:
+                clim_tuple = (float(stats_["min"]),
+                              float(stats_["adjustedMax"] or stats_["max"]) or 1.0)
+
+        png_bytes = await _run_blocking(
+            lambda: ImageRenderer.render_png_mpl(
+                intensity,
+                cmap_name=cmap_name,
+                use_log=use_log,
+                clim=clim_tuple,
+                dpi=dpi,
+                axis_ip=axis_ip,
+                axis_oop=axis_oop,
+                unit_ip=unit_ip,
+                unit_oop=unit_oop,
+                show_labels=show_labels,
+                font_size=font_size,
+                title=title_str,
+                no_data_bg=no_data_bg,
+                show_colorbar=show_colorbar,
+                border_width=border_width,
+                edge_color=edge_color,
+                x_label=x_label,
+                y_label=y_label,
+                font_family=font_family,
+                show_axis_title=show_axis_title,
+                show_ticks=show_ticks,
+                title_bold=title_bold,
+                axis_title_bold=axis_title_bold,
+                tick_bold=tick_bold,
+                flip_x=flip_x,
+                flip_y=flip_y,
+            )
+        )
+        mpl_b64 = base64.b64encode(png_bytes).decode()
+        await send_progress(1.0, "Complete")
+        return {
+            "status": "ok",
+            "mplPreviewB64": mpl_b64,
+            "showLabels": show_labels,
+        }
 
     # ── fiber_exported_preview: load exported result from disk / 从磁盘加载导出结果 ──
     if action == "fiber_exported_preview":
@@ -2628,6 +3093,138 @@ async def handle_viewer_config(
             "mask_data": base64.b64encode(mask_uint8.tobytes()).decode(),
             "shape": list(mask_uint8.shape),
             "masked_pixels": int(np.count_nonzero(mask_uint8)),
+        }
+
+    # ── fiber_1d_roi: 1D GIWAXS integration from ROI / ROI区域1D GIWAXS积分 ──
+    if action == "fiber_1d_roi":
+        await send_progress(0.0, "Building FiberIntegrator for 1D ROI...")
+        geo = payload.get("geometry", {})
+        fiber_params = payload.get("fiberParams", {})
+        file_path = payload.get("filePath", "")
+        files_list = payload.get("files")  # optional batch / 可选批量
+        ip_range = payload.get("ipRange")
+        oop_range = payload.get("oopRange")
+        npt_1d = int(payload.get("npt1d", 100))
+        print(f"[fiber_1d_roi] ipRange={ip_range!r} oopRange={oop_range!r} filePath={file_path!r} files={files_list!r}", flush=True)
+
+        # Resolve file list: single file or batch / 解析文件列表
+        if isinstance(files_list, list) and len(files_list) > 0:
+            target_files = files_list
+        elif file_path:
+            target_files = [file_path]
+        else:
+            return {"status": "error", "message": "No filePath or files provided"}
+
+        if not ip_range or len(ip_range) != 2 or not oop_range or len(oop_range) != 2:
+            return {"status": "error", "message": "Invalid ipRange or oopRange"}
+
+        try:
+            fi = await _run_blocking(
+                FiberIntegratorService.build_integrator,
+                poni_path=geo.get("poniPath") or geo.get("poni_path"),
+                poni_bytes=geo.get("poniBytes", "").encode() if geo.get("poniBytes") else None,
+                use_poni_rot3=geo.get("usePoniRot3", True),
+                override_rot3_rad=geo.get("overrideRot3Rad", 0.0),
+                manual_params=geo.get("manual"),
+            )
+        except Exception as exc:
+            return {"status": "error", "message": f"Failed to build FiberIntegrator: {exc}"}
+
+        if fi is None:
+            return {"status": "error", "message": "Failed to build FiberIntegrator"}
+
+        # Pre-compute shared params / 预计算共享参数
+        incident_rad = math.radians(float(fiber_params.get("incidentAngleDeg", 0.0)))
+        tilt_rad = math.radians(float(fiber_params.get("tiltAngleDeg", 0.0)))
+        sample_orientation = int(fiber_params.get("sampleOrientation", 1))
+        unit_ip = str(fiber_params.get("unitIp", "qip_nm^-1"))
+        unit_oop = str(fiber_params.get("unitOop", "qoop_nm^-1"))
+        mask_config = payload.get("maskConfig", {}) or {}
+        custom_mask_path = mask_config.get("customMaskPath")
+        abs_intensity = bool(payload.get("absoluteIntensity", False))
+        pos_q_only = bool(payload.get("positiveQOnly", False))
+        correct_sa = bool(payload.get("correctSolidAngle", True))
+
+        all_results: list[dict[str, Any]] = []
+        n_files = len(target_files)
+
+        for fi_idx, fpath_str in enumerate(target_files):
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+
+            fpath = Path(fpath_str)
+            fname = fpath.name
+            await send_progress(
+                max(0.1, fi_idx / max(n_files, 1) * 0.8 + 0.1),
+                f"[{fi_idx + 1}/{n_files}] {fname}",
+            )
+
+            try:
+                raw_data, dead_mask, _meta = await _run_blocking(
+                    ImageLoader.load, fpath,
+                    payload.get("h5DatasetPath"), payload.get("h5Channel"),
+                )
+                if raw_data is None:
+                    all_results.append({"filename": fname, "error": "Failed to load"})
+                    continue
+
+                custom_mask = None
+                if custom_mask_path:
+                    custom_mask = MaskBuilder.load_mask_file(str(custom_mask_path))
+                final_mask = MaskBuilder.build(
+                    raw_data,
+                    mask_config.get("valueRangeMin", 0.0),
+                    mask_config.get("valueRangeMax", 1e10),
+                    dead_mask, custom_mask,
+                )
+
+                def _run_1d(data, mask):
+                    return fi.integrate1d_grazing_incidence(
+                        data=data,
+                        npt_ip=npt_1d,
+                        npt_oop=npt_1d,
+                        unit_ip=unit_ip,
+                        unit_oop=unit_oop,
+                        ip_range=tuple(ip_range),
+                        oop_range=tuple(oop_range),
+                        sample_orientation=sample_orientation,
+                        incident_angle=incident_rad,
+                        tilt_angle=tilt_rad,
+                        mask=mask.astype(np.uint8),
+                        correctSolidAngle=correct_sa,
+                    )
+
+                res1d = await _run_blocking(_run_1d, raw_data, final_mask)
+                radial = res1d.radial if hasattr(res1d, "radial") else res1d[0]
+                intensity = res1d.intensity if hasattr(res1d, "intensity") else res1d[1]
+                sigma = res1d.sigma if hasattr(res1d, "sigma") else None
+
+                if abs_intensity:
+                    intensity = np.abs(intensity)
+                if pos_q_only:
+                    radial = np.abs(radial)
+                    sort_idx = np.argsort(radial)
+                    radial = radial[sort_idx]
+                    intensity = intensity[sort_idx]
+                    if sigma is not None:
+                        sigma = sigma[sort_idx]
+
+                all_results.append({
+                    "filename": fname,
+                    "radial": radial.tolist(),
+                    "intensity": intensity.tolist(),
+                    "sigma": sigma.tolist() if sigma is not None else None,
+                })
+            except Exception as exc:
+                all_results.append({"filename": fname, "error": str(exc)})
+
+        await send_progress(1.0, f"1D ROI integration complete ({len(all_results)} files)")
+        return {
+            "status": "ok",
+            "results": all_results,
+            "unit": unit_oop if True else unit_ip,  # vertical_integration=True → X=OOP
+            "ipRange": list(ip_range),
+            "oopRange": list(oop_range),
         }
 
     # ── default fallback: scan datasets ─────────────────────────────────
@@ -4100,6 +4697,8 @@ async def handle_poni_importer(
     Actions:
       - parse: Parse a .poni file and extract parameters
       - export: Export PONI data to JSON/poni/params format
+      - probe_image: Read image shape from EDF/TIFF/HDF5 (incl. 4D HDF5)
+      - match_detector: Look up a pyFAI detector by 2-D image shape
     """
     action = payload.get("action", "parse")
 
@@ -4107,8 +4706,98 @@ async def handle_poni_importer(
         return await _handle_poni_importer_parse(payload, send_progress, cancel_event)
     elif action == "export":
         return await _handle_poni_importer_export(payload, send_progress, cancel_event)
+    elif action == "probe_image":
+        return await _handle_poni_importer_probe_image(payload, send_progress, cancel_event)
+    elif action == "match_detector":
+        return await _handle_poni_importer_match_detector(payload, send_progress, cancel_event)
     else:
         return {"status": "error", "message": f"Unknown action: {action}"}
+
+
+async def _handle_poni_importer_probe_image(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Read the 2-D image shape from an EDF/TIFF/HDF5 file for detector matching.
+
+    For HDF5, scans datasets (handling 4-D `frames×channels×rows×cols`) and
+    returns all image-like datasets so the user can pick one. For EDF/TIFF,
+    returns the single image's (rows, cols) directly.
+    / 从 EDF/TIFF/HDF5 读取图像形状供探测器匹配。"""
+    await send_progress(0.0, "Probing image...")
+    fpath = payload.get("filePath") or payload.get("file_path") or ""
+    if not fpath:
+        return {"status": "error", "message": "Missing filePath"}
+    if not os.path.isfile(fpath):
+        return {"status": "error", "message": f"File not found: {fpath}"}
+
+    ext = os.path.splitext(fpath)[1].lower()
+
+    if ext in {".h5", ".hdf5"}:
+        await send_progress(0.4, "Scanning HDF5 datasets...")
+        try:
+            datasets = await _run_blocking(H5Handler.find_datasets, fpath)
+        except Exception as exc:
+            return {"status": "error", "message": f"Failed to read HDF5: {exc}"}
+        entries = _serialize_h5_datasets(datasets)
+        # Attach per-dataset (rows, cols) for the frontend to feed back into
+        # match_detector without re-reading the file.
+        for entry in entries:
+            shape = entry.get("shape") or []
+            if len(shape) >= 2:
+                entry["height"] = int(shape[-2])
+                entry["width"] = int(shape[-1])
+        if not entries:
+            return {"status": "error", "message": "No image datasets found in HDF5"}
+        default_path = H5Handler.pick_default_dataset([item["path"] for item in entries])
+        await send_progress(1.0, "Complete")
+        return {
+            "status": "ok",
+            "isH5": True,
+            "datasets": entries,
+            "default_path": default_path,
+        }
+
+    # EDF / TIFF
+    await send_progress(0.5, "Reading image header...")
+    try:
+        probe_meta = await _run_blocking(ImageLoader.probe, fpath)
+    except Exception as exc:
+        return {"status": "error", "message": f"Failed to probe image: {exc}"}
+    height = int(probe_meta.get("height", 0) or 0)
+    width = int(probe_meta.get("width", 0) or 0)
+    n_frames = int(probe_meta.get("n_frames", 1) or 1)
+    if height <= 0 or width <= 0:
+        return {"status": "error", "message": "Could not determine image dimensions"}
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "isH5": False,
+        "shape": [height, width],
+        "height": height,
+        "width": width,
+        "n_frames": n_frames,
+    }
+
+
+async def _handle_poni_importer_match_detector(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Look up a pyFAI-registered detector by 2-D image shape.
+    / 根据图像形状查找 pyFAI 注册的探测器。"""
+    await send_progress(0.2, "Matching detector...")
+    shape = payload.get("shape")
+    if shape is None:
+        return {"status": "error", "message": "Missing shape"}
+    try:
+        matched = await _run_blocking(PoniImporter.match_detector_by_shape, shape)
+    except Exception as exc:
+        return {"status": "error", "message": f"Detector match failed: {exc}"}
+    await send_progress(1.0, "Complete")
+    return {"status": "ok", "matched": matched}
 
 
 # ---------------------------------------------------------------------------
@@ -4192,6 +4881,115 @@ async def _handle_image_math_compute(
         "width": int(result.shape[-1]),
         "height": int(result.shape[-2]),
         "stats": stats,
+        "result": {
+            "shape": list(result.shape),
+            "dtype": str(result.dtype),
+            "min": float(np.nanmin(result)),
+            "max": float(np.nanmax(result)),
+        },
+    }
+
+
+async def _handle_image_math_save(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Compute image arithmetic and save the result to disk.
+    计算图像运算并将结果保存到磁盘。
+
+    Saves to ``<output_dir>/<image1_stem>_<operation>_<image2_stem>.<ext>`` in
+    the format given by ``output_format`` (h5 / edf / tif).
+    按 ``output_format``（h5 / edf / tif）格式保存到
+    ``<output_dir>/<image1主名>_<运算>_<image2主名>.<扩展名>``。
+    """
+    await send_progress(0.0, "Loading image 1...")
+    image1_path = payload.get("image1_path", "")
+    image2_path = payload.get("image2_path", "")
+    factor1 = float(payload.get("factor1", 1.0))
+    factor2 = float(payload.get("factor2", 1.0))
+    operation = payload.get("operation", "subtract")
+    output_dir = payload.get("output_dir", "")
+    output_format = payload.get("output_format", "tif")
+
+    if not image1_path:
+        return {"status": "error", "message": "Missing image1_path"}
+    if not image2_path:
+        return {"status": "error", "message": "Missing image2_path"}
+    if not output_dir:
+        return {"status": "error", "message": "Missing output_dir"}
+
+    # Load image 1 / 加载图像1
+    img1_result = await _run_blocking(ImageLoader.load, image1_path)
+    if isinstance(img1_result, tuple):
+        img1_data = img1_result[0]
+    elif isinstance(img1_result, dict):
+        img1_data = img1_result.get("data")
+    else:
+        img1_data = img1_result
+    if img1_data is None:
+        return {"status": "error", "message": f"Failed to load image1: {image1_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Load image 2 / 加载图像2
+    await send_progress(0.3, "Loading image 2...")
+    img2_result = await _run_blocking(ImageLoader.load, image2_path)
+    if isinstance(img2_result, tuple):
+        img2_data = img2_result[0]
+    elif isinstance(img2_result, dict):
+        img2_data = img2_result.get("data")
+    else:
+        img2_data = img2_result
+    if img2_data is None:
+        return {"status": "error", "message": f"Failed to load image2: {image2_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Perform arithmetic / 执行运算
+    await send_progress(0.6, "Computing image arithmetic...")
+    result = await _run_blocking(
+        ImageMath.image_arithmetic, img1_data, img2_data, factor1, factor2, operation,
+    )
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Save result in requested format / 以请求格式保存结果
+    await send_progress(0.8, "Saving result...")
+    os.makedirs(output_dir, exist_ok=True)
+    img1_stem = os.path.splitext(os.path.basename(image1_path))[0]
+    img2_stem = os.path.splitext(os.path.basename(image2_path))[0]
+    out_name = f"{img1_stem}_{operation}_{img2_stem}.{output_format}"
+    out_path = os.path.join(output_dir, out_name)
+
+    # Replace NaN/Inf with 0 before writing (fabio cannot handle them)
+    # 写入前将 NaN/Inf 替换为 0（fabio 无法处理这些值）
+    save_arr = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+    if output_format == "edf":
+        def _save_edf(path: str, data: Any) -> None:
+            import fabio
+            fabio.edfimage.EdfImage(data=data).write(path)
+        await _run_blocking(_save_edf, out_path, save_arr)
+    elif output_format == "tif":
+        def _save_tif(path: str, data: Any) -> None:
+            import fabio
+            fabio.tifimage.TifImage(data=data).write(path)
+        await _run_blocking(_save_tif, out_path, save_arr)
+    else:  # h5 / hdf5
+        def _save_h5(path: str, data: Any) -> None:
+            import h5py
+            with h5py.File(path, "w") as hf:
+                hf.create_dataset("data", data=data, compression="gzip")
+        await _run_blocking(_save_h5, out_path, save_arr)
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "output_path": out_path,
         "result": {
             "shape": list(result.shape),
             "dtype": str(result.dtype),
@@ -4365,6 +5163,7 @@ async def handle_image_math(
 
     Actions:
       - compute: Load two images, perform arithmetic, return stats + preview PNG
+      - save: Compute and save the result to output_dir in the requested format
       - preview_image1: Preview image1 file
       - preview_image2: Preview image2 file
       - preview_result: Compute and preview the arithmetic result
@@ -4373,10 +5172,271 @@ async def handle_image_math(
 
     if action == "compute":
         return await _handle_image_math_compute(payload, send_progress, cancel_event)
+    elif action == "save":
+        return await _handle_image_math_save(payload, send_progress, cancel_event)
     elif action in ("preview_image1", "preview_image2"):
         return await _handle_image_math_preview(payload, send_progress, cancel_event)
     elif action == "preview_result":
         return await _handle_image_math_preview_result(payload, send_progress, cancel_event)
+    else:
+        return {"status": "error", "message": f"Unknown action: {action}"}
+
+
+# ---------------------------------------------------------------------------
+# Image Stitch handler / 图像拼接处理函数
+# ---------------------------------------------------------------------------
+
+
+def _build_stitch_image_list(
+    payload: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str]:
+    """Extract and validate the images list from a stitch payload.
+    从拼接请求 payload 中提取并校验 images 列表。
+
+    Each entry is normalized to absolute micron offsets; the caller is
+    responsible for converting relative offsets to absolute before sending
+    (frontend performs relative→absolute accumulation).
+    每项归一化为绝对微米偏移；调用方负责在发送前将相对偏移转换为绝对偏移
+    （前端完成相对→绝对的累加）。
+
+    Returns (images_list, error_message). On error, images_list is empty.
+    返回 (images_list, error_message)；出错时 images_list 为空。
+    """
+    raw_images = payload.get("images") or payload.get("image_list") or []
+    if not isinstance(raw_images, list) or len(raw_images) < 2:
+        return [], (
+            "At least 2 images required. "
+            "至少需要 2 张图像。"
+        )
+
+    strategy = str(payload.get("strategy", "mean")).lower()
+    normalized: list[dict[str, Any]] = []
+    for idx, item in enumerate(raw_images):
+        if not isinstance(item, dict):
+            return [], f"image #{idx + 1}: invalid entry (not an object). 第 {idx + 1} 张图：条目格式无效。"
+        path = item.get("path") or item.get("file_path") or ""
+        if not path:
+            return [], f"image #{idx + 1}: missing path. 第 {idx + 1} 张图：缺少文件路径。"
+        pixel_size_um = item.get("pixel_size_um")
+        if pixel_size_um is None or float(pixel_size_um) <= 0:
+            return [], (
+                f"image #{idx + 1}: pixel_size_um must be > 0. "
+                f"第 {idx + 1} 张图：pixel_size_um 必须 > 0。"
+            )
+        # Offsets are already absolute microns (frontend converts relative→absolute).
+        # 偏移已是绝对微米值（前端已将相对偏移转换为绝对）。
+        off_x_um = float(item.get("offset_x_um", 0.0) or 0.0)
+        off_y_um = float(item.get("offset_y_um", 0.0) or 0.0)
+        normalized.append({
+            "path": str(path),
+            "pixel_size_um": float(pixel_size_um),
+            "offset_x_um": off_x_um,
+            "offset_y_um": off_y_um,
+        })
+
+    return normalized, strategy
+
+
+async def _load_stitch_images(
+    images_meta: list[dict[str, Any]],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> tuple[list[tuple[Any, float, float, float]], str]:
+    """Load all stitch images, returning (loaded, error_message).
+    加载所有拼接图像，返回 (loaded, error_message)。
+
+    On success loaded is a list of (data, pixel_size_um, off_x_um, off_y_um).
+    成功时 loaded 为 [(data, pixel_size_um, off_x_um, off_y_um), ...]。
+    """
+    loaded: list[tuple[Any, float, float, float]] = []
+    n = len(images_meta)
+    for idx, meta in enumerate(images_meta):
+        if cancel_event.is_set():
+            return [], "Cancelled by user"
+        await send_progress(
+            float(idx) / float(n) * 0.5,
+            f"Loading image {idx + 1}/{n}...",
+        )
+        load_result = await _run_blocking(ImageLoader.load, meta["path"])
+        if isinstance(load_result, tuple):
+            data = load_result[0]
+        elif isinstance(load_result, dict):
+            data = load_result.get("data")
+        else:
+            data = load_result
+        if data is None:
+            return [], f"Failed to load image #{idx + 1}: {meta['path']}"
+        loaded.append((data, meta["pixel_size_um"], meta["offset_x_um"], meta["offset_y_um"]))
+    return loaded, ""
+
+
+def _resolve_stitch_clim(payload: dict[str, Any], stats: dict[str, float]) -> tuple[float, float]:
+    """Resolve contrast limits. Uses correct stats keys (min, adjustedMax),
+    avoiding the legacy autoMin/autoMax typo found elsewhere.
+    解析对比度上下限。使用正确的统计键（min、adjustedMax），
+    避免他处遗留的 autoMin/autoMax 错误。
+    """
+    clim_min = payload.get("clim_min")
+    clim_max = payload.get("clim_max")
+    if clim_min is not None and clim_max is not None:
+        return (float(clim_min), float(clim_max))
+    # Correct keys: compute_stats returns min/adjustedMax (not autoMin/autoMax).
+    # 正确键名：compute_stats 返回 min/adjustedMax（非 autoMin/autoMax）。
+    return (float(stats.get("min", 0.0)), float(stats.get("adjustedMax", 1.0)))
+
+
+async def _handle_image_stitch_compute(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Stitch multiple images into one large canvas and return a preview PNG.
+    将多张图像拼接为一张大画布并返回预览 PNG。"""
+    images_meta, strategy = _build_stitch_image_list(payload)
+    if not images_meta:
+        return {"status": "error", "message": strategy}
+
+    loaded, err = await _load_stitch_images(images_meta, send_progress, cancel_event)
+    if err:
+        if err == "Cancelled by user":
+            return {"status": "cancelled", "message": err}
+        return {"status": "error", "message": err}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Perform stitching / 执行拼接
+    await send_progress(0.6, "Stitching images...")
+    try:
+        result, meta = await _run_blocking(ImageStitch.stitch, loaded, strategy)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Render preview PNG / 渲染预览 PNG
+    await send_progress(0.85, "Rendering preview...")
+    stats = ImageRenderer.compute_stats(result)
+    cmap = payload.get("cmap", "viridis") or "viridis"
+    use_log = bool(payload.get("use_log", False))
+    clim = _resolve_stitch_clim(payload, stats)
+    render_settings = {"cmap": cmap, "use_log": use_log, "clim": clim}
+    png_bytes = await _run_blocking(ImageRenderer.render_png, result, render_settings)
+
+    await send_progress(1.0, "Complete")
+    finite = result[np.isfinite(result)]
+    return {
+        "status": "ok",
+        "__binary_png__": png_bytes,
+        "mime": "image/png",
+        "width": int(result.shape[-1]),
+        "height": int(result.shape[-2]),
+        "stats": stats,
+        "stitch_meta": meta,
+        "result": {
+            "shape": list(result.shape),
+            "dtype": str(result.dtype),
+            "min": float(np.nanmin(finite)) if finite.size else 0.0,
+            "max": float(np.nanmax(finite)) if finite.size else 0.0,
+        },
+    }
+
+
+async def _handle_image_stitch_save(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Stitch images and save the result to disk.
+    拼接图像并将结果保存到磁盘。
+
+    Saves to ``<output_dir>/stitched.<ext>`` (or output_path if provided),
+    in the format given by ``output_format`` (h5 / edf / tif).
+    按 ``output_format``（h5 / edf / tif）保存到
+    ``<output_dir>/stitched.<ext>``（若提供 output_path 则用其值）。
+    """
+    images_meta, strategy = _build_stitch_image_list(payload)
+    if not images_meta:
+        return {"status": "error", "message": strategy}
+
+    output_dir = payload.get("output_dir", "")
+    output_format = payload.get("output_format", "tif")
+    output_path = payload.get("output_path")
+    if not output_path:
+        if not output_dir:
+            return {"status": "error", "message": "Missing output_dir or output_path"}
+        output_path = os.path.join(output_dir, f"stitched.{output_format}")
+
+    loaded, err = await _load_stitch_images(images_meta, send_progress, cancel_event)
+    if err:
+        if err == "Cancelled by user":
+            return {"status": "cancelled", "message": err}
+        return {"status": "error", "message": err}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    await send_progress(0.6, "Stitching images...")
+    try:
+        result, meta = await _run_blocking(ImageStitch.stitch, loaded, strategy)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    # Save / 保存（写入前将 NaN/Inf 替换为 0，fabio 无法处理这些值）
+    await send_progress(0.85, "Saving result...")
+    save_arr = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+
+    def _save(_path: str, _data: Any, _fmt: str) -> None:
+        if _fmt == "edf":
+            import fabio
+            fabio.edfimage.EdfImage(data=_data).write(_path)
+        elif _fmt == "tif":
+            import fabio
+            fabio.tifimage.TifImage(data=_data).write(_path)
+        else:  # h5 / hdf5
+            import h5py
+            with h5py.File(_path, "w") as hf:
+                hf.create_dataset("data", data=_data, compression="gzip")
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    await _run_blocking(_save, output_path, save_arr, output_format)
+
+    await send_progress(1.0, "Complete")
+    finite = result[np.isfinite(result)]
+    return {
+        "status": "ok",
+        "output_path": output_path,
+        "stitch_meta": meta,
+        "result": {
+            "shape": list(result.shape),
+            "dtype": str(result.dtype),
+            "min": float(np.nanmin(finite)) if finite.size else 0.0,
+            "max": float(np.nanmax(finite)) if finite.size else 0.0,
+        },
+    }
+
+
+async def handle_image_stitch(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Handle image stitching requests. 图像拼接请求处理函数。
+
+    Actions:
+      - compute: Load images, stitch into one canvas, return preview PNG
+      - save: Stitch and save the result to output_dir/output_path
+    """
+    action = payload.get("action", "compute")
+
+    if action == "compute":
+        return await _handle_image_stitch_compute(payload, send_progress, cancel_event)
+    elif action == "save":
+        return await _handle_image_stitch_save(payload, send_progress, cancel_event)
     else:
         return {"status": "error", "message": f"Unknown action: {action}"}
 
@@ -4401,6 +5461,7 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/bg_subtract": handle_bg_subtract,
     "/api/poni_importer": handle_poni_importer,
     "/api/image_math": handle_image_math,
+    "/api/image_stitch": handle_image_stitch,
 }
 
 

@@ -735,6 +735,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   list_space_groups: '/api/list_space_groups',
   bg_subtract: '/api/bg_subtract',
   image_math: '/api/image_math',
+  image_stitch: '/api/image_stitch',
   poni_importer: '/api/poni_importer'
 }
 

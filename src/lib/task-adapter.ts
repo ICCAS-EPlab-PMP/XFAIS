@@ -283,6 +283,40 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         pixelY: typeof params.pixelY === 'number' ? params.pixelY
           : (typeof params.pixel_y === 'number' ? params.pixel_y : undefined),
         unit: asString(params.unit),
+        // line_profile fields (passed through verbatim; consumed only by the
+        // viewer_config 'line_profile' action). Endpoints use row/col semantics
+        // matching the backend: pixelX = col, pixelY = row. / 沿线剖面字段
+        // （原样透传，仅被 viewer_config 的 'line_profile' action 消费）。
+        // 端点采用与后端一致的 row/col 语义：pixelX = col, pixelY = row。
+        row0: typeof params.row0 === 'number' ? params.row0
+          : (typeof params.pixelY0 === 'number' ? params.pixelY0 : undefined),
+        col0: typeof params.col0 === 'number' ? params.col0
+          : (typeof params.pixelX0 === 'number' ? params.pixelX0 : undefined),
+        row1: typeof params.row1 === 'number' ? params.row1
+          : (typeof params.pixelY1 === 'number' ? params.pixelY1 : undefined),
+        col1: typeof params.col1 === 'number' ? params.col1
+          : (typeof params.pixelX1 === 'number' ? params.pixelX1 : undefined),
+        width: typeof params.width === 'number' ? params.width : undefined,
+        n_samples: typeof params.n_samples === 'number' ? params.n_samples
+          : (typeof params.nSamples === 'number' ? params.nSamples : undefined),
+        aggregate: asString(params.aggregate),
+        // fiber_1d_roi fields (passed through verbatim for GIWAXS ROI 1D integration)
+        // GIWAXS ROI 1D 积分字段（原样透传）
+        fiberParams: asRecord(params.fiberParams),
+        ipRange: Array.isArray(params.ipRange) ? params.ipRange : undefined,
+        oopRange: Array.isArray(params.oopRange) ? params.oopRange : undefined,
+        npt1d: typeof params.npt1d === 'number' ? params.npt1d : 100,
+        positiveQOnly: typeof params.positiveQOnly === 'boolean' ? params.positiveQOnly : undefined,
+        absoluteIntensity: typeof params.absoluteIntensity === 'boolean' ? params.absoluteIntensity : undefined,
+        correctSolidAngle: typeof params.correctSolidAngle === 'boolean' ? params.correctSolidAngle : undefined,
+        maskConfig: asRecord(params.maskConfig),
+        // fiber_result_mpl_preview fields (annotated WYSIWYG preview + PNG export).
+        // The whole pngOptions object is forwarded verbatim so colormap/clim/
+        // showLabels/no-data-fill/border/edge-color reach the backend renderer.
+        // 带坐标轴预览与 PNG 导出字段：pngOptions 整体原样透传。
+        unitIp: asString(params.unitIp),
+        unitOop: asString(params.unitOop),
+        pngOptions: asRecord(params.pngOptions),
       }
     }
     case 'mask_maker': {

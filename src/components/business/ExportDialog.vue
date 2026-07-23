@@ -62,7 +62,7 @@ import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
 
-export type ExportFormat = 'txt' | 'hdf5' | 'tiff' | 'csv' | 'xy' | 'edf' | 'npy'
+export type ExportFormat = 'txt' | 'hdf5' | 'tiff' | 'csv' | 'xy' | 'edf' | 'npy' | 'png'
 export type ExportMode = 'single' | 'separate'
 
 const props = withDefaults(defineProps<{
@@ -91,6 +91,7 @@ const FORMAT_EXTENSIONS: Record<ExportFormat, string[]> = {
   xy: ['xy'],
   edf: ['edf'],
   npy: ['npy'],
+  png: ['png'],
 }
 
 const currentFilters = computed(() => {

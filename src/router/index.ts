@@ -143,6 +143,16 @@ const router = createRouter({
       },
     },
     {
+      path: '/workspace/image-stitch',
+      name: 'image-stitch',
+      component: () => import('@/views/workspace/ImageStitchView.vue'),
+      meta: {
+        titleKey: 'imageStitch.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'imageStitch.description',
+      },
+    },
+    {
       path: '/workspace/poni-importer',
       name: 'poni-importer',
       component: () => import('@/views/workspace/PoniImporterView.vue'),

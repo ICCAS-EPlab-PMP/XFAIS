@@ -25,6 +25,62 @@ from .colormaps import build_cmap, get_cmap
 # Sentinel value for H5 dead pixels / H5死像素哨兵值
 _H5_DEAD_SENTINEL: float = 4.29e9
 
+# Matplotlib mathtext axis labels for fiber units (mirrors frontend UNIT_LABELS).
+# Keyed by the raw pyFAI unit string sent from the frontend.
+# 纤维单位的 matplotlib mathtext 坐标轴标签（与前端 UNIT_LABELS 对应）。
+_FIBER_UNIT_MPL_LABELS: dict[str, str] = {
+    "qip_nm^-1":                r"$q_{ip}$ ($nm^{-1}$)",
+    "qoop_nm^-1":               r"$q_{oop}$ ($nm^{-1}$)",
+    "qip_A^-1":                 r"$q_{ip}$ ($\AA^{-1}$)",
+    "qoop_A^-1":                r"$q_{oop}$ ($\AA^{-1}$)",
+    "qxgi_nm^-1":               r"$q_{xgi}$ ($nm^{-1}$)",
+    "qygi_nm^-1":               r"$q_{ygi}$ ($nm^{-1}$)",
+    "qzgi_nm^-1":               r"$q_{zgi}$ ($nm^{-1}$)",
+    "qtot_nm^-1":               r"$q_{tot}$ ($nm^{-1}$)",
+    "qxgi_A^-1":                r"$q_{xgi}$ ($\AA^{-1}$)",
+    "qygi_A^-1":                r"$q_{ygi}$ ($\AA^{-1}$)",
+    "qzgi_A^-1":                r"$q_{zgi}$ ($\AA^{-1}$)",
+    "qtot_A^-1":                r"$q_{tot}$ ($\AA^{-1}$)",
+    "scattering_angle_horz_rad": r"$2\theta_{horz}$ ($rad$)",
+    "scattering_angle_vert_rad": r"$2\theta_{vert}$ ($rad$)",
+    "exit_angle_horz_rad":      r"$\alpha_{horz}$ ($rad$)",
+    "exit_angle_vert_rad":      r"$\alpha_{vert}$ ($rad$)",
+    "exit_angle_horz_deg":      r"$\alpha_{horz}$ ($\degree$)",
+    "exit_angle_vert_deg":      r"$\alpha_{vert}$ ($\degree$)",
+    "chigi_rad":                r"$\chi_{gi}$ ($rad$)",
+    "chigi_deg":                r"$\chi_{gi}$ ($\degree$)",
+}
+
+
+def _fiber_unit_label(unit: str | None) -> str:
+    """Resolve a fiber unit key to a matplotlib mathtext axis label.
+    将纤维单位键解析为 matplotlib mathtext 坐标轴标签。"""
+    if not unit:
+        return ""
+    return _FIBER_UNIT_MPL_LABELS.get(str(unit), str(unit).replace("_", " "))
+
+
+def _bold_mathtext(text: str) -> str:
+    """Make a mathtext-containing label bold.
+
+    matplotlib ignores ``fontweight='bold'`` for ``$...$`` mathtext segments,
+    so we wrap the inner content of every ``$...$`` block in ``\\boldsymbol{}``
+    (works for Latin letters, Greek symbols like ``\\theta``, and units like
+    ``\\AA`` under the default mathtext fontset). Non-mathtext fragments are
+    left untouched — they already respond to ``fontweight``.
+
+    matplotlib 对 ``$...$`` mathtext 段会忽略 ``fontweight='bold'``，故将每个
+    ``$...$`` 块的内部内容包裹进 ``\\boldsymbol{}``（在默认 mathtext fontset 下
+    兼容拉丁字母、``\\theta`` 等希腊符号与 ``\\AA`` 等单位）。
+    """
+    import re
+
+    def _wrap(match: re.Match) -> str:
+        inner = match.group(1)
+        return r"$\boldsymbol{" + inner + r"}$"
+
+    return re.sub(r"\$(.*?)\$", _wrap, text)
+
 
 @lru_cache(maxsize=32)
 def _get_cached_lut(cmap_name: str) -> np.ndarray:
@@ -442,13 +498,111 @@ class ImageRenderer:
         use_log: bool = False,
         clim: tuple[float, float] | None = None,
         dpi: int = 100,
+        axis_ip: np.ndarray | None = None,
+        axis_oop: np.ndarray | None = None,
+        unit_ip: str = "qip_nm^-1",
+        unit_oop: str = "qoop_nm^-1",
+        show_labels: bool = True,
+        font_size: int = 12,
+        title: str | None = None,
+        no_data_bg: str = "white",
+        show_colorbar: bool = True,
+        border_width: float = 1.0,
+        edge_color: str = "black",
+        x_label: str | None = None,
+        y_label: str | None = None,
+        font_family: str | None = None,
+        show_axis_title: bool = True,
+        show_ticks: bool = True,
+        title_bold: bool = False,
+        axis_title_bold: bool = False,
+        tick_bold: bool = False,
+        flip_x: bool = True,
+        flip_y: bool = True,
     ) -> bytes:
-        """Render PNG with matplotlib colorbar (publication-quality).
-        使用 matplotlib 渲染带色条的 PNG（出版质量）。"""
+        """Render PNG with matplotlib colorbar + optional axis labels.
+        使用 matplotlib 渲染带色条和可选坐标轴标注的 PNG（出版质量）。
+
+        Parameters / 参数
+        ----------
+        axis_ip, axis_oop : ndarray | None
+            1-D coordinate arrays for axis tick labels. When provided
+            together with ``show_labels=True``, the plot includes labelled
+            x (qip) and y (qoop) axes instead of ``ax.axis("off")``.
+            一维坐标数组，用于坐标轴刻度标签。
+        unit_ip, unit_oop : str
+            Axis unit strings shown in axis labels.
+            坐标轴单位字符串。
+        show_labels : bool
+            Whether to draw axis labels and ticks.
+            是否绘制坐标轴标签和刻度。
+        font_size : int
+            Base font size for labels and ticks.
+            标签和刻度的基础字号。
+        title : str | None
+            Optional plot title.
+            可选图表标题。
+        no_data_bg : str
+            Fill for no-data (NaN / non-finite) pixels and the figure
+            background. One of ``"transparent"``, ``"white"``, ``"black"``.
+
+            - ``"white"`` (default): NaN pixels filled white, white figure
+              background. Keeps readable axes/colorbar on white.
+              NaN 像素填充白色，图底白色。
+            - ``"black"``: NaN pixels filled black, white figure background
+              (Origin-style).
+              NaN 像素填充黑色，图底仍为白色（Origin 风格）。
+            - ``"transparent"``: NaN pixels transparent AND the whole figure
+              background transparent (so axes/labels/colorbar float with no
+              fill, ideal for overlaying on slides/Origin). Saved with
+              ``transparent=True``.
+              NaN 像素透明且整图背景透明，方便叠加到 PPT/Origin 等图层。
+
+            无数据（NaN/非有限）像素及图背景的填充方式，取值为
+            ``"transparent"``、``"white"``、``"black"``。
+        show_colorbar : bool
+            Whether to append the colorbar. Default ``True``.
+            是否绘制色条，默认绘制。
+        border_width : float
+            Thickness of the spine/axes border drawn around the image, in
+            points. ``0`` hides the border. Default ``1.0``.
+            图像四周坐标轴边框粗细（磅），``0`` 为无边框，默认 ``1.0``。
+        edge_color : str
+            Color of the border spines and tick labels, e.g. ``"black"``,
+            ``"white"``, ``"#1f2937"``. Default ``"black"``.
+            边框与刻度颜色，如 ``"black"``、``"white"``、``"#1f2937"``，默认黑色。
+        x_label, y_label : str | None
+            Custom axis title text. When provided, overrides the unit-derived
+            label (``_fiber_unit_label``). Empty string ``""`` hides the title.
+            自定义 x/y 轴标题文字；提供时覆盖单位推导的标签，空串则隐藏标题。
+        font_family : str | None
+            Matplotlib font family for all text, e.g. ``"Arial"``,
+            ``"Times New Roman"``. ``None`` keeps the matplotlib default.
+            全局字体族，如 ``"Arial"``、``"Times New Roman"``。
+        show_axis_title : bool
+            Whether to draw the x/y axis title text (kept separate from ticks).
+            Default ``True``. Ignored when ``show_labels`` is False.
+            是否绘制 x/y 轴标题文字（与刻度独立），默认绘制。
+        show_ticks : bool
+            Whether to draw axis tick marks and numbers. Default ``True``.
+            Ignored when ``show_labels`` is False.
+            是否绘制刻度线与数值，默认绘制。
+        title_bold, axis_title_bold, tick_bold : bool
+            Independent bold toggles for the plot title, the x/y axis titles,
+            and the tick numbers respectively. Default all ``False``.
+            标题、x/y 轴标题、刻度数字的独立加粗开关，默认均不加粗。
+        flip_x, flip_y : bool
+            Reverse the x / y axis direction (both the array and the extent),
+            default ``True``. Matches the orientation convention where the
+            raw integration array needs to be flipped to match the physical
+            sample frame (e.g. sample orientation 0 vs 4).
+            反转 x / y 轴方向（数组与 extent 同时翻转），默认均翻转。
+        """
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.colors import LogNorm, Normalize
+        from matplotlib.ticker import MaxNLocator, ScalarFormatter
 
         d = np.asarray(data, dtype=np.float64)
         if d.ndim != 2:
@@ -456,31 +610,150 @@ class ImageRenderer:
             if d.ndim != 2:
                 d = d[0] if d.ndim > 2 else d
 
+        # Apply font family globally for this figure / 设置全局字体
+        if font_family:
+            matplotlib.rcParams["font.family"] = font_family
+
         if clim is None:
-            stats = ImageRenderer.compute_stats(data)
-            clim = (float(stats["min"]), float(stats["adjustedMax"] or stats["max"]))
+            stats_ = ImageRenderer.compute_stats(data)
+            clim = (float(stats_["min"]), float(stats_["adjustedMax"] or stats_["max"]))
 
         vmin, vmax = clim
         cmap = build_cmap(cmap_name) if isinstance(cmap_name, str) else cmap_name
+
+        # Normalize no_data_bg option (tolerate variants) / 归一化无数据填充选项（容错）
+        bg = str(no_data_bg).strip().lower()
+        if bg not in ("transparent", "white", "black"):
+            bg = "white"
+
+        # Mark non-finite / negative-for-log pixels as NaN so set_bad controls
+        # their appearance. Copy the colormap so we never mutate a cached shared
+        # object (build_cmap returns shared LinearSegmentedColormap instances).
+        # 将非有限（及对数模式下的非正）像素标记为 NaN，由 set_bad 控制其外观。
+        # 拷贝色图以免修改共享缓存对象。
+        d = d.copy()
+        d[~np.isfinite(d)] = np.nan
+        if use_log:
+            d[d <= 0] = np.nan
+        cmap = cmap.copy()
+        if bg == "transparent":
+            cmap.set_bad(alpha=0)  # transparent NaN pixels / NaN 像素透明
+        elif bg == "black":
+            cmap.set_bad(color="black")
+        else:
+            cmap.set_bad(color="white")
 
         h, w = d.shape
         figsize_w = max(4, w / 100)
         figsize_h = max(3, h / 100)
 
         fig, ax = plt.subplots(figsize=(figsize_w, figsize_h))
-        ax.axis("off")
+
+        if bg == "transparent":
+            fig.patch.set_alpha(0)
+            ax.set_facecolor("none")
+
+        # Set up axis extent if labels are requested / 如需要则设置坐标轴范围
+        has_axes = (
+            show_labels
+            and axis_ip is not None
+            and axis_oop is not None
+            and len(axis_ip) > 0
+            and len(axis_oop) > 0
+        )
+        if has_axes:
+            # Apply axis flips: reverse array rows/cols AND swap extent endpoints
+            # so tick numbers run in the flipped direction. extent = [left, right, bottom, top].
+            # 应用轴反转：同时翻转数组行列与 extent 端点，使刻度数值方向随之反转。extent=[左,右,下,上]。
+            if flip_x:
+                d = d[:, ::-1]
+            if flip_y:
+                d = d[::-1, :]
+            x0, x1 = float(axis_ip[0]), float(axis_ip[-1])
+            y0, y1 = float(axis_oop[0]), float(axis_oop[-1])
+            left, right = (x1, x0) if flip_x else (x0, x1)
+            bottom, top = (y1, y0) if flip_y else (y0, y1)
+            extent = [left, right, bottom, top]
+        else:
+            extent = None
+            ax.axis("off")
 
         if use_log:
             norm = LogNorm(vmin=max(vmin, 1e-6), vmax=max(vmax, vmin * 10))
-            im = ax.imshow(d, cmap=cmap, norm=norm, interpolation="nearest", origin="lower")
-            label = "Log Intensity"
+            im = ax.imshow(d, cmap=cmap, norm=norm, interpolation="nearest",
+                           origin="lower", extent=extent, aspect="auto")
+            cbar_label = "Log Intensity"
         else:
-            im = ax.imshow(d, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest", origin="lower")
-            label = "Intensity"
+            im = ax.imshow(d, cmap=cmap, vmin=vmin, vmax=vmax, interpolation="nearest",
+                           origin="lower", extent=extent, aspect="auto")
+            cbar_label = "Intensity"
 
-        fig.colorbar(im, ax=ax, label=label, shrink=0.85)
+        # Resolve bold weight strings once / 一次性解析加粗字重
+        title_fw = "bold" if title_bold else "normal"
+        axis_fw = "bold" if axis_title_bold else "normal"
+
+        if has_axes:
+            # Resolve axis titles: custom override wins, else unit-derived label.
+            # Bold mathtext labels by wrapping in \boldsymbol{} (fontweight is
+            # ignored for $...$ mathtext).
+            # 解析轴标题：自定义优先，否则按单位推导。
+            # mathtext 标签加粗需包裹 \boldsymbol{}（fontweight 对 $...$ 无效）。
+            xtext = x_label if x_label is not None else _fiber_unit_label(unit_ip)
+            ytext = y_label if y_label is not None else _fiber_unit_label(unit_oop)
+            if axis_title_bold:
+                xtext = _bold_mathtext(xtext)
+                ytext = _bold_mathtext(ytext)
+            # X axis (qip) / X 轴 (qip)
+            if show_axis_title and xtext:
+                ax.set_xlabel(xtext, fontsize=font_size, color=edge_color, fontweight=axis_fw)
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+            ax.xaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+            ax.tick_params(axis="x", labelsize=font_size - 2, colors=edge_color)
+            # Y axis (qoop) / Y 轴 (qoop)
+            if show_axis_title and ytext:
+                ax.set_ylabel(ytext, fontsize=font_size, color=edge_color, fontweight=axis_fw)
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+            ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
+            ax.tick_params(axis="y", labelsize=font_size - 2, colors=edge_color)
+            # Optionally hide tick marks + numbers while keeping the title / 可隐藏刻度仅留标题
+            if not show_ticks:
+                ax.tick_params(axis="both", which="both", length=0, labelbottom=False, labelleft=False)
+            elif tick_bold:
+                for lbl in list(ax.get_xticklabels()) + list(ax.get_yticklabels()):
+                    lbl.set_fontweight("bold")
+            if title:
+                ax.set_title(title, fontsize=font_size + 2, color=edge_color, fontweight=title_fw)
+        elif title:
+            fig.suptitle(title, fontsize=font_size + 2, color=edge_color, fontweight=title_fw)
+
+        # Border spines around the image / 图像四周边框
+        if border_width > 0:
+            for spine in ax.spines.values():
+                spine.set_linewidth(border_width)
+                spine.set_edgecolor(edge_color)
+            # Ensure spines are visible even when has_axes is False / 无坐标轴时也显示边框
+            if not has_axes:
+                for spine in ax.spines.values():
+                    spine.set_visible(True)
+
+        # Optional colorbar / 可选色条
+        if show_colorbar:
+            cbar = fig.colorbar(im, ax=ax, label=cbar_label, shrink=0.85)
+            cbar.ax.tick_params(labelsize=font_size - 2, colors=edge_color)
+            cbar.set_label(cbar_label, fontsize=font_size, color=edge_color)
+            # Colorbar border to match / 色条边框同色
+            for spine in cbar.ax.spines.values():
+                spine.set_edgecolor(edge_color)
+                spine.set_linewidth(border_width)
 
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", pad_inches=0.05)
+        fig.savefig(
+            buf,
+            format="png",
+            dpi=dpi,
+            bbox_inches="tight",
+            pad_inches=0.1,
+            transparent=(bg == "transparent"),
+        )
         plt.close(fig)
         return buf.getvalue()

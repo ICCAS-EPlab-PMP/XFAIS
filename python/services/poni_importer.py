@@ -37,7 +37,7 @@ _PONI_QUOTED_FIELDS = {"Detector_config"}
 
 # poni_data keys that carry detector metadata but are NOT pyFAI poni fields.
 # They must not leak into the `.poni` body as bogus `Key: value` lines.
-_NONPONI_DATA_KEYS = {"detector_shape", "detector_label"}
+_NONPONI_DATA_KEYS = {"detector_shape", "detector_label", "orientation"}
 
 # A custom detector's friendly name is persisted as a comment because pyFAI's
 # factory rejects any non-registry name — the comment is the only channel that
@@ -70,6 +70,114 @@ def reset_pyfai_detector_registry_cache() -> None:
     """Test hook: clear the cached detector registry. / 测试钩子：清空缓存。"""
     global _detector_registry_cache
     _detector_registry_cache = None
+
+
+# Cache of (detector_class -> instantiated detector) for shape matching.
+# Instantiating every class on every call is wasteful; we cache once.
+_detector_instance_cache: Optional[Dict[str, Any]] = None
+
+
+def _get_pyfai_detector_instances() -> Dict[str, Any]:
+    """Return a dict mapping canonical pyFAI detector name → instantiated
+    detector, deduplicated by class. Returns {} if pyFAI is unavailable.
+    / 返回 pyFAI 注册名 → 探测器实例 的字典（按类去重）。"""
+    global _detector_instance_cache
+    if _detector_instance_cache is not None:
+        return _detector_instance_cache
+    result: Dict[str, Any] = {}
+    try:
+        import pyFAI.detectors as _detectors  # type: ignore
+        registry = getattr(_detectors, "ALL_DETECTORS", {}) or {}
+        seen_classes: set = set()
+        # Iterate name → class; instantiate once per unique class. The same
+        # detector often appears under several aliases (e.g. quantum_315,
+        # adsc_q315) — we keep the first canonical name we encounter.
+        for name, cls in registry.items():
+            try:
+                if cls in seen_classes:
+                    continue
+                inst = cls()
+            except Exception:
+                # Some detector classes need constructor args or fail to
+                # instantiate bare — skip them silently.
+                continue
+            seen_classes.add(cls)
+            # Prefer the class __name__ as the canonical pyFAI name written
+            # to the Detector: line in .poni files (e.g. "Pilatus1M"), which
+            # is what resolve_detector_name() matches against the registry.
+            canonical = getattr(cls, "__name__", name)
+            if canonical not in result:
+                result[canonical] = inst
+    except Exception as exc:  # pragma: no cover - depends on environment
+        logger.warning("pyFAI detector instantiation unavailable: %s", exc)
+    _detector_instance_cache = result
+    return result
+
+
+def reset_detector_instance_cache() -> None:
+    """Test hook: clear the cached detector instances. / 测试钩子：清空缓存。"""
+    global _detector_instance_cache
+    _detector_instance_cache = None
+
+
+def match_detector_by_shape(shape: Any) -> Optional[Dict[str, Any]]:
+    """Find a pyFAI-registered detector whose full sensor shape matches the
+    given 2-D image shape (rows, cols).
+
+    根据 2-D 图像形状 (rows, cols) 在 pyFAI 注册表中查找形状完全匹配的探测器。
+
+    Parameters
+    ----------
+    shape : sequence of int
+        Either a 2-D shape ``(rows, cols)`` (e.g. from an EDF/TIFF), or a
+        higher-dimensional shape whose last two axes are the image
+        dimensions (e.g. a 4-D HDF5 ``(frames, channels, rows, cols)`` —
+        only the last two entries are used).
+
+    Returns
+    -------
+    dict or None
+        ``None`` when no registered detector matches. Otherwise::
+
+            {
+                "name":        pyFAI canonical name (for the Detector: line),
+                "label":       friendly display name (== class name),
+                "pixel1_m":    pixel size along dim 1, in meters,
+                "pixel2_m":    pixel size along dim 2, in meters,
+                "max_shape":   [rows, cols] of the matched detector,
+            }
+    """
+    try:
+        # Accept any iterable; take last two axes as (rows, cols).
+        shape_list = [int(s) for s in shape]
+    except (TypeError, ValueError):
+        return None
+    if len(shape_list) < 2:
+        return None
+    rows, cols = shape_list[-2], shape_list[-1]
+    if rows <= 0 or cols <= 0:
+        return None
+    target = (rows, cols)
+
+    for name, inst in _get_pyfai_detector_instances().items():
+        ms = getattr(inst, "max_shape", None)
+        if not ms:
+            continue
+        try:
+            ms_tuple = tuple(int(v) for v in ms)
+        except (TypeError, ValueError):
+            continue
+        if ms_tuple == target:
+            pixel1 = getattr(inst, "pixel1", None)
+            pixel2 = getattr(inst, "pixel2", None)
+            return {
+                "name": name,
+                "label": name,
+                "pixel1_m": float(pixel1) if pixel1 is not None else None,
+                "pixel2_m": float(pixel2) if pixel2 is not None else None,
+                "max_shape": [rows, cols],
+            }
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -301,22 +409,24 @@ def resolve_detector_name(
     detector_name: str,
     pixel_size_m: float,
     detector_shape: Any = None,
+    orientation: int = 3,
 ) -> Tuple[str, str, Optional[str]]:
     """Resolve a detector selection to a ``(name, config_json, label)`` triple.
     解析探测器选择为 ``(name, config_json, label)`` 三元组。
 
     Strategy / 策略:
       1. If ``detector_name`` is non-empty and matches a pyFAI-registered
-         detector (case-insensitive), return it with an empty config ``{}``.
-         ``detector_shape`` is ignored — registered detectors define their
-         own geometry.
+         detector (case-insensitive), return it with a config containing
+         only ``orientation`` if non-default (3). ``detector_shape`` is
+         ignored — registered detectors define their own geometry.
       2. Otherwise (unknown name, empty name, or a user-defined "custom"
          detector), fall back to pyFAI's generic ``Detector`` class. The
          pixel size goes into ``Detector_config``; ``detector_shape`` (if
-         valid) becomes ``max_shape``. A non-empty *unknown* name is kept
-         only as a human-readable ``label`` — pyFAI's factory raises
-         ``RuntimeError`` on any non-registry name, so the ``Detector:``
-         line MUST stay the generic ``Detector`` for the file to load.
+         valid) becomes ``max_shape``; ``orientation`` is included when
+         non-default. A non-empty *unknown* name is kept only as a
+         human-readable ``label`` — pyFAI's factory raises ``RuntimeError``
+         on any non-registry name, so the ``Detector:`` line MUST stay the
+         generic ``Detector`` for the file to load.
 
     Parameters
     ----------
@@ -328,26 +438,44 @@ def resolve_detector_name(
     detector_shape : any, optional
         ``[rows, cols]`` for a custom detector → written as ``max_shape``.
         Ignored when ``detector_name`` resolves to a registered detector.
+    orientation : int, optional
+        pyFAI detector orientation (0-4). 3 is the default (top-left origin).
+        When non-default, included in ``Detector_config`` so pyFAI uses the
+        correct pixel origin. / pyFAI 探测器方向（0-4）。3 为默认值（左上角原点）。
+        非默认值时写入 ``Detector_config``，使 pyFAI 使用正确的像素原点。
 
     Returns
     -------
     (name, config_str, label)
         ``name`` — canonical name for the ``Detector:`` line (always
         loadable). ``config_str`` — bare JSON for ``Detector_config:``
-        (``{}`` for known detectors, else ``{"pixel1","pixel2"[,
-        "max_shape"]}``). ``label`` — user-facing name to persist as a
-        comment, or None.
+        (``{}`` for known detectors with default orientation, else includes
+        ``orientation`` and/or ``pixel1``/``pixel2``/``max_shape``).
+        ``label`` — user-facing name to persist as a comment, or None.
     """
     registry = _get_pyfai_detector_registry()
     name_clean = (detector_name or "").strip()
 
+    # Normalize orientation to int; default is 3 (top-left origin).
+    try:
+        orient = int(orientation)
+    except (TypeError, ValueError):
+        orient = 3
+    # Only 0-4 are valid; everything else falls back to 3.
+    if orient not in (0, 1, 2, 3, 4):
+        orient = 3
+
     if name_clean:
         # Exact match first (preserves correct casing in output).
         if name_clean in registry:
+            if orient != 3:
+                return name_clean, json.dumps({"orientation": orient}), None
             return name_clean, "{}", None
         # Case-insensitive fallback.
         for name in registry:
             if name.lower() == name_clean.lower():
+                if orient != 3:
+                    return name, json.dumps({"orientation": orient}), None
                 return name, "{}", None
 
     # Unknown / empty / custom: use pyFAI's generic Detector class so the
@@ -358,6 +486,8 @@ def resolve_detector_name(
     shape = _coerce_shape(detector_shape)
     if shape is not None:
         config["max_shape"] = shape
+    if orient != 3:
+        config["orientation"] = orient
     label = name_clean or None
     if name_clean:
         logger.info(
@@ -395,6 +525,7 @@ def export_to_poni(poni_data: Dict[str, Any], output_path: str) -> str:
             resolved.get("detector_name", "") or "",
             pixel_size_m,
             resolved.get("detector_shape"),
+            resolved.get("orientation", 3),
         )
         resolved["detector_name"] = name
         resolved["detector_config"] = config
@@ -531,6 +662,7 @@ def create_poni_from_params(
     rot2: float = 0.0,
     rot3: float = 0.0,
     detector_name: str = "Detector",
+    orientation: int = 3,
     output_path: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
@@ -553,6 +685,8 @@ def create_poni_from_params(
         Rotations in degrees.
     detector_name : str
         Detector name.
+    orientation : int, optional
+        pyFAI detector orientation (0-4). Default 3 = top-left origin.
     output_path : str, optional
         If provided, exports to .poni file.
 
@@ -567,7 +701,7 @@ def create_poni_from_params(
     # contract; downstream consumers convert via pixel_size as needed.
     pixel_size_m = pixel_size * 1e-6  # µm to m (only used for detector config)
     resolved_name, resolved_config, label = resolve_detector_name(
-        detector_name, pixel_size_m
+        detector_name, pixel_size_m, orientation=orientation
     )
     poni_data = {
         'distance': detector_distance / 1000.0,  # mm to m

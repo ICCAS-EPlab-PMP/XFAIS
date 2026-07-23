@@ -3,7 +3,6 @@
     <div
       class="ip-viewport"
       ref="viewportRef"
-      @wheel.prevent="onWheel"
       @mousedown="onMouseDown"
     >
       <img
@@ -90,7 +89,35 @@ export interface ImageMaskOverlay {
   height: number
 }
 
-export type Overlay = BeamCenterOverlay | SectorBoundaryOverlay | ImageMaskOverlay
+export interface LineSegmentOverlay {
+  type: 'lineSegment'
+  /** Start point in data space (col, row) — same space as beamCenter.x/y. / 起点数据坐标（列, 行）—— 与 beamCenter.x/y 同空间。 */
+  x0: number
+  y0: number
+  /** End point in data space (col, row). / 终点数据坐标（列, 行）。 */
+  x1: number
+  y1: number
+  /** Line color (CSS). Defaults to cyan (#22d3ee). / 线颜色（CSS）。默认青色 (#22d3ee)。 */
+  color?: string
+  /** Visual line width in canvas pixels (display only; the integrated band
+   *  width is set on the backend). / 画布像素的视觉线宽（仅显示；积分带宽在后端设置）。 */
+  lineWidth?: number
+}
+
+export type Overlay = BeamCenterOverlay | SectorBoundaryOverlay | ImageMaskOverlay | LineSegmentOverlay | OriginMarkerOverlay
+
+export interface OriginMarkerOverlay {
+  type: 'originMarker'
+  /** Pixel origin corner position in data space (col, row). Usually (0,0) for
+   *  top-left orientation, or (width, height) for bottom-right, etc.
+   *  / 像素原点角标的数据坐标（列, 行）。通常为 (0,0)（左上方向），或
+   *  (width, height)（右下方向）等。 */
+  x: number
+  y: number
+  /** Corner bracket color (CSS). Defaults to cyan (#22d3ee).
+   *  / 角标颜色（CSS）。默认青色 (#22d3ee)。 */
+  color?: string
+}
 
 // --- Props ---
 
@@ -116,6 +143,12 @@ const props = withDefaults(defineProps<{
    *  而非所显示图像的自然像素。 */
   dataWidth?: number
   dataHeight?: number
+  /** When true, left-drag draws a line segment instead of panning. The
+   *  resulting endpoints are emitted via the `line:drawn` event in data-space
+   *  pixel coordinates (col=x, row=y), using the same dataWidth/dataHeight
+   *  mapping as image:click. / 为 true 时，左键拖拽绘制线段而非平移。结果端点通过
+   *  `line:drawn` 事件以数据空间像素坐标（col=x, row=y）发出，映射方式与 image:click 相同。 */
+  lineDrawMode?: boolean
 }>(), {
   imageB64: null,
   imageData: undefined,
@@ -132,12 +165,14 @@ const props = withDefaults(defineProps<{
   maxZoom: 5,
   dataWidth: undefined,
   dataHeight: undefined,
+  lineDrawMode: false,
 })
 
 // --- Emits ---
 
 const emit = defineEmits<{
   'image:click': [event: { x: number; y: number; pixelX: number; pixelY: number }]
+  'line:drawn': [event: { pixelX0: number; pixelY0: number; pixelX1: number; pixelY1: number }]
 }>()
 
 // --- Refs ---
@@ -158,6 +193,14 @@ let dragStartX = 0
 let dragStartY = 0
 let panStartX = 0
 let panStartY = 0
+
+// Line-drawing state (only active when lineDrawMode is on).
+// 画线状态（仅当 lineDrawMode 开启时激活）。
+let isDrawingLine = false
+let lineStartPxX = 0
+let lineStartPxY = 0
+let lineCurPxX = 0
+let lineCurPxY = 0
 
 // Natural image dimensions (read from loaded img) / 图片原始尺寸
 const naturalWidth = ref(0)
@@ -216,6 +259,11 @@ function zoomFit() {
 // --- Wheel zoom centered on cursor / 滚轮缩放（以光标为中心） ---
 
 function onWheel(e: WheelEvent) {
+  // Prevent page scroll while zooming; registered as a non-passive listener
+  // in onMounted so we can call preventDefault without Chromium warnings.
+  // 缩放时阻止页面滚动；监听器在 onMounted 中以 non-passive 方式注册，
+  // 因此可以调用 preventDefault 而不触发 Chromium 警告。
+  e.preventDefault()
   const vp = viewportRef.value
   if (!vp) return
 
@@ -241,6 +289,27 @@ function onWheel(e: WheelEvent) {
 function onMouseDown(e: MouseEvent) {
   // Only left button
   if (e.button !== 0) return
+
+  // In line-draw mode, a left drag draws a segment instead of panning.
+  // 在画线模式下，左键拖拽绘制线段而非平移。
+  if (props.lineDrawMode) {
+    const img = viewportRef.value?.querySelector('.ip-image') as HTMLImageElement | null
+    if (!img) return
+    const px = clientToDataPixel(e.clientX, e.clientY, img)
+    if (!px) return
+    isDrawingLine = true
+    lineStartPxX = px.pixelX
+    lineStartPxY = px.pixelY
+    lineCurPxX = px.pixelX
+    lineCurPxY = px.pixelY
+    const vp = viewportRef.value
+    if (vp) vp.style.cursor = 'crosshair'
+    window.addEventListener('mousemove', onLineMouseMove)
+    window.addEventListener('mouseup', onLineMouseUp)
+    e.preventDefault()
+    return
+  }
+
   isDragging = true
   dragStartX = e.clientX
   dragStartY = e.clientY
@@ -268,55 +337,106 @@ function onMouseUp() {
   window.removeEventListener('mouseup', onMouseUp)
 }
 
+// --- Line drawing (lineDrawMode) / 画线（lineDrawMode） ---
+
+function onLineMouseMove(e: MouseEvent) {
+  if (!isDrawingLine) return
+  const img = viewportRef.value?.querySelector('.ip-image') as HTMLImageElement | null
+  if (!img) return
+  const px = clientToDataPixel(e.clientX, e.clientY, img)
+  if (!px) return
+  lineCurPxX = px.pixelX
+  lineCurPxY = px.pixelY
+  scheduleOverlayRedraw()
+}
+
+function onLineMouseUp() {
+  if (!isDrawingLine) return
+  isDrawingLine = false
+  const vp = viewportRef.value
+  if (vp) vp.style.cursor = ''
+  window.removeEventListener('mousemove', onLineMouseMove)
+  window.removeEventListener('mouseup', onLineMouseUp)
+  // Only emit if the drag produced a non-degenerate segment; a click without
+  // movement (start == current) carries no direction info.
+  // 仅在拖拽产生非退化线段时发出；无移动的点击（起点 == 当前点）不携带方向信息。
+  if (lineStartPxX !== lineCurPxX || lineStartPxY !== lineCurPxY) {
+    emit('line:drawn', {
+      pixelX0: lineStartPxX,
+      pixelY0: lineStartPxY,
+      pixelX1: lineCurPxX,
+      pixelY1: lineCurPxY,
+    })
+  } else {
+    // Clear the in-progress preview so a stray click doesn't leave a dot.
+    // 清除进行中的预览，避免误点击留下一个点。
+    scheduleOverlayRedraw()
+  }
+}
+
 // --- Image click → pixel coordinates / 图片点击 → 像素坐标 ---
 
-function onImageClick(e: MouseEvent) {
-  if (isDragging) return
-  const img = e.currentTarget as HTMLImageElement
+/** Map a screen-space client coordinate to data-space pixel coordinates.
+ *  Shared by image:click and line:drawn so they always agree on the mapping
+ *  (preview vs full-res via dataWidth/dataHeight). Returns null if the image
+ *  hasn't loaded yet.
+ *  将屏幕空间客户端坐标映射到数据空间像素坐标。image:click 与 line:drawn
+ *  共用此映射（通过 dataWidth/dataHeight 处理预览/全分辨率），确保两者一致。
+ *  图像尚未加载时返回 null。
+ */
+function clientToDataPixel(
+  clientX: number,
+  clientY: number,
+  img: HTMLImageElement,
+): { pixelX: number; pixelY: number } | null {
   const rect = img.getBoundingClientRect()
-
-  // Click position relative to the displayed image element
-  const relX = e.clientX - rect.left
-  const relY = e.clientY - rect.top
-
-  // Displayed size of the image element
   const displayW = rect.width
   const displayH = rect.height
+  if (displayW <= 0 || displayH <= 0) return null
+  const relX = clientX - rect.left
+  const relY = clientY - rect.top
 
-  // Use the image element's OWN natural dimensions (not the reactive ref, which
-  // can be stale across preview/full-res swaps) to map the click to a pixel.
+  // Use the image element's OWN natural dimensions (not the reactive ref,
+  // which can be stale across preview/full-res swaps) to map the click.
   // When dataWidth/dataHeight are provided, map to the FULL data resolution
   // (the displayed image may be a downscaled preview, but geometry/q are
   // computed at full resolution) — otherwise clicks land on the wrong pixel.
   // 使用图像元素自身的自然尺寸（而非可能跨预览/全分辨率切换后滞后的响应式 ref）
-  // 将点击映射到像素坐标。当提供 dataWidth/dataHeight 时，映射到全数据分辨率
-  // （显示的可能是缩小预览图，但几何/q 按全分辨率计算），否则点击会落到错误像素。
+  // 映射坐标。当提供 dataWidth/dataHeight 时，映射到全数据分辨率（显示的可能是
+  // 缩小预览图，但几何/q 按全分辨率计算），否则会落到错误像素。
   const dispNatW = img.naturalWidth || naturalWidth.value
   const dispNatH = img.naturalHeight || naturalHeight.value
   const targetW = props.dataWidth ?? dispNatW
   const targetH = props.dataHeight ?? dispNatH
 
-  // Map to natural pixel coordinates
-  const pixelX = Math.round((relX / displayW) * targetW)
-  const pixelY = Math.round((relY / displayH) * targetH)
+  return {
+    pixelX: Math.round((relX / displayW) * targetW),
+    pixelY: Math.round((relY / displayH) * targetH),
+  }
+}
+
+function onImageClick(e: MouseEvent) {
+  if (isDragging) return
+  // Suppress the click that follows a line-draw drag (mouseup fires click on
+  // the <img>; without this guard a draw would also register as a pixel read).
+  // 抑制画线拖拽后紧跟的 click（mouseup 会在 <img> 上触发 click；若不拦截，
+  // 画线操作会同时触发一次像素读取）。
+  if (props.lineDrawMode) return
+  const img = e.currentTarget as HTMLImageElement
+  const px = clientToDataPixel(e.clientX, e.clientY, img)
+  if (!px) return
 
   // Diagnostic: log the mapping so misalignment between clicks and geometry
   // can be traced (open DevTools console). / 诊断：记录映射，便于排查点击与
   // 几何坐标不一致的问题（打开开发者工具控制台查看）。
   // eslint-disable-next-line no-console
-  console.warn('[image:click]', {
-    pixelX, pixelY,
-    targetW, targetH, dispNatW, dispNatH,
-    dataWidth: props.dataWidth, dataHeight: props.dataHeight,
-    displayW: displayW.toFixed(1), displayH: displayH.toFixed(1),
-    relX: relX.toFixed(1), relY: relY.toFixed(1),
-  })
+  console.warn('[image:click]', { ...px, dataWidth: props.dataWidth, dataHeight: props.dataHeight })
 
   emit('image:click', {
     x: e.clientX,
     y: e.clientY,
-    pixelX,
-    pixelY,
+    pixelX: px.pixelX,
+    pixelY: px.pixelY,
   })
 }
 
@@ -441,6 +561,54 @@ function drawOverlays() {
       draw(coreColor, 2)
     }
 
+    if (overlay.type === 'originMarker') {
+      const ox = overlay.x * scaleX
+      const oy = overlay.y * scaleY
+      const size = 22
+      const color = overlay.color ?? '#22d3ee'
+      ctx.save()
+      ctx.strokeStyle = '#ffffff'
+      ctx.lineWidth = 4
+      ctx.lineCap = 'round'
+      // Determine which corner the bracket opens toward based on position
+      // relative to the image center. / 根据原点相对于图像中心的位置确定角标开口方向。
+      const imgW = canvas.width
+      const imgH = canvas.height
+      const isRight = ox > imgW / 2
+      const isBottom = oy > imgH / 2
+      // White halo / 白色光晕
+      ctx.beginPath()
+      if (!isRight && !isBottom) {
+        // Top-left corner bracket / 左上角标
+        ctx.moveTo(ox, oy + size); ctx.lineTo(ox, oy); ctx.lineTo(ox + size, oy)
+      } else if (isRight && !isBottom) {
+        // Top-right corner bracket / 右上角标
+        ctx.moveTo(ox - size, oy); ctx.lineTo(ox, oy); ctx.lineTo(ox, oy + size)
+      } else if (!isRight && isBottom) {
+        // Bottom-left corner bracket / 左下角标
+        ctx.moveTo(ox, oy - size); ctx.lineTo(ox, oy); ctx.lineTo(ox + size, oy)
+      } else {
+        // Bottom-right corner bracket / 右下角标
+        ctx.moveTo(ox - size, oy); ctx.lineTo(ox, oy); ctx.lineTo(ox, oy - size)
+      }
+      ctx.stroke()
+      // Colored core / 彩色核心
+      ctx.strokeStyle = color
+      ctx.lineWidth = 2
+      ctx.beginPath()
+      if (!isRight && !isBottom) {
+        ctx.moveTo(ox, oy + size); ctx.lineTo(ox, oy); ctx.lineTo(ox + size, oy)
+      } else if (isRight && !isBottom) {
+        ctx.moveTo(ox - size, oy); ctx.lineTo(ox, oy); ctx.lineTo(ox, oy + size)
+      } else if (!isRight && isBottom) {
+        ctx.moveTo(ox, oy - size); ctx.lineTo(ox, oy); ctx.lineTo(ox + size, oy)
+      } else {
+        ctx.moveTo(ox - size, oy); ctx.lineTo(ox, oy); ctx.lineTo(ox, oy - size)
+      }
+      ctx.stroke()
+      ctx.restore()
+    }
+
     if (overlay.type === 'sectorBoundary') {
       const cx = overlay.centerX
       const cy = overlay.centerY
@@ -460,7 +628,75 @@ function drawOverlays() {
 
       ctx.setLineDash([])
     }
+
+    if (overlay.type === 'lineSegment') {
+      drawSegment(
+        ctx,
+        overlay.x0 * scaleX, overlay.y0 * scaleY,
+        overlay.x1 * scaleX, overlay.y1 * scaleY,
+        overlay.color ?? '#22d3ee',
+        overlay.lineWidth ?? 2,
+        false,
+      )
+    }
   }
+
+  // In-progress drag preview: a dashed cyan segment from the anchored start
+  // to the current cursor position. Drawn at the very end so it sits on top.
+  // 进行中的拖拽预览：从锚定起点到当前光标位置的虚线青色线段。最后绘制以置于顶层。
+  if (isDrawingLine) {
+    drawSegment(
+      ctx,
+      lineStartPxX * scaleX, lineStartPxY * scaleY,
+      lineCurPxX * scaleX, lineCurPxY * scaleY,
+      '#22d3ee',
+      2,
+      true,
+    )
+    // Endpoint markers so the user sees the exact anchor / current point.
+    // 端点标记，便于用户看到确切的锚点 / 当前点。
+    drawEndpoint(ctx, lineStartPxX * scaleX, lineStartPxY * scaleY, '#22d3ee')
+    drawEndpoint(ctx, lineCurPxX * scaleX, lineCurPxY * scaleY, '#22d3ee')
+  }
+}
+
+/** Stroke a segment on the overlay canvas, with a white outline for visibility. */
+function drawSegment(
+  ctx: CanvasRenderingContext2D,
+  x0: number, y0: number, x1: number, y1: number,
+  color: string, lineWidth: number, dashed: boolean,
+) {
+  ctx.save()
+  ctx.lineCap = 'round'
+  if (dashed) ctx.setLineDash([6, 4])
+  // White halo / 白色光晕
+  ctx.strokeStyle = '#ffffff'
+  ctx.lineWidth = lineWidth + 2
+  ctx.beginPath()
+  ctx.moveTo(x0, y0)
+  ctx.lineTo(x1, y1)
+  ctx.stroke()
+  // Colored core / 彩色核心
+  ctx.strokeStyle = color
+  ctx.lineWidth = lineWidth
+  ctx.beginPath()
+  ctx.moveTo(x0, y0)
+  ctx.lineTo(x1, y1)
+  ctx.stroke()
+  ctx.restore()
+}
+
+function drawEndpoint(ctx: CanvasRenderingContext2D, x: number, y: number, color: string) {
+  ctx.save()
+  ctx.fillStyle = '#ffffff'
+  ctx.beginPath()
+  ctx.arc(x, y, 4, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.fillStyle = color
+  ctx.beginPath()
+  ctx.arc(x, y, 2.5, 0, Math.PI * 2)
+  ctx.fill()
+  ctx.restore()
 }
 
 function scheduleOverlayRedraw() {
@@ -468,8 +704,11 @@ function scheduleOverlayRedraw() {
   rafId = requestAnimationFrame(drawOverlays)
 }
 
-// Redraw overlays when zoom/pan/overlays change
-watch([zoom, panX, panY, () => props.overlays], scheduleOverlayRedraw)
+// Redraw overlays when zoom/pan/overlays change. Also redraw on lineDrawMode
+// toggle so the cursor style and any in-progress preview update immediately.
+// 缩放/平移/叠加变化时重绘叠加。lineDrawMode 切换时也重绘，使光标样式和进行中
+// 的预览立即更新。
+watch([zoom, panX, panY, () => props.overlays, () => props.lineDrawMode], scheduleOverlayRedraw)
 
 // --- ImageData canvas rendering / imageData 画布渲染 ---
 
@@ -573,6 +812,10 @@ watch(() => [props.imageData, props.renderMin, props.renderMax, props.useLogScal
 // --- Lifecycle ---
 
 onMounted(() => {
+  // Register wheel listener as non-passive so preventDefault works without
+  // triggering Chromium "[Violation] Added non-passive event listener" warnings.
+  // 以 non-passive 方式注册滚轮监听器，使 preventDefault 生效且不触发警告。
+  viewportRef.value?.addEventListener('wheel', onWheel, { passive: false })
   // Wait for image to load, then capture dimensions & fit
   nextTick(() => {
     const img = viewportRef.value?.querySelector('.ip-image') as HTMLImageElement | null
@@ -607,8 +850,11 @@ watch(resolvedSrc, () => {
 })
 
 onBeforeUnmount(() => {
+  viewportRef.value?.removeEventListener('wheel', onWheel)
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
+  window.removeEventListener('mousemove', onLineMouseMove)
+  window.removeEventListener('mouseup', onLineMouseUp)
   cancelAnimationFrame(rafId)
 })
 </script>

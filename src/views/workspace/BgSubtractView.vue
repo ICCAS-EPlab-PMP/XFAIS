@@ -845,7 +845,7 @@ async function handleMatchIonchamber(): Promise<void> {
     const response = await transport.submitTask('bg_subtract', {
       action: 'ionchamber_match',
       sample_folder: mode.value === 'batch' ? sampleFolder.value : undefined,
-      data_files: mode.value === 'single' ? files : undefined,
+      data_files: mode.value === 'single' ? [...files] : undefined,
       ionchamber_folder: ionchamberFolder.value,
       bg_ionchamber_path: bgIonchamberPath.value || undefined,
       ionchamber_channel: ionchamberChannel.value,
@@ -1105,7 +1105,12 @@ async function handleSubtract(): Promise<void> {
     ? {
         action: samplePaths.value.length > 1 ? 'batch' : 'subtract',
         sample_path: samplePaths.value.length === 1 ? samplePaths.value[0] : undefined,
-        data_files: samplePaths.value.length > 1 ? samplePaths.value : undefined,
+        // IMPORTANT: spread into a plain array — passing the reactive Proxy
+        // directly makes Electron's structured-clone IPC throw
+        // "An object could not be cloned." Matches Integrate1dView convention.
+        // 重要：展开为普通数组——直接传响应式 Proxy 会导致 Electron 结构化克隆
+        // IPC 抛出 "An object could not be cloned."，与 Integrate1dView 保持一致。
+        data_files: samplePaths.value.length > 1 ? [...samplePaths.value] : undefined,
         bg_path: bgPath.value,
         output_dir: samplePaths.value.length > 1 ? outputDir.value : undefined,
         output_format: samplePaths.value.length > 1 ? outputFormat.value : undefined,
@@ -1143,18 +1148,36 @@ async function handleSubtract(): Promise<void> {
       }
 
   // Set transmission params / 设置透射率参数
-  if (mode.value === 'single') {
-    if (transmissionSource.value === 'per-file') {
-      if (samplePaths.value.length === 1) {
-        params.transmission = (perFileTransmissions.value[samplePaths.value[0]] ?? manualTransmission.value) / 100
-      } else {
-        params.transmissions = getPerFileTransmissions()
-      }
-    } else if (transmissionSource.value === 'manual') {
-      params.transmission = manualTransmission.value / 100
+  // NOTE: The Python batch handler only reads the scalar `transmission` (plus
+  // per-file values it computes itself from an ionchamber folder). The legacy
+  // code only set transmission in single mode, silently forcing T=1.0 in batch
+  // mode. Apply it in both modes now so the user's choice is respected.
+  // 注意：Python 批量端只读取标量 `transmission`（以及它自己根据电离室文件夹
+  // 计算出的逐文件值）。旧代码仅在 single 模式下设置透射率，导致 batch 模式
+  // 下被静默忽略（T=1.0）。现在两种模式都设置，以尊重用户选择。
+  if (transmissionSource.value === 'per-file') {
+    if (mode.value === 'single' && samplePaths.value.length === 1) {
+      params.transmission = (perFileTransmissions.value[samplePaths.value[0]] ?? manualTransmission.value) / 100
+    } else if (mode.value === 'single' && samplePaths.value.length > 1) {
+      // Multi-file single mode: keep per-file map for forward compat, and also
+      // set a scalar fallback (first file's value) since the backend reads scalar.
+      // 多文件单选模式：保留逐文件映射以向前兼容，并设置标量回退（首文件值），
+      // 因为后端只读取标量。
+      params.transmissions = getPerFileTransmissions()
+      const firstPath = samplePaths.value[0]
+      params.transmission = (perFileTransmissions.value[firstPath] ?? manualTransmission.value) / 100
     } else {
-      params.transmission = getMatchedTransmission()
+      // Batch (folder) mode has no meaningful per-file mapping; fall back to manual.
+      // 批量（文件夹）模式没有逐文件映射意义，回退到手动值。
+      params.transmission = manualTransmission.value / 100
     }
+  } else if (transmissionSource.value === 'manual') {
+    params.transmission = manualTransmission.value / 100
+  } else {
+    // ionchamber: use matched value as scalar fallback; the backend will
+    // auto-compute per-file values from the ionchamber folder when provided.
+    // 电离室：使用匹配值作为标量回退；若提供电离室文件夹，后端会自动逐文件计算。
+    params.transmission = getMatchedTransmission()
   }
 
   try {

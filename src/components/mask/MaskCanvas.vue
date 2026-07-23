@@ -3,7 +3,6 @@
     <div
       class="mc-viewport"
       ref="viewportRef"
-      @wheel.prevent="onWheel"
       @mousedown="onMouseDown"
       @mousemove="onMouseMove"
       @mouseup="onMouseUp"
@@ -172,6 +171,11 @@ function zoom100(): void {
 }
 
 function onWheel(e: WheelEvent): void {
+  // Prevent page scroll while zooming; registered as a non-passive listener
+  // in onMounted so we can call preventDefault without Chromium warnings.
+  // 缩放时阻止页面滚动；监听器在 onMounted 中以 non-passive 方式注册，
+  // 因此可以调用 preventDefault 而不触发 Chromium 警告。
+  e.preventDefault()
   if (!props.imageLoaded) return
 
   const rect = viewportRef.value?.getBoundingClientRect()
@@ -482,9 +486,17 @@ watch(
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
 
 onMounted(() => {
+  // Register wheel listener as non-passive so preventDefault works without
+  // triggering Chromium "[Violation] Added non-passive event listener" warnings.
+  // 以 non-passive 方式注册滚轮监听器，使 preventDefault 生效且不触发警告。
+  viewportRef.value?.addEventListener('wheel', onWheel, { passive: false })
   nextTick(() => {
     zoomFit()
   })
+})
+
+onBeforeUnmount(() => {
+  viewportRef.value?.removeEventListener('wheel', onWheel)
 })
 
 // Reset zoom/pan when image changes

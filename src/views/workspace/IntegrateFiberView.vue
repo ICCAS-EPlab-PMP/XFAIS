@@ -9,246 +9,264 @@
     <div class="fiber-layout">
       <!-- ═══════ Sidebar ═══════ -->
       <aside class="fiber-sidebar">
-        <GeometryForm v-model="geometry" />
-
-        <!-- Mask Import (collapsible, collapsed by default) / 掩膜导入（可折叠，默认收起） -->
+        <!-- ── Group 1: Geometry & Corrections / 几何与校正 ── -->
         <div class="fib-collapsible">
-          <div class="fib-section-toggle" @click="maskExpanded = !maskExpanded">
-            <span class="fib-toggle-icon">{{ maskExpanded ? '▾' : '▸' }}</span>
-            <span>{{ t('business.sections.maskImport') }}</span>
+          <div class="fib-section-toggle" @click="geomExpanded = !geomExpanded">
+            <span class="fib-toggle-icon">{{ geomExpanded ? '▾' : '▸' }}</span>
+            <span>{{ t('integrateFiber.geomGroup') }}</span>
           </div>
-          <div v-show="maskExpanded" class="fib-collapsible-body">
-            <MaskBuilderForm v-model="maskConfig" :bare="true" />
+          <div v-show="geomExpanded" class="fib-collapsible-body fib-group-body">
+            <GeometryForm v-model="geometry" />
+
+            <PolarizationForm v-model="polarizationFactor" />
+
+            <!-- Fiber rotation overrides / 纤维旋转参数 -->
+            <fieldset class="fib-section">
+              <legend>{{ t('integrateFiber.rotSection') }}</legend>
+              <div class="fib-grid">
+                <label class="fib-field">
+                  <span class="fib-label">rot1 (°)</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.001"
+                    :value="fiberParams.rot1Deg"
+                    :data-testid="testIds.fiberRot1"
+                    @input="onFiberParam('rot1Deg', $event)"
+                  />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">rot2 (°)</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.001"
+                    :value="fiberParams.rot2Deg"
+                    :data-testid="testIds.fiberRot2"
+                    @input="onFiberParam('rot2Deg', $event)"
+                  />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">rot3 (°)</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.001"
+                    :value="fiberParams.rot3Deg"
+                    :data-testid="testIds.fiberRot3"
+                    @input="onFiberParam('rot3Deg', $event)"
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Sample orientation / 样品方向 -->
+            <fieldset class="fib-section">
+              <legend>{{ t('integrateFiber.sampleSection') }}</legend>
+              <div class="fib-grid">
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.sampleOrientation') }}</span>
+                  <select
+                    class="fib-select"
+                    :value="fiberParams.sampleOrientation"
+                    :data-testid="testIds.fiberOrientation"
+                    @change="onSelectParam('sampleOrientation', $event)"
+                  >
+                    <option v-for="o in 8" :key="o" :value="o" :title="orientationHints[o]">{{ o }}</option>
+                  </select>
+                  <span class="fib-hint">{{ orientationHints[fiberParams.sampleOrientation] }}</span>
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.incidentAngle') }}</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.001"
+                    :value="fiberParams.incidentAngleDeg"
+                    :data-testid="testIds.fiberIncidentAngle"
+                    @input="onFiberParam('incidentAngleDeg', $event)"
+                  />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.tiltAngle') }}</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.001"
+                    :value="fiberParams.tiltAngleDeg"
+                    :data-testid="testIds.fiberTiltAngle"
+                    @input="onFiberParam('tiltAngleDeg', $event)"
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Solid angle / 立体角 -->
+            <fieldset class="fib-section">
+              <label class="fib-toggle">
+                <input
+                  type="checkbox"
+                  :checked="correctSolidAngle"
+                  :data-testid="testIds.fiberSolidAngle"
+                  @change="correctSolidAngle = !correctSolidAngle"
+                />
+                <span class="fib-toggle-label">{{ t('integrateFiber.correctSolidAngle') }}</span>
+              </label>
+            </fieldset>
+
+            <!-- Mask Import (collapsible, collapsed by default) / 掩膜导入（可折叠，默认收起） -->
+            <div class="fib-collapsible">
+              <div class="fib-section-toggle" @click="maskExpanded = !maskExpanded">
+                <span class="fib-toggle-icon">{{ maskExpanded ? '▾' : '▸' }}</span>
+                <span>{{ t('business.sections.maskImport') }}</span>
+              </div>
+              <div v-show="maskExpanded" class="fib-collapsible-body">
+                <MaskBuilderForm v-model="maskConfig" :bare="true" />
+              </div>
+            </div>
           </div>
         </div>
 
-        <PolarizationForm v-model="polarizationFactor" />
-
-        <!-- Fiber rotation overrides / 纤维旋转参数 -->
-        <fieldset class="fib-section">
-          <legend>{{ t('integrateFiber.rotSection') }}</legend>
-          <div class="fib-grid">
-            <label class="fib-field">
-              <span class="fib-label">rot1 (°)</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.001"
-                :value="fiberParams.rot1Deg"
-                :data-testid="testIds.fiberRot1"
-                @input="onFiberParam('rot1Deg', $event)"
-              />
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">rot2 (°)</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.001"
-                :value="fiberParams.rot2Deg"
-                :data-testid="testIds.fiberRot2"
-                @input="onFiberParam('rot2Deg', $event)"
-              />
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">rot3 (°)</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.001"
-                :value="fiberParams.rot3Deg"
-                :data-testid="testIds.fiberRot3"
-                @input="onFiberParam('rot3Deg', $event)"
-              />
-            </label>
-          </div>
-        </fieldset>
-
-        <!-- Sample orientation / 样品方向 -->
-        <fieldset class="fib-section">
-          <legend>{{ t('integrateFiber.sampleSection') }}</legend>
-          <div class="fib-grid">
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.sampleOrientation') }}</span>
-              <select
-                class="fib-select"
-                :value="fiberParams.sampleOrientation"
-                :data-testid="testIds.fiberOrientation"
-                @change="onSelectParam('sampleOrientation', $event)"
-              >
-                <option v-for="o in 8" :key="o" :value="o">{{ o }}</option>
-              </select>
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.incidentAngle') }}</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.001"
-                :value="fiberParams.incidentAngleDeg"
-                :data-testid="testIds.fiberIncidentAngle"
-                @input="onFiberParam('incidentAngleDeg', $event)"
-              />
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.tiltAngle') }}</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.001"
-                :value="fiberParams.tiltAngleDeg"
-                :data-testid="testIds.fiberTiltAngle"
-                @input="onFiberParam('tiltAngleDeg', $event)"
-              />
-            </label>
-          </div>
-        </fieldset>
-
-        <!-- Coordinate units / 坐标单位 -->
-        <fieldset class="fib-section">
-          <legend>{{ t('integrateFiber.unitsSection') }}</legend>
-          <div class="fib-grid">
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.unitIp') }}</span>
-              <select
-                class="fib-select"
-                :value="fiberParams.unitIp"
-                :data-testid="testIds.fiberUnitIp"
-                @change="onSelectParam('unitIp', $event)"
-              >
-                <option v-for="u in unitIpOptions" :key="u.value" :value="u.value">
-                  {{ u.label }}
-                </option>
-              </select>
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.unitOop') }}</span>
-              <select
-                class="fib-select"
-                :value="fiberParams.unitOop"
-                :data-testid="testIds.fiberUnitOop"
-                @change="onSelectParam('unitOop', $event)"
-              >
-                <option v-for="u in unitOopOptions" :key="u.value" :value="u.value">
-                  {{ u.label }}
-                </option>
-              </select>
-            </label>
-          </div>
-        </fieldset>
-
-        <!-- Integration range / 积分范围 -->
-        <fieldset class="fib-section">
-          <legend>{{ t('integrateFiber.rangeSection') }}</legend>
-          <label class="fib-toggle">
-            <input
-              type="checkbox"
-              :checked="fiberParams.autoRange"
-              :data-testid="testIds.fiberAutoRange"
-              @change="onToggleAutoRange"
-            />
-            <span class="fib-toggle-label">{{ t('integrateFiber.autoRange') }}</span>
-          </label>
-
-          <div v-if="!fiberParams.autoRange" class="fib-grid fib-range-grid">
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.ipMin') }}</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.1"
-                :value="fiberParams.ipMin"
-                :data-testid="testIds.fiberIpMin"
-                @input="onFiberParam('ipMin', $event)"
-              />
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.ipMax') }}</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.1"
-                :value="fiberParams.ipMax"
-                :data-testid="testIds.fiberIpMax"
-                @input="onFiberParam('ipMax', $event)"
-              />
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.oopMin') }}</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.1"
-                :value="fiberParams.oopMin"
-                :data-testid="testIds.fiberOopMin"
-                @input="onFiberParam('oopMin', $event)"
-              />
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.oopMax') }}</span>
-              <input
-                type="number"
-                class="fib-input"
-                step="0.1"
-                :value="fiberParams.oopMax"
-                :data-testid="testIds.fiberOopMax"
-                @input="onFiberParam('oopMax', $event)"
-              />
-            </label>
-          </div>
-        </fieldset>
-
-        <!-- npt_ip / npt_oop / 点数 -->
-        <fieldset class="fib-section">
-          <legend>{{ t('integrateFiber.nptSection') }}</legend>
-          <div class="fib-grid">
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.nptIp') }}</span>
-              <input
-                type="number"
-                class="fib-input"
-                min="50"
-                step="50"
-                :value="fiberParams.nptIp"
-                :data-testid="testIds.fiberNptIp"
-                @input="onFiberParam('nptIp', $event)"
-              />
-            </label>
-            <label class="fib-field">
-              <span class="fib-label">{{ t('integrateFiber.nptOop') }}</span>
-              <input
-                type="number"
-                class="fib-input"
-                min="50"
-                step="50"
-                :value="fiberParams.nptOop"
-                :data-testid="testIds.fiberNptOop"
-                @input="onFiberParam('nptOop', $event)"
-              />
-            </label>
-          </div>
-        </fieldset>
-
-        <!-- Solid angle / 立体角 -->
-        <fieldset class="fib-section">
-          <label class="fib-toggle">
-            <input
-              type="checkbox"
-              :checked="correctSolidAngle"
-              :data-testid="testIds.fiberSolidAngle"
-              @change="correctSolidAngle = !correctSolidAngle"
-            />
-            <span class="fib-toggle-label">{{ t('integrateFiber.correctSolidAngle') }}</span>
-          </label>
-        </fieldset>
-
-        <!-- Display settings (collapsible, default collapsed) / 显示设置（可折叠，默认收起） -->
+        <!-- ── Group 2: Integration Params / 积分参数 ── -->
         <div class="fib-collapsible">
-          <div class="fib-section-toggle" @click="displayExpanded = !displayExpanded">
-            <span class="fib-toggle-icon">{{ displayExpanded ? '▾' : '▸' }}</span>
+          <div class="fib-section-toggle" @click="integExpanded = !integExpanded">
+            <span class="fib-toggle-icon">{{ integExpanded ? '▾' : '▸' }}</span>
+            <span>{{ t('integrateFiber.integGroup') }}</span>
+          </div>
+          <div v-show="integExpanded" class="fib-collapsible-body fib-group-body">
+            <!-- Coordinate units / 坐标单位 -->
+            <fieldset class="fib-section">
+              <legend>{{ t('integrateFiber.unitsSection') }}</legend>
+              <div class="fib-grid">
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.unitIp') }}</span>
+                  <select
+                    class="fib-select"
+                    :value="fiberParams.unitIp"
+                    :data-testid="testIds.fiberUnitIp"
+                    @change="onSelectParam('unitIp', $event)"
+                  >
+                    <option v-for="u in unitIpOptions" :key="u.value" :value="u.value">
+                      {{ u.label }}
+                    </option>
+                  </select>
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.unitOop') }}</span>
+                  <select
+                    class="fib-select"
+                    :value="fiberParams.unitOop"
+                    :data-testid="testIds.fiberUnitOop"
+                    @change="onSelectParam('unitOop', $event)"
+                  >
+                    <option v-for="u in unitOopOptions" :key="u.value" :value="u.value">
+                      {{ u.label }}
+                    </option>
+                  </select>
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Integration range / 积分范围 -->
+            <fieldset class="fib-section">
+              <legend>{{ t('integrateFiber.rangeSection') }}</legend>
+              <label class="fib-toggle">
+                <input
+                  type="checkbox"
+                  :checked="fiberParams.autoRange"
+                  :data-testid="testIds.fiberAutoRange"
+                  @change="onToggleAutoRange"
+                />
+                <span class="fib-toggle-label">{{ t('integrateFiber.autoRange') }}</span>
+              </label>
+
+              <div v-if="!fiberParams.autoRange" class="fib-grid fib-range-grid">
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.ipMin') }}</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.1"
+                    :value="fiberParams.ipMin"
+                    :data-testid="testIds.fiberIpMin"
+                    @input="onFiberParam('ipMin', $event)"
+                  />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.ipMax') }}</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.1"
+                    :value="fiberParams.ipMax"
+                    :data-testid="testIds.fiberIpMax"
+                    @input="onFiberParam('ipMax', $event)"
+                  />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.oopMin') }}</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.1"
+                    :value="fiberParams.oopMin"
+                    :data-testid="testIds.fiberOopMin"
+                    @input="onFiberParam('oopMin', $event)"
+                  />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.oopMax') }}</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    step="0.1"
+                    :value="fiberParams.oopMax"
+                    :data-testid="testIds.fiberOopMax"
+                    @input="onFiberParam('oopMax', $event)"
+                  />
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- npt_ip / npt_oop / 点数 -->
+            <fieldset class="fib-section">
+              <legend>{{ t('integrateFiber.nptSection') }}</legend>
+              <div class="fib-grid">
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.nptIp') }}</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    min="50"
+                    step="50"
+                    :value="fiberParams.nptIp"
+                    :data-testid="testIds.fiberNptIp"
+                    @input="onFiberParam('nptIp', $event)"
+                  />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">{{ t('integrateFiber.nptOop') }}</span>
+                  <input
+                    type="number"
+                    class="fib-input"
+                    min="50"
+                    step="50"
+                    :value="fiberParams.nptOop"
+                    :data-testid="testIds.fiberNptOop"
+                    @input="onFiberParam('nptOop', $event)"
+                  />
+                </label>
+              </div>
+            </fieldset>
+          </div>
+        </div>
+
+        <!-- ── Group 3: Display settings (always expanded, non-collapsible) / 显示设置（永不折叠） ── -->
+        <div class="fib-section-static">
+          <div class="fib-section-toggle fib-section-toggle-static">
             <span>{{ t('business.sections.displaySettings') }}</span>
           </div>
-          <div v-show="displayExpanded" class="fib-collapsible-body">
+          <div class="fib-collapsible-body">
             <div class="fib-field">
               <label class="fib-label">{{ t('business.display.colormap') }}</label>
               <select v-model="colormap" class="fib-select">
@@ -261,8 +279,40 @@
               <input v-model="useLog" type="checkbox" />
               <span class="fib-toggle-label">{{ t('business.display.logScale') }}</span>
             </label>
+            <!-- Contrast controls (moved from main chart area) / 对比度控件（从主区移入） -->
+            <label class="fib-field fib-contrast-field" style="margin-top:8px">
+              <span class="fib-label">{{ t('business.sections.contrastMode') }}</span>
+              <select v-model="resultClimMode" class="fib-select">
+                <option value="auto">{{ t('business.display.climAuto') }}</option>
+                <option value="manual">{{ t('business.display.climManual') }}</option>
+              </select>
+            </label>
+            <label v-if="resultClimMode === 'manual'" class="fib-field fib-contrast-field">
+              <span class="fib-label">{{ t('business.display.climMin') }}</span>
+              <input v-model.number="resultClimMin" type="number" class="fib-input" step="any" />
+            </label>
+            <label v-if="resultClimMode === 'manual'" class="fib-field fib-contrast-field">
+              <span class="fib-label">{{ t('business.display.climMax') }}</span>
+              <input v-model.number="resultClimMax" type="number" class="fib-input" step="any" />
+            </label>
           </div>
         </div>
+
+        <!-- ── Export result (sidebar, expands after preview) / 导出结果（侧栏，预览后展开） ── -->
+        <div v-if="result" class="fib-collapsible">
+          <div class="fib-section-toggle" @click="exportExpanded = !exportExpanded">
+            <span class="fib-toggle-icon">{{ exportExpanded ? '▾' : '▸' }}</span>
+            <span>{{ t('integrateFiber.exportGroup') }}</span>
+          </div>
+          <div v-show="exportExpanded" class="fib-collapsible-body">
+            <ExportDialog
+              :formats="exportFormats"
+              :data-testid="testIds.fiberExport"
+              @export="onExport"
+            />
+          </div>
+        </div>
+
       </aside>
 
       <!-- ═══════ Main content area ═══════ -->
@@ -400,33 +450,16 @@
           </div>
         </div>
 
-        <!-- Run buttons / 执行按钮 -->
+        <!-- Run button / 执行按钮 -->
         <div class="fib-run-section">
           <button
             type="button"
             class="fib-run-btn"
-            :disabled="!canRun || isPreviewRunning || isBatchRunning"
+            :disabled="!canRun || isPreviewRunning"
             :data-testid="testIds.fiberRunBtn"
             @click="runPreviewIntegration"
           >
             {{ isPreviewRunning ? t('integrateFiber.running') : t('integrateFiber.preview') }}
-          </button>
-          <label class="fib-batch-format">
-            <span class="fib-batch-format-label">{{ t('business.sections.format') }}</span>
-            <select v-model="batchExportFormat" class="fib-select" style="width:auto;min-width:70px">
-              <option value="npy">NPY</option>
-              <option value="hdf5">HDF5</option>
-              <option value="tiff">TIFF</option>
-              <option value="edf">EDF</option>
-            </select>
-          </label>
-          <button
-            type="button"
-            class="fib-run-btn fib-batch-btn"
-            :disabled="!canRun || isBatchRunning || isPreviewRunning"
-            @click="onBatchToFolder"
-          >
-            {{ isBatchRunning ? t('business.taskProgress.processing') : t('integrateFiber.batchExportFolder') }}
           </button>
           <span v-if="validationError" class="fib-error" :data-testid="testIds.fiberError">
             {{ validationError }}
@@ -442,23 +475,16 @@
           @cancel="onCancelPreview"
         />
 
-        <!-- Batch progress / 批量进度 -->
-        <TaskProgressBar
-          v-if="isBatchRunning"
-          :task-id="batchTaskId"
-          :progress="batchProgress"
-          :message="batchProgressMessage"
-          @cancel="onCancelBatch"
-        />
-
         <div v-if="previewError" class="fib-error-box">
           <p>{{ previewError }}</p>
         </div>
-        <div v-if="batchError" class="fib-error-box">
-          <p>{{ batchError }}</p>
+
+        <!-- Empty state (before any integration) / 空状态（积分前） -->
+        <div v-if="!isPreviewRunning && !result && !previewError" class="fib-empty">
+          <p>{{ t('integrateFiber.emptyHint') }}</p>
         </div>
 
-        <!-- 2D Heatmap / 二维热力图 -->
+        <!-- ═══════ Result tabs (shown once a result exists) / 结果 Tab（有结果后显示） ═══════ -->
         <section v-if="result" class="fib-result">
           <div class="fib-result-header">
             <div>
@@ -470,6 +496,7 @@
             </div>
           </div>
 
+          <!-- Shared result thumbnails / 共享结果缩略图 -->
           <div v-if="resultSummaries.length > 1" class="fib-result-thumbs">
             <ThumbnailStrip
               :items="resultThumbnailItems"
@@ -489,82 +516,295 @@
             />
           </div>
 
+          <!-- ═══ Shared 2D heatmap (common to all tabs) + ROI overlay + contrast ═══ -->
+          <!-- 共享 2D 热图（各 tab 公用）+ ROI 框选叠加 + 对比度控件 -->
           <div class="fib-chart-container">
-            <ImagePreview
-              :image-b64="result.previewB64"
-              :show-colorbar="true"
-              :colorbar-gradient="colorbarGradient"
-              :colorbar-min-label="heatmapZMin !== undefined ? formatSci(heatmapZMin) : colorbarMinLabel"
-              :colorbar-max-label="heatmapZMax !== undefined ? formatSci(heatmapZMax) : colorbarMaxLabel"
-              :title="t('integrateFiber.heatmapTitle')"
-              :data-testid="testIds.fiberHeatmap"
-            />
-          </div>
-
-          <div class="fib-chart-controls">
-            <label class="fib-toggle">
-              <input
-                type="checkbox"
-                :checked="logScale"
-                @change="logScale = !logScale"
+            <div class="fib-roi-image-wrapper" ref="roiImageWrapperRef">
+              <ImagePreview
+                :image-b64="result.previewB64"
+                :show-colorbar="true"
+                :colorbar-gradient="colorbarGradient"
+                :colorbar-min-label="heatmapZMin !== undefined ? formatSci(heatmapZMin) : colorbarMinLabel"
+                :colorbar-max-label="heatmapZMax !== undefined ? formatSci(heatmapZMax) : colorbarMaxLabel"
+                :title="t('integrateFiber.heatmapTitle')"
+                :data-testid="testIds.fiberHeatmap"
               />
-              <span class="fib-toggle-label">{{ t('integrateFiber.logScale') }}</span>
-            </label>
-            <label class="fib-field fib-contrast-field">
-              <span class="fib-label">{{ t('business.sections.contrastMode') }}</span>
-              <select v-model="resultClimMode" class="fib-select">
-                <option value="auto">{{ t('business.display.climAuto') }}</option>
-                <option value="manual">{{ t('business.display.climManual') }}</option>
-              </select>
-            </label>
-            <label v-if="resultClimMode === 'manual'" class="fib-field fib-contrast-field">
-              <span class="fib-label">{{ t('business.display.climMin') }}</span>
-              <input v-model.number="resultClimMin" type="number" class="fib-input" step="any" />
-            </label>
-            <label v-if="resultClimMode === 'manual'" class="fib-field fib-contrast-field">
-              <span class="fib-label">{{ t('business.display.climMax') }}</span>
-              <input v-model.number="resultClimMax" type="number" class="fib-input" step="any" />
-            </label>
+              <!-- ROI selection overlay / ROI 框选叠加层 -->
+              <canvas
+                v-if="roiMode && result?.previewB64"
+                ref="roiCanvasRef"
+                class="fib-roi-canvas"
+                @mousedown="onRoiMouseDown"
+                @mousemove="onRoiMouseMove"
+                @mouseup="onRoiMouseUp"
+                @mouseleave="onRoiMouseUp"
+              />
+            </div>
           </div>
 
-          <!-- Export / 导出 -->
-          <ExportDialog
-            :formats="exportFormats"
-            :data-testid="testIds.fiberExport"
-            @export="onExport"
-          />
-        </section>
+          <!-- Tab switcher (1D curves / PNG export) / Tab 切换（1D 曲线 / PNG 导出） -->
+          <div class="fib-tabs" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="activeTab === 'roi'"
+              :class="['fib-tab', { 'fib-tab-active': activeTab === 'roi' }]"
+              @click="activeTab = 'roi'"
+            >{{ t('integrateFiber.tabRoi') }}</button>
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="activeTab === 'png'"
+              :class="['fib-tab', { 'fib-tab-active': activeTab === 'png' }]"
+              @click="activeTab = 'png'"
+            >{{ t('integrateFiber.tabPng') }}</button>
+          </div>
 
-        <!-- ═══════ Batch-to-folder results / 批量导出结果 ═══════ -->
-        <section v-if="exportedFiles.length > 0" class="fib-exported-section">
-          <div class="fib-result-header">
-            <h2>{{ t('integrateFiber.batchExportComplete') }}</h2>
+          <!-- ─── Tab: 1D ROI Integration ─── -->
+          <div v-if="activeTab === 'roi'" class="fib-tab-panel">
+            <!-- ROI parameters / ROI 参数 -->
+            <div class="fib-roi-panel">
+              <h3>1D ROI Integration / 区域1D积分</h3>
+              <p v-if="!roi1dResult" class="fib-roi-hint">
+                Set IP/OOP range + npt, enable selection mode to draw a box on the heatmap above, then run.<br />
+                设置面内/面外范围与点数，勾选框选模式后在上方热图上框选区域，再执行。
+              </p>
+
+              <label class="fib-toggle" style="margin-bottom:8px">
+                <input v-model="roiMode" type="checkbox" />
+                <span class="fib-toggle-label">ROI selection mode / 框选模式</span>
+              </label>
+
+              <div class="fib-grid fib-roi-grid">
+                <label class="fib-field">
+                  <span class="fib-label">IP min</span>
+                  <input v-model.number="roiIpMin" type="number" class="fib-input" step="any" />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">IP max</span>
+                  <input v-model.number="roiIpMax" type="number" class="fib-input" step="any" />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">OOP min</span>
+                  <input v-model.number="roiOopMin" type="number" class="fib-input" step="any" />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">OOP max</span>
+                  <input v-model.number="roiOopMax" type="number" class="fib-input" step="any" />
+                </label>
+                <label class="fib-field">
+                  <span class="fib-label">npt</span>
+                  <input v-model.number="roiNpt" type="number" class="fib-input" min="50" step="50" />
+                </label>
+              </div>
+
+              <label class="fib-toggle" style="margin:8px 0">
+                <input v-model="roiAbsQ" type="checkbox" />
+                <span class="fib-toggle-label">|q| axis / q轴取绝对值</span>
+              </label>
+
+              <div class="fib-roi-actions">
+                <button
+                  type="button"
+                  class="fib-run-btn"
+                  :disabled="!canRunRoi || roiRunning"
+                  @click="runRoiIntegration"
+                >
+                  {{ roiRunning ? 'Running...' : 'Run 1D / 执行1D积分' }}
+                </button>
+                <button
+                  v-if="roi1dResult"
+                  type="button"
+                  class="fib-run-btn"
+                  :disabled="roiRunning"
+                  @click="exportRoi1d"
+                >
+                  Export 1D / 导出1D曲线
+                </button>
+              </div>
+
+              <div v-if="roiError" class="fib-error-box">
+                <p>{{ roiError }}</p>
+              </div>
+            </div>
+
+            <!-- 1D result curve / 1D 结果曲线 -->
+            <div v-if="roi1dResult" class="fib-roi-chart-main">
+              <h3>1D ROI Result / 1D 区域积分结果</h3>
+              <LineChart
+                :traces="roi1dTraces"
+                :x-title="roi1dResult?.unit ? `q (${roi1dResult.unit})` : 'q'"
+                :y-title="'Intensity'"
+                :legend-visible="false"
+              />
+            </div>
           </div>
-          <div class="fib-memory-warning">
-            {{ t('integrateFiber.memoryWarning') }}
-          </div>
-          <div class="fib-exported-list">
-            <div v-for="(file, i) in exportedFiles.slice(0, exportedPreviewLimit)" :key="i" class="fib-exported-item">
-              <span class="fib-exported-name" :title="file">{{ file.replace(/^.*[\\/]/, '') }}</span>
+
+          <!-- ─── Tab: PNG Export ─── -->
+          <div v-if="activeTab === 'png'" class="fib-tab-panel">
+            <!-- Annotated (matplotlib) preview — WYSIWYG with exported PNG. -->
+            <!-- 带坐标轴预览（所见即所得） -->
+            <div class="fib-mpl-preview">
+              <div class="fib-mpl-preview-header">
+                <h3>PNG Preview / PNG 预览</h3>
+                <label class="fib-toggle">
+                  <input v-model="mplPreviewEnabled" type="checkbox" @change="void refreshMplPreview()" />
+                  <span class="fib-toggle-label">Show / 显示</span>
+                </label>
+              </div>
+              <div v-if="resultSummaries.length > 1" class="fib-mpl-hint">
+                {{ t('integrateFiber.multiResultHint', { current: currentResultIndex + 1, total: resultSummaries.length }) }}
+              </div>
+              <div v-if="mplPreviewEnabled" class="fib-mpl-preview-body">
+                <div v-if="mplPreviewLoading" class="fib-mpl-loading">Rendering… / 渲染中…</div>
+                <img
+                  v-else-if="mplPreviewB64"
+                  :src="`data:image/png;base64,${mplPreviewB64}`"
+                  class="fib-mpl-img"
+                  alt="Annotated GIWAXS result preview"
+                />
+                <div v-else class="fib-mpl-empty">No preview yet. Run integration first. / 暂无预览，请先执行积分。</div>
+              </div>
+            </div>
+
+            <!-- Batch export all results as PNG using current PNG options. -->
+            <!-- 一键批量导出全部为 PNG（用当前 PNG 选项）。单张/其它格式导出在左栏「导出结果」。 -->
+            <div class="fib-png-batch-row">
               <button
                 type="button"
-                class="fib-file-btn"
-                :disabled="viewingExported"
-                @click="viewExportedResult(file)"
+                class="fib-run-btn fib-batch-png-btn"
+                :disabled="!result || pngBatchExporting"
+                @click="onBatchExportPng"
               >
-                {{ t('integrateFiber.loadToView') }}
+                {{ pngBatchExporting
+                    ? t('business.taskProgress.processing')
+                    : t('integrateFiber.batchPng') }}
               </button>
             </div>
-            <div v-if="exportedFiles.length > exportedPreviewLimit" class="fib-exported-more">
-              {{ t('integrateFiber.moreFiles', { count: exportedFiles.length - exportedPreviewLimit }) }}
+
+            <!-- PNG Options (below batch button) / PNG 选项（批量按钮下方） -->
+            <div class="fib-collapsible">
+              <div class="fib-section-toggle" @click="pngOptionsExpanded = !pngOptionsExpanded">
+                <span class="fib-toggle-icon">{{ pngOptionsExpanded ? '▾' : '▸' }}</span>
+                <span>PNG Options / PNG 选项</span>
+              </div>
+              <div v-show="pngOptionsExpanded" class="fib-collapsible-body">
+                <label class="fib-toggle" style="margin-bottom:8px">
+                  <input v-model="pngShowLabels" type="checkbox" />
+                  <span class="fib-toggle-label">Show axis labels / 显示坐标轴标注</span>
+                </label>
+                <div class="fib-grid">
+                  <label class="fib-field">
+                    <span class="fib-label">Font size / 字号</span>
+                    <input v-model.number="pngFontSize" type="number" class="fib-input" min="6" max="36" step="1" />
+                  </label>
+                  <label class="fib-field">
+                    <span class="fib-label">DPI / 分辨率</span>
+                    <select v-model.number="pngDpi" class="fib-select">
+                      <option :value="72">72 (screen)</option>
+                      <option :value="100">100</option>
+                      <option :value="150">150 (default)</option>
+                      <option :value="300">300 (print)</option>
+                      <option :value="600">600 (hi-res)</option>
+                    </select>
+                  </label>
+                </div>
+                <label class="fib-field" style="margin-top:8px">
+                  <span class="fib-label">No-data fill / 无数据填充</span>
+                  <select v-model="pngNoDataBg" class="fib-select">
+                    <option value="white">White / 白色</option>
+                    <option value="black">Black / 黑色</option>
+                    <option value="transparent">Transparent / 透明</option>
+                  </select>
+                </label>
+
+                <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+                  <label class="fib-toggle">
+                    <input v-model="pngShowColorbar" type="checkbox" />
+                    <span class="fib-toggle-label">Colorbar / 色条</span>
+                  </label>
+                  <label class="fib-toggle">
+                    <input v-model="pngShowTitle" type="checkbox" />
+                    <span class="fib-toggle-label">Title (filename) / 标题(文件名)</span>
+                  </label>
+                </div>
+
+                <div class="fib-grid" style="margin-top:8px">
+                  <label class="fib-field">
+                    <span class="fib-label">Border / 边框粗细</span>
+                    <input v-model.number="pngBorderWidth" type="number" class="fib-input" min="0" max="6" step="0.5" />
+                  </label>
+                  <label class="fib-field">
+                    <span class="fib-label">Edge color / 边框颜色</span>
+                    <div class="fib-color-row">
+                      <input v-model="pngEdgeColor" type="color" class="fib-color-input" />
+                      <select v-model="pngEdgeColor" class="fib-select">
+                        <option value="black">Black / 黑</option>
+                        <option value="white">White / 白</option>
+                        <option value="#1f2937">Slate / 深灰</option>
+                        <option value="#dc2626">Red / 红</option>
+                        <option value="#2563eb">Blue / 蓝</option>
+                      </select>
+                    </div>
+                  </label>
+                </div>
+
+                <div class="fib-grid" style="margin-top:8px">
+                  <label class="fib-field">
+                    <span class="fib-label">X axis title / X 轴标题</span>
+                    <input v-model="pngXLabel" type="text" class="fib-input" :placeholder="t('integrateFiber.xAxisPlaceholder')" />
+                  </label>
+                  <label class="fib-field">
+                    <span class="fib-label">Y axis title / Y 轴标题</span>
+                    <input v-model="pngYLabel" type="text" class="fib-input" :placeholder="t('integrateFiber.yAxisPlaceholder')" />
+                  </label>
+                </div>
+                <label class="fib-field" style="margin-top:8px">
+                  <span class="fib-label">Font / 字体</span>
+                  <select v-model="pngFontFamily" class="fib-select">
+                    <option v-for="f in FONT_OPTIONS" :key="f" :value="f">{{ f || 'Default / 默认' }}</option>
+                  </select>
+                </label>
+                <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+                  <label class="fib-toggle">
+                    <input v-model="pngShowAxisTitle" type="checkbox" />
+                    <span class="fib-toggle-label">Axis titles / 轴标题文字</span>
+                  </label>
+                  <label class="fib-toggle">
+                    <input v-model="pngShowTicks" type="checkbox" />
+                    <span class="fib-toggle-label">Tick marks &amp; numbers / 刻度与数值</span>
+                  </label>
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+                  <label class="fib-toggle">
+                    <input v-model="pngTitleBold" type="checkbox" />
+                    <span class="fib-toggle-label">Bold title / 标题加粗</span>
+                  </label>
+                  <label class="fib-toggle">
+                    <input v-model="pngAxisTitleBold" type="checkbox" />
+                    <span class="fib-toggle-label">Bold axis titles / xy小标题加粗</span>
+                  </label>
+                  <label class="fib-toggle">
+                    <input v-model="pngTickBold" type="checkbox" />
+                    <span class="fib-toggle-label">Bold tick numbers / 坐标轴数字加粗</span>
+                  </label>
+                </div>
+
+                <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px">
+                  <label class="fib-toggle">
+                    <input v-model="pngFlipX" type="checkbox" />
+                    <span class="fib-toggle-label">Flip X axis / X轴反转</span>
+                  </label>
+                  <label class="fib-toggle">
+                    <input v-model="pngFlipY" type="checkbox" />
+                    <span class="fib-toggle-label">Flip Y axis / Y轴反转</span>
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
         </section>
-
-        <!-- Empty state / 空状态 -->
-        <div v-else-if="!isPreviewRunning && !isBatchRunning && !result && !previewError && !batchError" class="fib-empty">
-          <p>{{ t('integrateFiber.emptyHint') }}</p>
-        </div>
       </main>
     </div>
   </section>
@@ -578,7 +818,7 @@
  * Performs 2-D grazing-incidence integration (qip × qoop map)
  * using pyFAI's FiberIntegrator via the desktop task bridge.
  */
-import { ref, reactive, computed, watch, onUnmounted } from 'vue'
+import { ref, reactive, computed, watch, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
@@ -598,6 +838,8 @@ import ImagePreview from '@/components/charts/ImagePreview.vue'
 import type { Overlay } from '@/components/charts/ImagePreview.vue'
 import ThumbnailStrip from '@/components/business/ThumbnailStrip.vue'
 import type { ThumbnailItem } from '@/components/business/ThumbnailStrip.vue'
+import LineChart from '@/components/charts/LineChart.vue'
+import type { LineTrace } from '@/components/charts/LineChart.vue'
 
 // === Type definitions / 类型定义 ===
 
@@ -665,6 +907,18 @@ const UNIT_LABELS: Record<string, string> = {
   'exit_angle_vert_deg':      'α_vert (°)',
   'chigi_rad':                'χ_gi (rad)',
   'chigi_deg':                'χ_gi (°)',
+}
+
+/** Sample orientation hints from pyFAI / pyFAI 样品方向说明 */
+const orientationHints: Record<number, string> = {
+  1: '1 – No changes / 无变化',
+  2: '2 – Mirrored (flip horizontally) / 水平翻转',
+  3: '3 – Rotated 180° / 旋转180°',
+  4: '4 – Rotated 180° + mirrored / 旋转180°+翻转',
+  5: '5 – Mirrored + rotated 90° CCW / 翻转+逆时针90°',
+  6: '6 – Rotated 90° CCW / 逆时针旋转90°',
+  7: '7 – Mirrored + rotated 90° CW / 翻转+顺时针90°',
+  8: '8 – Rotated 90° CW / 顺时针旋转90°',
 }
 
 /** Default range hints per unit key / 各单位默认范围 */
@@ -827,13 +1081,13 @@ const fiberParams = reactive<FiberParams>({
   tiltAngleDeg: 0,
   unitIp: 'qip_nm^-1',
   unitOop: 'qoop_nm^-1',
-  autoRange: false,
+  autoRange: true,
   ipMin: -20,
   ipMax: 20,
   oopMin: -20,
   oopMax: 20,
-  nptIp: 800,
-  nptOop: 800,
+  nptIp: 400,
+  nptOop: 400,
 })
 
 const maskConfig = ref<MaskConfig>({
@@ -853,24 +1107,8 @@ const previewProgress = ref(0)
 const previewProgressMessage = ref<string | null>(null)
 const previewError = ref<string | null>(null)
 
-// ── Batch-to-folder mode / 积分到文件夹 ──
-const isBatchRunning = ref(false)
-const batchTaskId = ref<string | null>(null)
-const batchProgress = ref(0)
-const batchProgressMessage = ref<string | null>(null)
-const batchError = ref<string | null>(null)
-
-// ── Exported file list / 已导出文件列表 ──
-const exportedFiles = ref<string[]>([])
-const exportedDir = ref<string | null>(null)
-const exportedFormat = ref<string>('npy')
-const batchExportFormat = ref<string>('npy')
-const exportedPreviewLimit = ref(20)
-const viewingExported = ref(false)
-
 // ── Result state / 结果状态 ──
 const result = ref<FiberResult | null>(null)
-const logScale = ref(false)
 const batchCachePath = ref<string | null>(null)
 const resultSummaries = ref<FiberResultSummary[]>([])
 const currentResultIndex = ref(0)
@@ -903,9 +1141,19 @@ const useLog = ref(true)
 // ── Collapsible section state / 折叠区域状态 ──
 
 const previewExpanded = ref(true)
-const thumbExpanded = ref(false)
-const displayExpanded = ref(false)
+const thumbExpanded = ref(true)
+// Sidebar section groups — default expanded (per requirement) / 侧栏分组默认展开
+const geomExpanded = ref(true)
+const integExpanded = ref(true)
+// Display settings is always expanded (non-collapsible, per requirement).
+// 显示设置永不折叠。
+const displayExpanded = ref(true)
+// Export result section in sidebar — collapsed until preview runs / 导出区默认收起，预览积分后展开
+const exportExpanded = ref(false)
+// Mask import lives inside the Geometry group — keep collapsed by default / 掩膜默认收起
 const maskExpanded = ref(false)
+// Batch PNG export (in PNG tab) busy state / 批量 PNG 导出忙碌状态
+const pngBatchExporting = ref(false)
 
 // ── Thumbnail state / 缩略图状态 ──
 
@@ -949,7 +1197,79 @@ watch(() => fiberParams.unitOop, (newUnit) => {
 
 // ── Computed ──────────────────────────────────────────────────────────────
 
-const exportFormats: ExportFormat[] = ['tiff', 'edf', 'npy', 'hdf5', 'csv', 'xy']
+const exportFormats: ExportFormat[] = ['tiff', 'edf', 'npy', 'hdf5', 'csv', 'png']
+
+// ── PNG export options / PNG 导出选项 ──
+const pngShowLabels = ref(true)
+const pngFontSize = ref(12)
+const pngDpi = ref(150)
+const pngOptionsExpanded = ref(true)
+// Fill for no-data (NaN) pixels + figure background / 无数据(NaN)像素及图背景填充
+const pngNoDataBg = ref<'white' | 'black' | 'transparent'>('white')
+// Publication-style extras / 出版风格附加项
+const pngShowColorbar = ref(true)       // 是否绘制色条
+const pngShowTitle = ref(false)         // 是否绘制标题（文件名）
+const pngBorderWidth = ref(1.0)         // 边框粗细（磅），0=无边框
+const pngEdgeColor = ref('black')       // 边框/刻度/标签颜色
+// Custom axis titles + font + granular toggles / 自定义轴标题与字体与粒度开关
+const pngXLabel = ref('')               // 自定义 X 轴标题（空=用单位推导）
+const pngYLabel = ref('')               // 自定义 Y 轴标题（空=用单位推导）
+const pngFontFamily = ref('')           // 字体（空=默认）；如 Arial / Times New Roman
+const pngShowAxisTitle = ref(true)      // 是否绘制轴标题文字
+const pngShowTicks = ref(true)          // 是否绘制刻度线与数值
+// Bold (3 independent) + axis flip (default on, per-axis) / 加粗(3独立) + 轴反转(默认开, 各轴独立)
+const pngTitleBold = ref(false)         // 标题加粗
+const pngAxisTitleBold = ref(false)     // x/y 轴标题加粗
+const pngTickBold = ref(false)          // 刻度数字加粗
+const pngFlipX = ref(true)              // X 轴反转（默认开，匹配样品方向约定）
+const pngFlipY = ref(true)              // Y 轴反转（默认开）
+
+// ── Tab navigation / Tab 导航 ──
+const activeTab = ref<'roi' | 'png'>('roi')
+
+// Common publication fonts offered in the dropdown / 下拉常用出版字体
+const FONT_OPTIONS = [
+  '',                   // default / 默认
+  'Arial',
+  'Times New Roman',
+  'Calibri',
+  'Cambria',
+  'DejaVu Sans',
+  'DejaVu Serif',
+  'Courier New',
+  'SimHei',             // 黑体（中文）
+  'Microsoft YaHei',    // 微软雅黑（中文）
+]
+
+// ── Annotated matplotlib preview (WYSIWYG with exported PNG) / 带坐标轴的所见即所得预览 ──
+// A small image rendered server-side via render_png_mpl, shown below the heatmap
+// so the user can see axes/labels/no-data fill exactly as they will export.
+const mplPreviewB64 = ref<string | null>(null)
+const mplPreviewLoading = ref(false)
+const mplPreviewEnabled = ref(true)
+
+// ── ROI 1D Integration state / ROI区域1D积分状态 ──
+const roiMode = ref(false)
+// ROI section collapsed until a 2D result exists and/or 1D runs / ROI 区域默认折叠，有结果/跑完1D后展开
+const roiExpanded = ref(false)
+const roiIpMin = ref(0)
+const roiIpMax = ref(10)
+const roiOopMin = ref(0)
+const roiOopMax = ref(10)
+const roiNpt = ref(100)
+const roiAbsQ = ref(true)  // default: take |q| / 默认q轴取绝对值
+const roiRunning = ref(false)
+const roiError = ref<string | null>(null)
+const roi1dResult = ref<{ curves: Array<{ radial: number[]; intensity: number[]; filename: string }>; unit: string } | null>(null)
+const roiImageWrapperRef = ref<HTMLElement | null>(null)
+const roiCanvasRef = ref<HTMLCanvasElement | null>(null)
+
+// ROI rectangle drawing state / ROI 矩形框选状态
+const roiDrawing = ref(false)
+const roiStartX = ref(0)
+const roiStartY = ref(0)
+const roiEndX = ref(0)
+const roiEndY = ref(0)
 
 /** Parameter validation / 参数校验 */
 const validationError = computed<string | null>(() => {
@@ -1086,7 +1406,72 @@ async function loadFiberResult(index: number): Promise<void> {
     resultClimMax.value = useLog.value ? resultContrast.value.logMax : resultContrast.value.autoMax
   }
   currentResultIndex.value = index
+  // Reveal ROI section now that a 2D result exists / 有2D结果后展开ROI区域使其可设置
+  roiExpanded.value = true
+  // Refresh the annotated (matplotlib) preview for the newly loaded result / 刷新带坐标轴预览
+  void refreshMplPreview()
 
+}
+
+/**
+ * Fetch a matplotlib-rendered PNG (with axes/colorbar/no-data fill) that matches
+ * exactly what Export→PNG will produce. Shown below the heatmap for WYSIWYG.
+ * 获取与「导出 PNG」完全一致的带坐标轴出版质量预览图，显示在热图下方（所见即所得）。
+ */
+async function refreshMplPreview(): Promise<void> {
+  if (!batchCachePath.value || !mplPreviewEnabled.value) {
+    mplPreviewB64.value = null
+    return
+  }
+  mplPreviewLoading.value = true
+  try {
+    const raw = await submitAndWait('viewer_config', {
+      action: 'fiber_result_mpl_preview',
+      batchCachePath: batchCachePath.value,
+      resultIndex: currentResultIndex.value,
+      unitIp: fiberParams.unitIp,
+      unitOop: fiberParams.unitOop,
+      pngOptions: {
+        showLabels: pngShowLabels.value,
+        fontSize: pngFontSize.value,
+        dpi: 100, // preview DPI kept low for speed; export uses pngDpi / 预览用低DPI提速
+        cmap: colormap.value,
+        useLog: useLog.value,
+        noDataBg: pngNoDataBg.value,
+        showColorbar: pngShowColorbar.value,
+        showTitle: pngShowTitle.value,
+        borderWidth: pngBorderWidth.value,
+        edgeColor: pngEdgeColor.value,
+        title: pngShowTitle.value ? (result.value?.filename ?? fileName.value ?? undefined) : undefined,
+        xLabel: pngXLabel.value || null,
+        yLabel: pngYLabel.value || null,
+        fontFamily: pngFontFamily.value || null,
+        showAxisTitle: pngShowAxisTitle.value,
+        showTicks: pngShowTicks.value,
+        titleBold: pngTitleBold.value,
+        axisTitleBold: pngAxisTitleBold.value,
+        tickBold: pngTickBold.value,
+        flipX: pngFlipX.value,
+        flipY: pngFlipY.value,
+        // In auto mode, forward the on-screen contrast (resultContrast) so the
+        // preview matches the heatmap exactly instead of Python recomputing it.
+        // 自动模式下透传屏幕对比度，使预览与热图一致而非后端重算。
+        clim: resultClimMode.value === 'manual'
+          ? [resultClimMin.value, resultClimMax.value]
+          : (resultContrast.value
+              ? [useLog.value ? resultContrast.value.logMin : resultContrast.value.autoMin,
+                 useLog.value ? resultContrast.value.logMax : resultContrast.value.autoMax]
+              : null),
+      },
+    })
+    const data = raw as { mplPreviewB64?: string }
+    mplPreviewB64.value = data.mplPreviewB64 ?? null
+  } catch {
+    // Non-fatal: the heatmap above still works; just hide the annotated preview.
+    mplPreviewB64.value = null
+  } finally {
+    mplPreviewLoading.value = false
+  }
 }
 
 async function loadFiberResultThumbnails(page?: number): Promise<void> {
@@ -1138,14 +1523,20 @@ function buildRenderSettings(): Record<string, unknown> {
 }
 
 function buildGeometryPayload(): Record<string, unknown> {
+  const geo = geometry.value
+  if (geo.poniPath) {
+    return { poniPath: geo.poniPath }
+  }
+  // Manual params: match FiberIntegratorService.build_integrator's manual_params format
+  const pixelUm = geo.pixel1 ?? 172.0
   return {
-    poniPath: geometry.value.poniPath ?? undefined,
-    pixel1: geometry.value.pixel1,
-    pixel2: geometry.value.pixel2,
-    distance: geometry.value.distance,
-    wavelength: geometry.value.wavelength,
-    centerX: geometry.value.centerX,
-    centerY: geometry.value.centerY,
+    manual: {
+      dist: geo.distance ?? 200.0,
+      poni1: (geo.centerX ?? 512.0) * pixelUm * 1e-6,
+      poni2: (geo.centerY ?? 512.0) * pixelUm * 1e-6,
+      wavelength: geo.wavelength ?? 1.5418,
+      pixel_size_um: pixelUm,
+    },
   }
 }
 
@@ -1507,6 +1898,17 @@ async function runPreviewIntegration(): Promise<void> {
         : []
       if (batchCachePath.value && resultSummaries.value.length > 0) {
         await loadFiberResult(0)
+        // Auto-collapse layout: expand export section, collapse sidebar geometry/
+        // integration groups and the main-area image preview + thumbnails
+        // (now redundant with the shared result heatmap). Display settings stays
+        // open (non-collapsible).
+        // 自动折叠：展开导出结果，收起几何/积分分组 + 图象预览 + 缩略图（已被共享结果热图取代）。
+        // 显示设置保持展开（永不折叠）。
+        exportExpanded.value = true
+        geomExpanded.value = false
+        integExpanded.value = false
+        previewExpanded.value = false
+        thumbExpanded.value = false
       }
     }
   } catch (err: unknown) {
@@ -1517,126 +1919,6 @@ async function runPreviewIntegration(): Promise<void> {
   } finally {
     isPreviewRunning.value = false
     previewTaskId.value = null
-  }
-}
-
-// ── Batch to folder: select output, then integrate + export ─────────
-
-async function onBatchToFolder(): Promise<void> {
-  const folderResult = await transport.selectFolder()
-  if (!folderResult) return
-  await runBatchToFolder(folderResult, batchExportFormat.value)
-}
-
-async function runBatchToFolder(outputPath: string, format: string): Promise<void> {
-  isBatchRunning.value = true
-  batchProgress.value = 0
-  batchProgressMessage.value = null
-  batchError.value = null
-
-  const params = buildParams(false)
-  params.outputPath = outputPath
-  params.outputFormat = format
-
-  try {
-    const response = await transport.submitTask('integrate_fiber', params)
-    batchTaskId.value = response.taskId
-
-    const taskResult = await pollTask(response.taskId, {
-      onProgress: (p, msg) => {
-        batchProgress.value = p
-        if (msg) batchProgressMessage.value = msg
-      },
-    })
-
-    if (taskResult) {
-      const generated = (taskResult.generated as string[]) ?? []
-      const errors = (taskResult.errors as string[]) ?? []
-      exportedFiles.value = generated
-      exportedDir.value = outputPath
-      exportedFormat.value = format
-
-      const msg = `${generated.length} 个文件导出到 / files exported to ${outputPath}`
-      toast.push({
-        title: t('integrateFiber.title'),
-        message: msg,
-        tone: 'success',
-      })
-      if (errors.length > 0) {
-        toast.push({
-          title: t('integrateFiber.title'),
-          message: `${errors.length} 个文件出错 / files had errors`,
-          tone: 'error',
-        })
-      }
-    }
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : String(err)
-    batchProgressMessage.value = message
-    batchError.value = message
-    toast.push({ title: t('integrateFiber.title'), message, tone: 'error' })
-  } finally {
-    isBatchRunning.value = false
-    batchTaskId.value = null
-  }
-}
-
-// ── View exported result from disk / 从磁盘加载导出的结果 ────────────
-
-async function viewExportedResult(filePath: string): Promise<void> {
-  if (viewingExported.value) return
-
-  // Memory warning for large loads / 大量加载内存提示
-  if (exportedFiles.value.length > exportedPreviewLimit.value) {
-    const ok = confirm(
-      `当前共 ${exportedFiles.value.length} 个导出文件，加载大量文件到内存可能导致系统卡顿。\n` +
-      `建议只加载需要的文件。确定加载 ${filePath.replace(/^.*[\\/]/, '')} 吗？\n\n` +
-      `${exportedFiles.value.length} files exported. Loading many files may cause memory pressure. ` +
-      `Load "${filePath.replace(/^.*[\\/]/, '')}"?`
-    )
-    if (!ok) return
-  }
-
-  viewingExported.value = true
-  try {
-    // Use viewer_config to load the exported result for preview
-    const raw = await submitAndWait('viewer_config', {
-      action: 'fiber_exported_preview',
-      filePath,
-      settings: {
-        cmap: colormap.value,
-        use_log: useLog.value,
-        clim_mode: 'auto',
-        clim: [null, null],
-      },
-    })
-    const data = raw as {
-      displayB64?: string
-      imageData?: (number | null)[][]
-      axisIp?: number[]
-      axisOop?: number[]
-      contrast?: { autoMin: number; autoMax: number; logMin: number; logMax: number }
-    }
-    if (data.displayB64 || data.imageData) {
-      result.value = {
-        previewB64: data.displayB64 ?? null,
-        intensity: data.imageData ?? [],
-        axisIp: data.axisIp ?? [],
-        axisOop: data.axisOop ?? [],
-        unitIp: fiberParams.unitIp,
-        unitOop: fiberParams.unitOop,
-        filename: filePath.replace(/^.*[\\/]/, ''),
-      }
-      resultContrast.value = data.contrast ?? null
-    }
-  } catch (err) {
-    toast.push({
-      title: t('integrateFiber.title'),
-      message: `加载失败 / Load failed: ${err instanceof Error ? err.message : String(err)}`,
-      tone: 'error',
-    })
-  } finally {
-    viewingExported.value = false
   }
 }
 
@@ -1680,14 +1962,6 @@ async function onCancelPreview(): Promise<void> {
   previewTaskId.value = null
 }
 
-async function onCancelBatch(): Promise<void> {
-  if (batchTaskId.value) {
-    try { await transport.cancelTask(batchTaskId.value) } catch { /* ok */ }
-  }
-  isBatchRunning.value = false
-  batchTaskId.value = null
-}
-
 // ── Export / 导出 ─────────────────────────────────────────────────────────
 
 async function onExport(payload: { format: ExportFormat; path: string; mode: ExportMode }): Promise<void> {
@@ -1704,7 +1978,39 @@ async function onExport(payload: { format: ExportFormat; path: string; mode: Exp
     unitIp: result.value.unitIp,
     unitOop: result.value.unitOop,
     batchCachePath: batchCachePath.value ?? result.value.batchCachePath,
+    resultIndex: currentResultIndex.value,
     sourceFile: fileName.value,
+    pngOptions: {
+      showLabels: pngShowLabels.value,
+      fontSize: pngFontSize.value,
+      dpi: pngDpi.value,
+      cmap: colormap.value,
+      useLog: useLog.value,
+      noDataBg: pngNoDataBg.value,
+      showColorbar: pngShowColorbar.value,
+      showTitle: pngShowTitle.value,
+      borderWidth: pngBorderWidth.value,
+      edgeColor: pngEdgeColor.value,
+      title: pngShowTitle.value ? (result.value?.filename ?? fileName.value ?? undefined) : undefined,
+      xLabel: pngXLabel.value || null,
+      yLabel: pngYLabel.value || null,
+      fontFamily: pngFontFamily.value || null,
+      showAxisTitle: pngShowAxisTitle.value,
+      showTicks: pngShowTicks.value,
+      titleBold: pngTitleBold.value,
+      axisTitleBold: pngAxisTitleBold.value,
+      tickBold: pngTickBold.value,
+      flipX: pngFlipX.value,
+      flipY: pngFlipY.value,
+      // Forward on-screen contrast (auto or manual) so exported PNG matches heatmap.
+      // 透传屏幕对比度（自动或手动），使导出 PNG 与热图一致。
+      clim: resultClimMode.value === 'manual'
+        ? [resultClimMin.value, resultClimMax.value]
+        : (resultContrast.value
+            ? [useLog.value ? resultContrast.value.logMin : resultContrast.value.autoMin,
+               useLog.value ? resultContrast.value.logMax : resultContrast.value.autoMax]
+            : null),
+    },
   }))
 
   try {
@@ -1732,6 +2038,504 @@ async function onExport(payload: { format: ExportFormat; path: string; mode: Exp
   }
 }
 
+/**
+ * One-click batch PNG export: pick a folder, then export ALL cached results as
+ * annotated PNGs using the user's current PNG Options. Reuses the `separate`
+ * path of onExport.
+ * 一键批量导出：选文件夹后，用当前 PNG 选项把全部缓存结果导出为带标注 PNG。
+ */
+async function onBatchExportPng(): Promise<void> {
+  if (!result.value) return
+  const folder = await transport.selectFolder()
+  if (!folder) return
+  pngBatchExporting.value = true
+  try {
+    await onExport({ format: 'png', path: folder, mode: 'separate' })
+  } finally {
+    pngBatchExporting.value = false
+  }
+}
+
+// ── ROI 1D Integration / ROI区域1D积分 ──────────────────────────────────
+
+/** Get the img element's offset relative to the wrapper (accounting for layout).
+ *  获取 img 相对于 wrapper 的偏移（考虑布局）。*/
+function getImgOffsetInWrapper(): { left: number; top: number; displayW: number; displayH: number } | null {
+  const wrapper = roiImageWrapperRef.value
+  if (!wrapper) return null
+  const img = wrapper.querySelector('img') as HTMLImageElement | null
+  if (!img) return null
+  const wr = wrapper.getBoundingClientRect()
+  const ir = img.getBoundingClientRect()
+  return {
+    left: ir.left - wr.left,
+    top: ir.top - wr.top,
+    displayW: ir.width,
+    displayH: ir.height,
+  }
+}
+
+/** Convert canvas-relative pixel to data (qip / qoop). Canvas covers entire wrapper.
+ *  将 canvas 相对像素转换为数据坐标 (qip / qoop)。Canvas 覆盖整个 wrapper。*/
+function canvasToRoiData(cx: number, cy: number): { ip: number; oop: number } | null {
+  if (!result.value) return null
+  const axisIp = result.value.axisIp
+  const axisOop = result.value.axisOop
+  if (axisIp.length < 2 || axisOop.length < 2) return null
+
+  const offset = getImgOffsetInWrapper()
+  if (!offset) return null
+
+  // Relative position inside the displayed image / 相对于显示图像的位置
+  const relX = (cx - offset.left) / offset.displayW
+  // Flip Y: image origin is lower (imshow origin="lower") / 翻转 Y：图像原点在下方
+  const relY = 1 - (cy - offset.top) / offset.displayH
+
+  if (relX < 0 || relX > 1 || relY < 0 || relY > 1) return null
+
+  const idx = relX * (axisIp.length - 1)
+  const idy = relY * (axisOop.length - 1)
+  const iLo = Math.max(0, Math.min(axisIp.length - 2, Math.floor(idx)))
+  const jLo = Math.max(0, Math.min(axisOop.length - 2, Math.floor(idy)))
+  const iFrac = idx - iLo
+  const jFrac = idy - jLo
+  return {
+    ip: axisIp[iLo] + (axisIp[iLo + 1] - axisIp[iLo]) * iFrac,
+    oop: axisOop[jLo] + (axisOop[jLo + 1] - axisOop[jLo]) * jFrac,
+  }
+}
+
+// Use canvas-relative coordinates stored as fractions [0,1] / 使用归一化坐标 [0,1]
+const roiRectNorm = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+// Track whether we are dragging a corner vs drawing new / 跟踪是否在拖拽角 vs 新建
+const roiDragCorner = ref<'tl' | 'tr' | 'bl' | 'br' | 'move' | null>(null)
+const roiDragStartNorm = ref<{ x1: number; y1: number; x2: number; y2: number } | null>(null)
+const roiDragStartPos = ref<{ cx: number; cy: number }>({ cx: 0, cy: 0 })
+const CORNER_HANDLE_R = 8 // px radius for corner hit-test / 角点命中半径
+
+function canvasNorm(cx: number, cy: number): { nx: number; ny: number } | null {
+  const offset = getImgOffsetInWrapper()
+  if (!offset) return null
+  return {
+    nx: (cx - offset.left) / offset.displayW,
+    ny: (cy - offset.top) / offset.displayH,
+  }
+}
+
+function normToCanvas(nx: number, ny: number): { cx: number; cy: number } {
+  const offset = getImgOffsetInWrapper()
+  if (!offset) return { cx: 0, cy: 0 }
+  return { cx: offset.left + nx * offset.displayW, cy: offset.top + ny * offset.displayH }
+}
+
+/** Hit-test which corner (or "move") the canvas point is near. / 命中测试哪个角或移动。*/
+function hitCorner(nx: number, ny: number, rect: { x1: number; y1: number; x2: number; y2: number }): 'tl' | 'tr' | 'bl' | 'br' | 'move' | null {
+  const offset = getImgOffsetInWrapper()
+  if (!offset) return null
+  const rPx = CORNER_HANDLE_R / Math.max(offset.displayW, 1)
+  const rPy = CORNER_HANDLE_R / Math.max(offset.displayH, 1)
+  const corners: Array<{ tag: 'tl' | 'tr' | 'bl' | 'br'; x: number; y: number }> = [
+    { tag: 'tl', x: Math.min(rect.x1, rect.x2), y: Math.min(rect.y1, rect.y2) },
+    { tag: 'tr', x: Math.max(rect.x1, rect.x2), y: Math.min(rect.y1, rect.y2) },
+    { tag: 'bl', x: Math.min(rect.x1, rect.x2), y: Math.max(rect.y1, rect.y2) },
+    { tag: 'br', x: Math.max(rect.x1, rect.x2), y: Math.max(rect.y1, rect.y2) },
+  ]
+  for (const c of corners) {
+    if (Math.abs(nx - c.x) <= rPx && Math.abs(ny - c.y) <= rPy) return c.tag
+  }
+  const minX = Math.min(rect.x1, rect.x2), maxX = Math.max(rect.x1, rect.x2)
+  const minY = Math.min(rect.y1, rect.y2), maxY = Math.max(rect.y1, rect.y2)
+  if (nx >= minX && nx <= maxX && ny >= minY && ny <= maxY) return 'move'
+  return null
+}
+
+/** Synchronise ROI input fields from normalised rect. / 从归一化矩形同步 ROI 输入框。*/
+function syncRoiFieldsFromNorm(): void {
+  if (!roiRectNorm.value || !result.value) return
+  const r = roiRectNorm.value
+  const axisIp = result.value.axisIp
+  const axisOop = result.value.axisOop
+  if (axisIp.length < 2 || axisOop.length < 2) return
+  const ip0 = axisIp[0] + (axisIp[axisIp.length - 1] - axisIp[0]) * Math.min(r.x1, r.x2)
+  const ip1 = axisIp[0] + (axisIp[axisIp.length - 1] - axisIp[0]) * Math.max(r.x1, r.x2)
+  const oop0 = axisOop[0] + (axisOop[axisOop.length - 1] - axisOop[0]) * Math.min(r.y1, r.y2)
+  const oop1 = axisOop[0] + (axisOop[axisOop.length - 1] - axisOop[0]) * Math.max(r.y1, r.y2)
+  roiIpMin.value = ip0
+  roiIpMax.value = ip1
+  roiOopMin.value = oop0
+  roiOopMax.value = oop1
+}
+
+function onRoiMouseDown(e: MouseEvent): void {
+  if (!roiMode.value) return
+  const canvas = roiCanvasRef.value
+  if (!canvas) return
+  const rect = canvas.getBoundingClientRect()
+  const cx = e.clientX - rect.left
+  const cy = e.clientY - rect.top
+
+  // If there's an existing rect, check if we hit a corner / 如果有已有矩形，检测是否点击了角点
+  if (roiRectNorm.value && !e.shiftKey) {
+    const norm = canvasNorm(cx, cy)
+    if (norm) {
+      const corner = hitCorner(norm.nx, norm.ny, roiRectNorm.value)
+      if (corner) {
+        roiDragCorner.value = corner
+        roiDragStartNorm.value = { ...roiRectNorm.value }
+        roiDragStartPos.value = { cx, cy }
+        return
+      }
+    }
+  }
+
+  // Start new rectangle / 开始新矩形
+  roiDrawing.value = true
+  roiDragCorner.value = null
+  roiDragStartPos.value = { cx, cy }
+  roiStartX.value = cx
+  roiStartY.value = cy
+  roiEndX.value = cx
+  roiEndY.value = cy
+  roiRectNorm.value = null
+  drawRoiRect()
+}
+
+function onRoiMouseMove(e: MouseEvent): void {
+  const canvas = roiCanvasRef.value
+  if (!canvas) return
+  const rect = canvas.getBoundingClientRect()
+  const cx = e.clientX - rect.left
+  const cy = e.clientY - rect.top
+
+  if (roiDragCorner.value && roiDragStartNorm.value) {
+    // Dragging a corner / 拖拽角点
+    const norm = canvasNorm(cx, cy)
+    if (!norm) return
+    const orig = roiDragStartNorm.value
+    const n = { ...orig }
+    const tag = roiDragCorner.value
+    if (tag === 'tl') { n.x1 = norm.nx; n.y1 = norm.ny }
+    else if (tag === 'tr') { n.x2 = norm.nx; n.y1 = norm.ny }
+    else if (tag === 'bl') { n.x1 = norm.nx; n.y2 = norm.ny }
+    else if (tag === 'br') { n.x2 = norm.nx; n.y2 = norm.ny }
+    else if (tag === 'move') {
+      const dx = norm.nx - canvasNorm(roiDragStartPos.value.cx, roiDragStartPos.value.cy)!.nx
+      const dy = norm.ny - canvasNorm(roiDragStartPos.value.cx, roiDragStartPos.value.cy)!.ny
+      n.x1 = orig.x1 + dx; n.x2 = orig.x2 + dx
+      n.y1 = orig.y1 + dy; n.y2 = orig.y2 + dy
+      roiDragStartPos.value = { cx, cy }
+    }
+    roiRectNorm.value = n
+    syncRoiFieldsFromNorm()
+    drawRoiRect()
+    return
+  }
+
+  if (!roiDrawing.value) {
+    // Hover: change cursor based on corner proximity / 悬停：根据角点改变光标
+    if (roiRectNorm.value && !e.shiftKey) {
+      const norm = canvasNorm(cx, cy)
+      if (norm && hitCorner(norm.nx, norm.ny, roiRectNorm.value)) {
+        canvas.style.cursor = 'grab'
+      } else {
+        canvas.style.cursor = 'crosshair'
+      }
+    }
+    return
+  }
+  roiEndX.value = cx
+  roiEndY.value = cy
+  drawRoiRect()
+}
+
+function onRoiMouseUp(e: MouseEvent): void {
+  if (roiDragCorner.value) {
+    // Finish corner drag / 完成角点拖拽
+    roiDragCorner.value = null
+    roiDragStartNorm.value = null
+    if (roiRectNorm.value) syncRoiFieldsFromNorm()
+    drawRoiRect()
+    return
+  }
+  if (!roiDrawing.value) return
+  roiDrawing.value = false
+
+  const canvas = roiCanvasRef.value
+  if (!canvas) return
+  const rect = canvas.getBoundingClientRect()
+  const cx1 = roiStartX.value, cy1 = roiStartY.value
+  const cx2 = roiEndX.value, cy2 = roiEndY.value
+
+  const n1 = canvasNorm(cx1, cy1)
+  const n2 = canvasNorm(cx2, cy2)
+  if (!n1 || !n2) return
+
+  // Clamp to [0,1] / 钳制到 [0,1]
+  n1.nx = Math.max(0, Math.min(1, n1.nx)); n1.ny = Math.max(0, Math.min(1, n1.ny))
+  n2.nx = Math.max(0, Math.min(1, n2.nx)); n2.ny = Math.max(0, Math.min(1, n2.ny))
+
+  const minW = 5 / Math.max((getImgOffsetInWrapper()?.displayW ?? 500), 1)
+  const minH = 5 / Math.max((getImgOffsetInWrapper()?.displayH ?? 500), 1)
+  if (Math.abs(n2.nx - n1.nx) < minW || Math.abs(n2.ny - n1.ny) < minH) {
+    // Too small → discard / 矩形太小，放弃
+    clearRoiRect()
+    return
+  }
+
+  roiRectNorm.value = { x1: n1.nx, y1: n1.ny, x2: n2.nx, y2: n2.ny }
+  syncRoiFieldsFromNorm()
+  drawRoiRect()
+}
+
+function drawRoiRect(): void {
+  const canvas = roiCanvasRef.value
+  const wrapper = roiImageWrapperRef.value
+  if (!canvas || !wrapper) return
+
+  canvas.width = wrapper.offsetWidth
+  canvas.height = wrapper.offsetHeight
+  canvas.style.width = wrapper.offsetWidth + 'px'
+  canvas.style.height = wrapper.offsetHeight + 'px'
+
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
+
+  let nx1: number, ny1: number, nx2: number, ny2: number
+  if (roiRectNorm.value) {
+    const r = roiRectNorm.value
+    nx1 = r.x1; ny1 = r.y1; nx2 = r.x2; ny2 = r.y2
+  } else if (roiDrawing.value) {
+    const n1 = canvasNorm(roiStartX.value, roiStartY.value)
+    const n2 = canvasNorm(roiEndX.value, roiEndY.value)
+    if (!n1 || !n2) return
+    nx1 = n1.nx; ny1 = n1.ny; nx2 = n2.nx; ny2 = n2.ny
+  } else {
+    return
+  }
+
+  const p1 = normToCanvas(nx1, ny1)
+  const p2 = normToCanvas(nx2, ny2)
+  const x = Math.min(p1.cx, p2.cx), y = Math.min(p1.cy, p2.cy)
+  const w = Math.abs(p2.cx - p1.cx), h = Math.abs(p2.cy - p1.cy)
+
+  // Fill / 填充
+  ctx.fillStyle = 'rgba(255, 200, 0, 0.15)'
+  ctx.fillRect(x, y, w, h)
+  // Stroke / 描边
+  ctx.strokeStyle = 'rgba(255, 200, 0, 0.9)'
+  ctx.lineWidth = 2
+  ctx.setLineDash([6, 3])
+  ctx.strokeRect(x, y, w, h)
+  ctx.setLineDash([]) // reset
+
+  // Corner handles (only when rect is committed) / 角点手柄（仅已确认的矩形）
+  if (roiRectNorm.value && !roiDrawing.value) {
+    const corners = [
+      { cx: p1.cx, cy: p1.cy }, { cx: p2.cx, cy: p2.cy },
+      { cx: p1.cx, cy: p2.cy }, { cx: p2.cx, cy: p1.cy },
+    ]
+    for (const c of corners) {
+      ctx.fillStyle = 'rgba(255, 200, 0, 0.9)'
+      ctx.beginPath()
+      ctx.arc(c.cx, c.cy, CORNER_HANDLE_R, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.strokeStyle = '#000'
+      ctx.lineWidth = 1
+      ctx.stroke()
+    }
+  }
+}
+
+function clearRoiRect(): void {
+  roiRectNorm.value = null
+  const canvas = roiCanvasRef.value
+  if (!canvas) return
+  const ctx = canvas.getContext('2d')
+  if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height)
+}
+
+/** Initialize ROI ranges from current result axis data. */
+function initRoiRanges(): void {
+  if (!result.value) return
+  const ip = result.value.axisIp
+  const oop = result.value.axisOop
+  if (ip.length >= 2) {
+    roiIpMin.value = ip[0]
+    roiIpMax.value = ip[ip.length - 1]
+  }
+  if (oop.length >= 2) {
+    roiOopMin.value = oop[0]
+    roiOopMax.value = oop[oop.length - 1]
+  }
+}
+
+const canRunRoi = computed(() => {
+  return !!(result.value && roiIpMin.value < roiIpMax.value && roiOopMin.value < roiOopMax.value && roiNpt.value >= 50)
+})
+
+const roi1dTraces = computed<LineTrace[]>(() => {
+  if (!roi1dResult.value) return []
+  return roi1dResult.value.curves.map((c, i) => ({
+    x: c.radial,
+    y: c.intensity,
+    name: c.filename || `Curve ${i + 1}`,
+    mode: 'lines' as const,
+  }))
+})
+
+async function runRoiIntegration(): Promise<void> {
+  if (!canRunRoi.value || !result.value) return
+
+  // Client-side validation / 客户端验证
+  if (!isFinite(roiIpMin.value) || !isFinite(roiIpMax.value) ||
+      !isFinite(roiOopMin.value) || !isFinite(roiOopMax.value)) {
+    roiError.value = 'Invalid ROI range values (NaN/Infinity). Please re-select.'
+    return
+  }
+  if (roiIpMin.value >= roiIpMax.value) {
+    roiError.value = `Invalid IP range: [${roiIpMin.value}, ${roiIpMax.value}]`
+    return
+  }
+  if (roiOopMin.value >= roiOopMax.value) {
+    roiError.value = `Invalid OOP range: [${roiOopMin.value}, ${roiOopMax.value}]`
+    return
+  }
+
+  roiRunning.value = true
+  roiError.value = null
+  roi1dResult.value = null
+
+  try {
+    const raw = await submitAndWait('viewer_config', {
+      action: 'fiber_1d_roi',
+      filePath: activeFilePath.value ?? files.value[0] ?? '',
+      files: [...files.value],
+      geometry: buildGeometryPayload(),
+      fiberParams: {
+        rot1Deg: fiberParams.rot1Deg,
+        rot2Deg: fiberParams.rot2Deg,
+        rot3Deg: fiberParams.rot3Deg,
+        sampleOrientation: fiberParams.sampleOrientation,
+        incidentAngleDeg: fiberParams.incidentAngleDeg,
+        tiltAngleDeg: fiberParams.tiltAngleDeg,
+        unitIp: fiberParams.unitIp,
+        unitOop: fiberParams.unitOop,
+      },
+      ipRange: [roiIpMin.value, roiIpMax.value],
+      oopRange: [roiOopMin.value, roiOopMax.value],
+      npt1d: roiNpt.value,
+      positiveQOnly: roiAbsQ.value,
+      correctSolidAngle: correctSolidAngle.value,
+      maskConfig: {
+        valueRangeMin: maskConfig.value.valueRangeMin,
+        valueRangeMax: maskConfig.value.valueRangeMax,
+        deadPixelThreshold: maskConfig.value.deadPixelThreshold,
+        customMaskPath: maskConfig.value.customMaskPath,
+      },
+    })
+
+    const data = raw as {
+      results: Array<{ filename: string; radial: number[]; intensity: number[]; error?: string }>
+      unit: string
+    }
+    const ok = data.results?.filter(r => !r.error && r.radial?.length > 0) ?? []
+    if (ok.length === 0) {
+      roiError.value = 'No valid 1D results produced.'
+      return
+    }
+    roi1dResult.value = {
+      curves: ok.map(r => ({ radial: r.radial, intensity: r.intensity, filename: r.filename })),
+      unit: data.unit,
+    }
+    // Auto-expand the ROI section to reveal the 1D curve / 自动展开显示1D曲线
+    roiExpanded.value = true
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err)
+    roiError.value = msg
+    toast.push({ title: '1D ROI Integration', message: msg, tone: 'error' })
+  } finally {
+    roiRunning.value = false
+  }
+}
+
+async function exportRoi1d(): Promise<void> {
+  if (!roi1dResult.value || roi1dResult.value.curves.length === 0) return
+  const format: ExportFormat = 'csv'
+  let outputPath = ''
+
+  if (transport.isDesktop()) {
+    outputPath = await transport.selectSavePath({
+      filters: [{ name: 'CSV', extensions: ['csv'] }],
+    }) ?? ''
+    if (!outputPath) return
+    if (!outputPath.toLowerCase().endsWith('.csv')) outputPath += '.csv'
+  }
+
+  const params = {
+    format,
+    outputPath,
+    dataType: '1d',
+    mode: 'single' as ExportMode,
+    results: roi1dResult.value.curves.map(c => ({
+      radial: c.radial,
+      intensity: c.intensity,
+      label: c.filename,
+      unit: roi1dResult.value?.unit ?? 'q_nm^-1',
+    })),
+  }
+
+  try {
+    const response = await transport.submitTask('export_integration', params)
+    transport.onTaskResult(response.taskId, (r) => {
+      const d = r.data as { success?: boolean; error?: string; path?: string }
+      if (d?.success) {
+        toast.push({
+          title: '1D ROI Export',
+          message: `CSV → ${d.path ?? outputPath}`,
+          tone: 'success',
+        })
+      } else {
+        toast.push({ title: '1D ROI Export', message: d?.error ?? 'Export failed', tone: 'error' })
+      }
+    })
+    transport.onTaskError(response.taskId, (e) => {
+      toast.push({ title: '1D ROI Export', message: e.error ?? 'Export failed', tone: 'error' })
+    })
+  } catch (err) {
+    toast.push({ title: '1D ROI Export', message: String(err), tone: 'error' })
+  }
+}
+
+// Initialize ROI ranges when result loads / 结果加载时初始化ROI范围
+watch(() => result.value, (newVal) => {
+  if (newVal) {
+    initRoiRanges()
+    // Also reset any existing ROI rect / 重置已有 ROI 矩形
+    clearRoiRect()
+  }
+})
+
+// Toggle ROI mode and update canvas size / 切换ROI模式并更新画布尺寸
+watch(roiMode, (enabled) => {
+  if (!enabled) {
+    clearRoiRect()
+  } else {
+    if (result.value) initRoiRanges()
+    // Size canvas to match image / 调整画布大小匹配图像
+    nextTick(() => {
+      const canvas = roiCanvasRef.value
+      const wrapper = roiImageWrapperRef.value
+      if (canvas && wrapper) {
+        canvas.width = wrapper.offsetWidth
+        canvas.height = wrapper.offsetHeight
+        canvas.style.width = wrapper.offsetWidth + 'px'
+        canvas.style.height = wrapper.offsetHeight + 'px'
+      }
+    })
+  }
+})
+
 // === Watchers / 监听器 ===
 
 /** Re-render preview when display settings change / 显示设置变更时重新渲染预览 */
@@ -1753,6 +2557,18 @@ watch([resultClimMode, resultClimMin, resultClimMax], () => {
     void loadFiberResult(currentResultIndex.value)
   }
 })
+
+// Refresh the annotated (matplotlib) preview when PNG options change.
+// Debounced because matplotlib rendering is slower than the canvas heatmap.
+// 当 PNG 选项变化时刷新带坐标轴预览；matplotlib 渲染较慢，故做防抖。
+let mplRefreshTimer: ReturnType<typeof setTimeout> | null = null
+watch(
+  [pngShowLabels, pngNoDataBg, pngFontSize, pngShowColorbar, pngShowTitle, pngBorderWidth, pngEdgeColor, pngXLabel, pngYLabel, pngFontFamily, pngShowAxisTitle, pngShowTicks, pngTitleBold, pngAxisTitleBold, pngTickBold, pngFlipX, pngFlipY, colormap, useLog, resultClimMode, resultClimMin, resultClimMax],
+  () => {
+    if (mplRefreshTimer) clearTimeout(mplRefreshTimer)
+    mplRefreshTimer = setTimeout(() => { void refreshMplPreview() }, 300)
+  },
+)
 
 watch(
   () => [
@@ -1966,8 +2782,23 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
+/* Non-collapsible static section (e.g. Display settings) / 不可折叠静态区（如显示设置） */
+.fib-section-static {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.fib-section-toggle-static {
+  cursor: default;
+  background: var(--bg-surface);
+}
+
+.fib-section-toggle-static:hover {
+  background: var(--bg-surface);
+}
+
 .fib-section-toggle {
-  display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
@@ -1994,6 +2825,13 @@ onUnmounted(() => {
 .fib-collapsible-body {
   padding: 14px;
   border-top: 1px solid var(--border);
+}
+
+/* Grouped sections inside a collapsible body need vertical spacing / 分组内各块需纵向间距 */
+.fib-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 /* ── Image preview area / 图像预览区域 ── */
@@ -2210,6 +3048,63 @@ onUnmounted(() => {
   gap: 12px;
 }
 
+/* ── Tabs / Tab 切换栏 ── */
+
+.fib-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-top: 12px;
+}
+
+.fib-tab {
+  padding: 8px 20px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  margin-bottom: -1px;
+}
+
+.fib-tab:hover {
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+}
+
+.fib-tab-active {
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border-color: var(--border);
+  border-bottom-color: var(--bg-surface);
+  font-weight: 600;
+}
+
+.fib-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 16px;
+}
+
+/* ROI parameter panel (in 1D tab) / 1D tab 内 ROI 参数面板 */
+.fib-roi-panel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.fib-roi-panel h3 {
+  margin: 0 0 10px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
 .fib-result-meta {
   margin: 4px 0 0;
   color: var(--text-secondary);
@@ -2243,6 +3138,190 @@ onUnmounted(() => {
 
 .fib-contrast-field {
   min-width: 140px;
+}
+
+/* ── Export + PNG options side-by-side / 导出与 PNG 选项左右分栏 ── */
+
+.fib-export-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+}
+
+.fib-export-left,
+.fib-export-right {
+  min-width: 0;
+}
+
+.fib-export-right > .fib-collapsible {
+  margin-top: 0;
+}
+
+/* Color picker + preset row / 颜色选择器与预设行 */
+.fib-color-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fib-color-input {
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+@media (max-width: 900px) {
+  .fib-export-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── Annotated matplotlib preview / 带坐标轴预览 ── */
+
+.fib-mpl-preview {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fib-mpl-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.fib-mpl-preview-header h3 {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.fib-mpl-preview-body {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 120px;
+  background: var(--bg-surface-alt);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+/* Checkerboard so transparent no-data areas are visible / 透明背景棋盘格便于观察 */
+.fib-mpl-preview-body:has(.fib-mpl-img) {
+  background-image:
+    linear-gradient(45deg, var(--border) 25%, transparent 25%),
+    linear-gradient(-45deg, var(--border) 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, var(--border) 75%),
+    linear-gradient(-45deg, transparent 75%, var(--border) 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+}
+
+.fib-mpl-img {
+  max-width: 100%;
+  height: auto;
+  display: block;
+}
+
+.fib-mpl-loading,
+.fib-mpl-empty {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+  padding: 24px;
+}
+
+/* Multi-result hint banner / 多图提示横幅 */
+.fib-mpl-hint {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--text-primary);
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+}
+
+/* ── ROI 1D Integration / ROI区域1D积分 ── */
+
+.fib-roi-image-wrapper {
+  position: relative;
+  width: 100%;
+}
+
+.fib-roi-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 10;
+  cursor: crosshair;
+  pointer-events: auto;
+}
+
+.fib-roi-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.fib-roi-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.fib-roi-header h3 {
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.fib-roi-grid {
+  /* Two fields per row, wrapping to multiple lines / 每行两项，自动换行 */
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.fib-roi-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.fib-roi-chart {
+  margin-top: 16px;
+  min-height: 300px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+/* 1D ROI result in the main area (under the annotated preview) / 主区1D结果（带坐标轴预览下方） */
+.fib-roi-chart-main {
+  margin-top: 16px;
+  min-height: 320px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 14px;
+}
+
+.fib-roi-chart-main h3 {
+  margin: 0 0 10px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
 }
 
 /* ── Line profiles ── */
@@ -2294,6 +3373,35 @@ onUnmounted(() => {
 .fib-batch-btn:not(:disabled):hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* Batch PNG export button row in PNG tab / PNG tab 批量导出按钮行 */
+.fib-png-batch-row {
+  display: flex;
+  gap: 12px;
+}
+
+.fib-batch-png-btn {
+  white-space: nowrap;
+}
+
+/* ── Disabled (greyed-out) section state / 灰置状态 ── */
+
+.fib-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.fib-disabled > .fib-section-toggle {
+  pointer-events: auto; /* keep toggle hover but click blocked via @click guard */
+  cursor: not-allowed;
+}
+
+.fib-roi-hint {
+  margin: 0 0 8px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  color: var(--text-muted);
 }
 
 /* ── Batch exported results / 批量导出结果 ── */

@@ -43,7 +43,12 @@ export const DARK_THEME: Partial<PlotLayout> = {
     font: { color: THEME.textPrimary, size: 11 },
     bgcolor: 'rgba(0,0,0,0)',
   },
-  hovermode: 'closest',
+  hovermode: 'x unified',
+  hoverlabel: {
+    bgcolor: '#1e293b',
+    bordercolor: '#475569',
+    font: { color: '#f1f5f9', size: 12 },
+  },
   colorway: [
     '#3b82f6', '#10b981', '#f59e0b', '#ef4444',
     '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16',
@@ -167,6 +172,7 @@ export function mergeDarkLayout(userLayout: Partial<PlotLayout> = {}): Partial<P
     xaxis: { ...DARK_THEME.xaxis, ...userLayout.xaxis },
     yaxis: { ...DARK_THEME.yaxis, ...userLayout.yaxis },
     legend: { ...DARK_THEME.legend, ...userLayout.legend },
+    hoverlabel: { ...DARK_THEME.hoverlabel, ...userLayout.hoverlabel },
     margin: { ...DARK_THEME.margin, ...userLayout.margin },
     font: { ...DARK_THEME.font, ...userLayout.font },
   }

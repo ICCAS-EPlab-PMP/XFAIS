@@ -42,8 +42,18 @@
       :mask-stats="maskStats"
       :image-loaded="imageLoaded"
       :contrast="contrastValue"
+      :colormap="colormap"
+      :use-log="useLog"
+      :clim-mode="climMode"
+      :clim-min="climMin"
+      :clim-max="climMax"
       @apply-threshold="handleApplyThreshold"
       @update:contrast="contrastValue = $event"
+      @update:colormap="onDisplayChange('colormap', $event)"
+      @update:use-log="onDisplayChange('useLog', $event)"
+      @update:clim-mode="onDisplayChange('climMode', $event)"
+      @update:clim-min="onDisplayChange('climMin', $event)"
+      @update:clim-max="onDisplayChange('climMax', $event)"
     />
 
     <!-- Export dialog -->
@@ -104,6 +114,57 @@ const canvasRef = ref<InstanceType<typeof MaskCanvas> | null>(null)
 const maskVersion = ref(0)
 const contrastValue = ref(1)
 
+// Display settings (colormap / log / clim) — mirror the viewer. The backend
+// `mask_maker` route reuses viewer_config's load/load_preview action, which
+// honors render_settings via _build_render_settings, so no backend change is
+// needed: changing these triggers a re-render with the new settings.
+// 显示设置（色图/对数/clim）—— 镜像图像查看器。mask_maker 路由复用 viewer_config
+// 的 load/load_preview action，后端通过 _build_render_settings 读取这些设置。
+const colormap = ref('smooth_WAXS_foxtrot')
+const useLog = ref(false)
+const climMode = ref<'auto' | 'manual'>('auto')
+const climMin = ref(0)
+const climMax = ref(1)
+const autoContrast = ref<{ autoMin: number; autoMax: number; logMin: number; logMax: number } | null>(null)
+const climInitialized = ref(false)
+
+/** Update a display field, then re-render the preview if an image is loaded. */
+type DisplayField = 'colormap' | 'useLog' | 'climMode' | 'climMin' | 'climMax'
+function onDisplayChange(field: DisplayField, value: number | boolean | string): void {
+  switch (field) {
+    case 'colormap': colormap.value = String(value); break
+    case 'useLog': useLog.value = Boolean(value); break
+    case 'climMode': climMode.value = (value === 'manual' ? 'manual' : 'auto'); break
+    case 'climMin': climMin.value = Number(value); break
+    case 'climMax': climMax.value = Number(value); break
+  }
+  // Auto-mode syncs min/max from the backend's auto-contrast; in manual mode
+  // we send the user's values verbatim.
+  if (climMode.value === 'auto' && autoContrast.value) {
+    climMin.value = useLog.value ? autoContrast.value.logMin : autoContrast.value.autoMin
+    climMax.value = useLog.value ? autoContrast.value.logMax : autoContrast.value.autoMax
+  }
+  if (imageFilePath.value) {
+    void loadImage(imageFilePath.value)
+  }
+}
+
+function buildRenderSettings(): Record<string, unknown> {
+  const resolvedClim = climMode.value === 'manual'
+    ? [climMin.value, climMax.value]
+    : [
+        useLog.value ? autoContrast.value?.logMin ?? 1e-6 : autoContrast.value?.autoMin ?? 0,
+        useLog.value ? autoContrast.value?.logMax ?? 1 : autoContrast.value?.autoMax ?? 1,
+      ]
+  return {
+    colormap: colormap.value,
+    use_log: useLog.value,
+    clim_mode: climMode.value,
+    clim: resolvedClim,
+    preview_scale: 1.0,
+  }
+}
+
 // Computed
 const imageInfo = computed<MaskImageInfo | null>(() => {
   if (!imageLoaded.value) return null
@@ -137,6 +198,12 @@ async function openImage(): Promise<void> {
     const filePath = Array.isArray(result) ? result[0] : result
     if (!filePath) return
 
+    // Reset display caches for a fresh file so the new image's auto-contrast
+    // seeds the manual clim values rather than reusing the previous file's.
+    // 为新文件重置显示缓存，使新图像的自动对比度作为手动 clim 初值。
+    climInitialized.value = false
+    autoContrast.value = null
+
     await loadImage(filePath)
   } catch (err) {
     toast.push({
@@ -148,16 +215,24 @@ async function openImage(): Promise<void> {
 }
 
 async function loadImage(filePath: string): Promise<void> {
+  // When re-rendering the SAME file (display-settings change), preserve the
+  // existing mask store instead of recreating it — otherwise adjusting the
+  // colormap would silently wipe the user's mask.
+  // 重新渲染同一文件（显示设置变化）时保留现有 mask store，否则调节色图会清空掩膜。
+  const isRerender = imageLoaded.value && imageFilePath.value === filePath
+
   const { taskId } = await transport.submitTask('mask_maker', {
     action: 'load_preview',
     filePath,
     frame: 0,
+    settings: buildRenderSettings(),
   })
 
   // Receive PNG image as binary data (desktop binary WebSocket frame).
   // 通过二进制数据通道接收 PNG 图像（桌面端二进制 WebSocket 帧）。
   transport.onTaskBinaryData(taskId, (payload) => {
     if (payload.data) {
+      if (imageSrc.value?.startsWith('blob:')) URL.revokeObjectURL(imageSrc.value)
       const blob = new Blob([payload.data], { type: payload.mime || 'image/png' })
       const url = URL.createObjectURL(blob)
       imageSrc.value = url
@@ -167,7 +242,9 @@ async function loadImage(filePath: string): Promise<void> {
       imageWidth.value = w
       imageHeight.value = h
 
-      if (w > 0 && h > 0) {
+      // Only (re)create the mask store on first load — preserve it on rerenders.
+      // 仅在首次加载时创建 mask store，重渲染时保留。
+      if (!isRerender && w > 0 && h > 0) {
         store.value = new MaskStore(h, w)
       }
 
@@ -214,9 +291,25 @@ async function loadImage(filePath: string): Promise<void> {
       }
     }
 
-    // Initialize mask store if not yet done by binary handler
-    // 如果二进制处理器尚未初始化 MaskStore，则在此初始化
-    if (!store.value && w > 0 && h > 0) {
+    // Capture auto-contrast so the Display Settings panel can seed manual
+    // values and keep auto-mode in sync. Mirrors ViewerView's applyFrameResult.
+    // 捕获自动对比度，显示设置面板据此初始化手动值并保持 auto 模式同步。
+    const contrast = data.contrast as { autoMin: number; autoMax: number; logMin: number; logMax: number } | undefined
+    if (contrast) {
+      autoContrast.value = contrast
+      if (climMode.value === 'auto') {
+        climMin.value = useLog.value ? contrast.logMin : contrast.autoMin
+        climMax.value = useLog.value ? contrast.logMax : contrast.autoMax
+      } else if (!climInitialized.value) {
+        climMin.value = useLog.value ? contrast.logMin : contrast.autoMin
+        climMax.value = useLog.value ? contrast.logMax : contrast.autoMax
+        climInitialized.value = true
+      }
+    }
+
+    // Initialize mask store if not yet done by binary handler (first load only).
+    // 仅首次加载时初始化 MaskStore。
+    if (!isRerender && !store.value && w > 0 && h > 0) {
       store.value = new MaskStore(h, w)
     }
 
