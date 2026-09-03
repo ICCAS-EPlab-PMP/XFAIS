@@ -419,7 +419,7 @@
 
 <script setup lang="ts">
 /**
- * PoniImporterView.vue — PONI文件转化页面 (v0.2.3)
+ * PoniImporterView.vue — PONI文件转化页面 (v0.2.4)
  * PONI file conversion page: import a reference image to auto-match the detector,
  * preview the beam center on the image with adjustable contrast, then export.
  */
@@ -1004,11 +1004,12 @@ function updateClimMax(value: number): void {
 let rerenderTimer: ReturnType<typeof setTimeout> | null = null
 
 function scheduleRerender(): void {
-  if (!currentImagePath.value || !previewB64.value) return
+  const path = currentImagePath.value
+  if (!path || !previewB64.value) return
   if (rerenderTimer) clearTimeout(rerenderTimer)
   rerenderTimer = setTimeout(() => {
     rerenderTimer = null
-    void loadPreview(currentImagePath.value, true)
+    void loadPreview(path, true)
   }, 120)
 }
 

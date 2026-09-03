@@ -66,6 +66,7 @@ API_ROUTES: list[str] = [
     "/api/poni_importer",
     "/api/image_math",
     "/api/image_stitch",
+    "/api/orientation_analysis",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -140,6 +141,7 @@ BgSubtractor = _LazyImportProxy("python.services.bg_subtractor")
 PoniImporter = _LazyImportProxy("python.services.poni_importer")
 ImageMath = _LazyImportProxy("python.services.image_math")
 ImageStitch = _LazyImportProxy("python.services.image_stitch")
+PolymerOrientation = _LazyImportProxy("python.services.orientation_analysis")
 
 
 # ---------------------------------------------------------------------------
@@ -710,11 +712,19 @@ def _build_render_settings(
 
     preview_scale = float(raw_settings.get("preview_scale", 1.0))
 
+    # Log floor: clamp sub-threshold finite values in log mode / 对数阈值
+    log_floor = raw_settings.get("log_floor", raw_settings.get("logFloor"))
+    if log_floor is not None:
+        try:
+            log_floor = float(log_floor)
+        except (TypeError, ValueError):
+            log_floor = None
+
     if clim_mode == "manual" and isinstance(raw_clim, (list, tuple)) and len(raw_clim) >= 2:
         try:
             vmin = float(raw_clim[0])
             vmax = float(raw_clim[1])
-            return {"cmap": cmap, "use_log": use_log, "clim": (vmin, vmax), "preview_scale": preview_scale}
+            return {"cmap": cmap, "use_log": use_log, "clim": (vmin, vmax), "preview_scale": preview_scale, "log_floor": log_floor}
         except (TypeError, ValueError):
             pass
 
@@ -723,7 +733,7 @@ def _build_render_settings(
         if use_log else
         (contrast.get("autoMin", 0.0), contrast.get("autoMax", 1.0))
     )
-    return {"cmap": cmap, "use_log": use_log, "clim": auto_clim, "preview_scale": preview_scale}
+    return {"cmap": cmap, "use_log": use_log, "clim": auto_clim, "preview_scale": preview_scale, "log_floor": log_floor}
 
 
 def _maybe_downsample(data: Any, render_settings: dict[str, Any]) -> Any:
@@ -958,6 +968,13 @@ async def handle_export_integration(
             png_tick_bold = bool(png_opts.get("tickBold", False))
             png_flip_x = bool(png_opts.get("flipX", True))
             png_flip_y = bool(png_opts.get("flipY", True))
+            # Log floor + tick step (problem 2 & 5) / 对数阈值与刻度间隔
+            _png_lf = png_opts.get("logFloor")
+            png_log_floor = float(_png_lf) if _png_lf is not None else None
+            _png_xts = png_opts.get("xTickStep")
+            png_x_tick_step = float(_png_xts) if _png_xts is not None else None
+            _png_yts = png_opts.get("yTickStep")
+            png_y_tick_step = float(_png_yts) if _png_yts is not None else None
 
             def _export_png(intensity, axis_ip, axis_oop):
                 """Render a 2D GIWAXS result as annotated PNG."""
@@ -990,6 +1007,9 @@ async def handle_export_integration(
                     tick_bold=png_tick_bold,
                     flip_x=png_flip_x,
                     flip_y=png_flip_y,
+                    log_floor=png_log_floor,
+                    x_tick_step=png_x_tick_step,
+                    y_tick_step=png_y_tick_step,
                 )
 
             if batch_cache_path:
@@ -1004,43 +1024,74 @@ async def handle_export_integration(
                 if mode == "separate":
                     out_dir = Path(output_path)
                     out_dir.mkdir(parents=True, exist_ok=True)
-                    written = []
-                    for idx, item in enumerate(batch_results):
-                        stem = str(item.get("stem") or item.get("filename") or f"fiber_{idx:04d}")
-                        safe_stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in stem)
-                        intensity = item["intensity"]
-                        axis_ip = item["axis_ip"]
-                        axis_oop = item["axis_oop"]
-                        if fmt in ("hdf5", "h5"):
-                            p = out_dir / f"{safe_stem}.h5"
-                            p.write_bytes(ExportHelper.to_hdf5_2d_bytes(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
-                        elif fmt in ("tiff", "tif"):
-                            p = out_dir / f"{safe_stem}.tiff"
-                            p.write_bytes(ExportHelper.to_image_bytes(intensity, fmt="tiff"))
-                        elif fmt == "edf":
-                            p = out_dir / f"{safe_stem}.edf"
-                            p.write_bytes(ExportHelper.to_image_bytes(intensity, fmt="edf"))
-                        elif fmt == "npy":
-                            p = out_dir / f"{safe_stem}.npy"
-                            p.write_bytes(ExportHelper.to_npy_dict(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
-                        elif fmt == "csv":
-                            import csv
-                            p = out_dir / f"{safe_stem}.csv"
-                            with open(p, "w", newline="", encoding="utf-8") as f:
-                                writer = csv.writer(f)
-                                writer.writerow(["oop_index", "ip_index", "axis_oop", "axis_ip", "intensity"])
-                                for i, oop_val in enumerate(axis_oop):
-                                    for j, ip_val in enumerate(axis_ip):
-                                        val = intensity[i][j] if i < len(intensity) and j < len(intensity[i]) else ""
-                                        writer.writerow([i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
-                        elif fmt == "png":
-                            p = out_dir / f"{safe_stem}.png"
-                            p.write_bytes(_export_png(intensity, axis_ip, axis_oop))
-                        else:
-                            return {"success": False, "error": f"Unsupported format for fiber: {fmt}"}
-                        written.append(str(p))
+
+                    # Run the ENTIRE batch loop in a single worker thread so
+                    # matplotlib's thread-local pyplot state is initialized
+                    # once and used sequentially. Previously, calling
+                    # _run_blocking per-file assigned different threads from
+                    # the pool, and matplotlib's pyplot failed on the 2nd
+                    # thread (only the 1st PNG rendered).
+                    # 将整个批量循环放在单个工作线程中执行，使 matplotlib 的
+                    # 线程局部 pyplot 状态只初始化一次并顺序使用。此前逐文件
+                    # 调用 _run_blocking 会分配不同线程，导致 matplotlib 在
+                    # 第二个线程上失败（只渲染第一张）。
+                    def _export_all_separate():
+                        written = []
+                        errors = []
+                        seen_names: dict[str, int] = {}
+                        for idx, item in enumerate(batch_results):
+                            stem = str(item.get("stem") or item.get("filename") or f"fiber_{idx:04d}")
+                            safe_stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in stem)
+                            # Deduplicate file names / 去重文件名
+                            if safe_stem in seen_names:
+                                seen_names[safe_stem] += 1
+                                safe_stem = f"{safe_stem}_{seen_names[safe_stem]}"
+                            else:
+                                seen_names[safe_stem] = 0
+                            intensity = item["intensity"]
+                            axis_ip = item["axis_ip"]
+                            axis_oop = item["axis_oop"]
+                            try:
+                                if fmt in ("hdf5", "h5"):
+                                    p = out_dir / f"{safe_stem}.h5"
+                                    p.write_bytes(ExportHelper.to_hdf5_2d_bytes(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
+                                elif fmt in ("tiff", "tif"):
+                                    p = out_dir / f"{safe_stem}.tiff"
+                                    p.write_bytes(ExportHelper.to_image_bytes(intensity, fmt="tiff"))
+                                elif fmt == "edf":
+                                    p = out_dir / f"{safe_stem}.edf"
+                                    p.write_bytes(ExportHelper.to_image_bytes(intensity, fmt="edf"))
+                                elif fmt == "npy":
+                                    p = out_dir / f"{safe_stem}.npy"
+                                    p.write_bytes(ExportHelper.to_npy_dict(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
+                                elif fmt == "csv":
+                                    import csv
+                                    p = out_dir / f"{safe_stem}.csv"
+                                    with open(p, "w", newline="", encoding="utf-8") as f:
+                                        writer = csv.writer(f)
+                                        writer.writerow(["oop_index", "ip_index", "axis_oop", "axis_ip", "intensity"])
+                                        for i, oop_val in enumerate(axis_oop):
+                                            for j, ip_val in enumerate(axis_ip):
+                                                val = intensity[i][j] if i < len(intensity) and j < len(intensity[i]) else ""
+                                                writer.writerow([i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
+                                elif fmt == "png":
+                                    p = out_dir / f"{safe_stem}.png"
+                                    p.write_bytes(_export_png(intensity, axis_ip, axis_oop))
+                                else:
+                                    return written, errors, f"Unsupported format for fiber: {fmt}"
+                                written.append(str(p))
+                            except Exception as exc:
+                                errors.append(f"{safe_stem}: {exc}")
+                        return written, errors, None
+
+                    written, errors, early_error = await _run_blocking(_export_all_separate)
+                    if early_error:
+                        return {"success": False, "error": early_error}
                     await send_progress(1.0, f"Exported {len(written)} files to {out_dir}")
-                    return {"success": True, "path": output_path, "files": written}
+                    result_dict: dict[str, Any] = {"success": True, "path": output_path, "files": written}
+                    if errors:
+                        result_dict["errors"] = errors
+                    return result_dict
 
                 # single/merge mode: export as one file
                 if fmt in ("hdf5", "h5"):
@@ -1078,7 +1129,7 @@ async def handle_export_integration(
                                         val = I[i][j] if i < len(I) and j < len(I[i]) else ""
                                         writer.writerow([ri, i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
                     elif fmt == "png":
-                        Path(output_path).write_bytes(_export_png(intensity, axis_ip, axis_oop))
+                        Path(output_path).write_bytes(await _run_blocking(_export_png, intensity, axis_ip, axis_oop))
                     else:
                         return {"success": False, "error": f"Unsupported format for fiber: {fmt}"}
             else:
@@ -1118,7 +1169,7 @@ async def handle_export_integration(
                                 val = intensity[i][j] if i < len(intensity) and j < len(intensity[i]) else ""
                                 writer.writerow([i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
                 elif fmt == "png":
-                    Path(output_path).write_bytes(_export_png(intensity, axis_ip, axis_oop))
+                    Path(output_path).write_bytes(await _run_blocking(_export_png, intensity, axis_ip, axis_oop))
                 else:
                     return {"success": False, "error": f"Unsupported format for fiber: {fmt}"}
         else:
@@ -1463,6 +1514,7 @@ async def handle_integrate_fiber(
         use_poni_rot3=geo.get("use_poni_rot3", True),
         override_rot3_rad=geo.get("override_rot3_rad", 0.0),
         manual_params=geo.get("manual"),
+        rot_overrides=geo.get("rot_overrides"),
     )
     if fi is None:
         return {"status": "error", "message": "Failed to build FiberIntegrator"}
@@ -1609,7 +1661,7 @@ async def handle_integrate_fiber(
     await send_progress(1.0, "Complete")
     return {
         "status": "ok",
-        "intensity": first.get("intensity").tolist() if first.get("intensity") is not None else [],
+        "intensity": _serialize_image_data(first.get("intensity")) if first.get("intensity") is not None else [],
         "axisIp": first.get("axis_ip").tolist() if first.get("axis_ip") is not None else [],
         "axisOop": first.get("axis_oop").tolist() if first.get("axis_oop") is not None else [],
         "unitIp": params.get("unit_ip", "qip_nm^-1"),
@@ -2308,6 +2360,13 @@ async def handle_viewer_config(
         tick_bold = bool(opts.get("tickBold", False))
         flip_x = bool(opts.get("flipX", True))
         flip_y = bool(opts.get("flipY", True))
+        # Log floor + tick step (problem 2 & 5) / 对数阈值与刻度间隔
+        _lf = opts.get("logFloor")
+        log_floor = float(_lf) if _lf is not None else None
+        _xts = opts.get("xTickStep")
+        x_tick_step = float(_xts) if _xts is not None else None
+        _yts = opts.get("yTickStep")
+        y_tick_step = float(_yts) if _yts is not None else None
 
         # Resolve clim: forwarded value wins, else auto from data / 解析对比度
         clim_raw = opts.get("clim")
@@ -2350,6 +2409,9 @@ async def handle_viewer_config(
                 tick_bold=tick_bold,
                 flip_x=flip_x,
                 flip_y=flip_y,
+                log_floor=log_floor,
+                x_tick_step=x_tick_step,
+                y_tick_step=y_tick_step,
             )
         )
         mpl_b64 = base64.b64encode(png_bytes).decode()
@@ -3121,11 +3183,12 @@ async def handle_viewer_config(
         try:
             fi = await _run_blocking(
                 FiberIntegratorService.build_integrator,
-                poni_path=geo.get("poniPath") or geo.get("poni_path"),
-                poni_bytes=geo.get("poniBytes", "").encode() if geo.get("poniBytes") else None,
-                use_poni_rot3=geo.get("usePoniRot3", True),
-                override_rot3_rad=geo.get("overrideRot3Rad", 0.0),
+                poni_path=geo.get("poni_path") or geo.get("poniPath"),
+                poni_bytes=geo.get("poni_bytes", "").encode() if geo.get("poni_bytes") else (geo.get("poniBytes", "").encode() if geo.get("poniBytes") else None),
+                use_poni_rot3=geo.get("use_poni_rot3", geo.get("usePoniRot3", True)),
+                override_rot3_rad=geo.get("override_rot3_rad", geo.get("overrideRot3Rad", 0.0)),
                 manual_params=geo.get("manual"),
+                rot_overrides=geo.get("rot_overrides"),
             )
         except Exception as exc:
             return {"status": "error", "message": f"Failed to build FiberIntegrator: {exc}"}
@@ -3178,7 +3241,10 @@ async def handle_viewer_config(
                     dead_mask, custom_mask,
                 )
 
-                def _run_1d(data, mask):
+                def _run_1d(data, mask, vertical: bool):
+                    # vertical_integration=True → X = qoop (integrate over IP);
+                    # vertical_integration=False → X = qip (integrate over OOP).
+                    # 两个方向都算：用户通常同时需要面外和面内剖面。
                     return fi.integrate1d_grazing_incidence(
                         data=data,
                         npt_ip=npt_1d,
@@ -3187,6 +3253,7 @@ async def handle_viewer_config(
                         unit_oop=unit_oop,
                         ip_range=tuple(ip_range),
                         oop_range=tuple(oop_range),
+                        vertical_integration=vertical,
                         sample_orientation=sample_orientation,
                         incident_angle=incident_rad,
                         tilt_angle=tilt_rad,
@@ -3194,26 +3261,43 @@ async def handle_viewer_config(
                         correctSolidAngle=correct_sa,
                     )
 
-                res1d = await _run_blocking(_run_1d, raw_data, final_mask)
-                radial = res1d.radial if hasattr(res1d, "radial") else res1d[0]
-                intensity = res1d.intensity if hasattr(res1d, "intensity") else res1d[1]
-                sigma = res1d.sigma if hasattr(res1d, "sigma") else None
+                def _post_1d(res1d):
+                    """Extract + post-process one 1D profile / 提取并后处理一条1D剖面。"""
+                    radial = res1d.radial if hasattr(res1d, "radial") else res1d[0]
+                    intensity = res1d.intensity if hasattr(res1d, "intensity") else res1d[1]
+                    sigma = res1d.sigma if hasattr(res1d, "sigma") else None
+                    if abs_intensity:
+                        intensity = np.abs(intensity)
+                    if pos_q_only:
+                        radial = np.abs(radial)
+                        sort_idx = np.argsort(radial)
+                        radial = radial[sort_idx]
+                        intensity = intensity[sort_idx]
+                        if sigma is not None:
+                            sigma = sigma[sort_idx]
+                    return (
+                        radial.tolist(),
+                        [float(v) if math.isfinite(v) else None for v in intensity.tolist()],
+                        [float(v) if math.isfinite(v) else None for v in sigma.tolist()] if sigma is not None else None,
+                    )
 
-                if abs_intensity:
-                    intensity = np.abs(intensity)
-                if pos_q_only:
-                    radial = np.abs(radial)
-                    sort_idx = np.argsort(radial)
-                    radial = radial[sort_idx]
-                    intensity = intensity[sort_idx]
-                    if sigma is not None:
-                        sigma = sigma[sort_idx]
+                # X = qoop (vertical) — the original behavior / 原有方向
+                res_oop = await _run_blocking(_run_1d, raw_data, final_mask, True)
+                r_oop, i_oop, s_oop = _post_1d(res_oop)
+                # X = qip (horizontal) — in-plane profile / 面内剖面
+                res_ip = await _run_blocking(_run_1d, raw_data, final_mask, False)
+                r_ip, i_ip, s_ip = _post_1d(res_ip)
 
                 all_results.append({
                     "filename": fname,
-                    "radial": radial.tolist(),
-                    "intensity": intensity.tolist(),
-                    "sigma": sigma.tolist() if sigma is not None else None,
+                    # X = qoop / 面外剖面（兼容旧前端字段名）
+                    "radial": r_oop,
+                    "intensity": i_oop,
+                    "sigma": s_oop,
+                    # X = qip / 面内剖面（新增）
+                    "radial_ip": r_ip,
+                    "intensity_ip": i_ip,
+                    "sigma_ip": s_ip,
                 })
             except Exception as exc:
                 all_results.append({"filename": fname, "error": str(exc)})
@@ -3222,7 +3306,8 @@ async def handle_viewer_config(
         return {
             "status": "ok",
             "results": all_results,
-            "unit": unit_oop if True else unit_ip,  # vertical_integration=True → X=OOP
+            "unit": unit_oop,   # X axis of radial/intensity (vertical integration)
+            "unit_ip": unit_ip,  # X axis of radial_ip/intensity_ip (horizontal integration)
             "ipRange": list(ip_range),
             "oopRange": list(oop_range),
         }
@@ -4598,7 +4683,7 @@ async def _handle_poni_importer_parse(
 ) -> dict[str, Any]:
     """Parse a PONI file and extract geometry parameters. 解析PONI文件并提取几何参数。"""
     await send_progress(0.0, "Loading PONI file...")
-    file_path = payload.get("file_path", "")
+    file_path = payload.get("filePath") or payload.get("file_path", "")
 
     if not file_path:
         return {"status": "error", "message": "Missing file_path"}
@@ -5441,6 +5526,134 @@ async def handle_image_stitch(
         return {"status": "error", "message": f"Unknown action: {action}"}
 
 
+async def _orientation_extract_profile(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> tuple[Any, Any, str | None, str | None]:
+    """Extract one I(χ) azimuthal profile from an image + geometry.
+    从图像+几何提取一条方位角分布 I(χ)，供取向分析使用。
+
+    Returns (chi_list, intensity_list, label, error). On success error is None.
+    """
+    await send_progress(0.1, "Loading geometry... / 加载几何...")
+    geo = payload.get("geometry", {})
+    if geo.get("poni_path"):
+        ai, cx, cy = await _run_blocking(IntegratorFactory.from_poni_path, geo["poni_path"])
+    elif geo.get("manual"):
+        ai, cx, cy = await _run_blocking(IntegratorFactory.from_manual_params, **geo["manual"])
+    else:
+        return None, None, None, "No geometry parameters / 无几何参数"
+    if ai is None:
+        return None, None, None, "Failed to create integrator / 积分器创建失败"
+
+    files = payload.get("files", [])
+    if not files:
+        return None, None, None, "No files / 无文件"
+    fpath = files[0]
+    if cancel_event.is_set():
+        raise asyncio.CancelledError()
+    await send_progress(0.35, f"Loading {fpath} / 加载 {fpath}")
+    try:
+        data, dead_mask, meta = await _run_blocking(
+            ImageLoader.load, fpath,
+            payload.get("h5_dataset_path"), payload.get("h5_channel"),
+            payload.get("frame_index", 0),
+        )
+    except Exception as exc:
+        return None, None, None, f"Failed to load image: {exc} / 图像加载失败：{exc}"
+    if data is None:
+        return None, None, None, "No data loaded / 无数据"
+
+    opts = payload.get("options", {})
+    custom_mask = None
+    custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
+    if custom_mask_path:
+        custom_mask = await _run_blocking(MaskBuilder.load_mask_file, str(custom_mask_path))
+    mask = await _run_blocking(
+        MaskBuilder.build, data,
+        payload.get("valid_min", 0.0), payload.get("valid_max", 1e10),
+        dead_mask, custom_mask,
+    )
+
+    kw: dict[str, Any] = {
+        "data": data,
+        "npt": opts.get("npt", 360),
+        "npt_rad": opts.get("npt_rad", 100),
+        "unit": opts.get("unit", "chi_deg"),
+        "radial_unit": opts.get("radial_unit", "q_nm^-1"),
+        "mask": mask.astype(np.uint8),
+        "method": opts.get("method", "splitpixel"),
+    }
+    azimuth_min = opts.get("azimuth_min")
+    azimuth_max = opts.get("azimuth_max")
+    if azimuth_min is not None and azimuth_max is not None:
+        kw["azimuth_range"] = (float(azimuth_min), float(azimuth_max))
+    radial_min = opts.get("radial_min")
+    radial_max = opts.get("radial_max")
+    if radial_min is not None and radial_max is not None:
+        kw["radial_range"] = (float(radial_min), float(radial_max))
+    await send_progress(0.55, "Integrating azimuthally / 方位角积分中")
+    res = ai.integrate_radial(**kw)
+    chi_list, intensity_list = _drop_empty_bins(res, opts.get("drop_empty_bins", True))
+    label = meta.get("filename", fpath)
+    return chi_list, intensity_list, label, None
+
+
+async def handle_orientation_analysis(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Polymer orientation analysis handler. 聚合物取向度分析处理函数。
+
+    Two input modes / 两种输入模式:
+      - input_mode "image": integrate an image+PONI to I(χ) first, then analyze.
+      - input_mode "curves": use caller-supplied chi/intensity arrays directly.
+    """
+    input_mode = payload.get("input_mode", "curves")
+    label: str | None = None
+    if input_mode == "image":
+        chi_list, intensity_list, label, err = await _orientation_extract_profile(
+            payload, send_progress, cancel_event,
+        )
+        if err:
+            return {"status": "error", "message": err}
+    else:
+        chi_list = payload.get("chi", [])
+        intensity_list = payload.get("intensity", [])
+
+    if not chi_list or len(chi_list) < 2:
+        return {"status": "error", "message": "Insufficient azimuthal data. / 方位角数据不足。"}
+
+    opts = {
+        "methods": payload.get("methods", ["hermans"]),
+        "geometry": payload.get("scattering_geometry", "transmission"),
+        "symmetry": payload.get("symmetry", "auto"),
+        "missing": payload.get("missing", "interp"),
+        "background": payload.get("background", {"mode": "constant"}),
+        "hermans": payload.get("hermans", {}),
+        "fwhm": payload.get("fwhm", {}),
+        "wilchinsky": payload.get("wilchinsky", {}),
+        "crystallinity": payload.get("crystallinity"),
+    }
+    try:
+        result = await _run_blocking(
+            PolymerOrientation.analyze_orientation, chi_list, intensity_list, **opts,
+        )
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        return {"status": "error", "message": f"Orientation analysis failed: {exc}"}
+
+    await send_progress(1.0, "Complete / 完成")
+    result["status"] = "ok"
+    if label is not None:
+        result["source_label"] = label
+    return result
+
+
 # Route → handler mapping / 路由→处理函数映射
 ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/integrate1d": handle_integrate1d,
@@ -5462,6 +5675,7 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/poni_importer": handle_poni_importer,
     "/api/image_math": handle_image_math,
     "/api/image_stitch": handle_image_stitch,
+    "/api/orientation_analysis": handle_orientation_analysis,
 }
 
 
@@ -5714,6 +5928,20 @@ class WebHealthHandler(BaseHTTPRequestHandler):
                         task_id = data.get("task_id", "")
                         route = data.get("route", "")
                         payload = data.get("payload", {})
+                        if not isinstance(payload, dict):
+                            payload = {}
+                        # Inject session isolation fields, mirroring
+                        # WebSocketService._handle_connection so handlers that
+                        # read payload["_session_tmp_dir"] (e.g. scan_folder)
+                        # work in standalone web mode too.
+                        # 注入 session 隔离字段，与 WebSocketService 的注入保持
+                        # 一致，使读取 payload["_session_tmp_dir"] 的处理函数
+                        # （如 scan_folder）在独立 web 模式下同样可用。
+                        payload["_session_id"] = session_id
+                        payload["_session_tmp_dir"] = (
+                            _ws_service.session_manager.get_tmp_dir(session_id)
+                            if _ws_service else ""
+                        )
                         cancel_event = asyncio.Event()
                         if _ws_service is not None:
                             _ws_service._cancel_events[task_id] = cancel_event
@@ -5738,8 +5966,14 @@ class WebHealthHandler(BaseHTTPRequestHandler):
                                 }))
 
                         try:
+                            # Route handlers expect (payload, send_progress,
+                            # cancel_event); the session id travels inside
+                            # payload["_session_id"] instead.
+                            # 路由处理函数签名为 (payload, send_progress,
+                            # cancel_event)；session id 通过
+                            # payload["_session_id"] 传递。
                             result = loop.run_until_complete(
-                                handler_fn(payload, _send_progress, session_id)
+                                handler_fn(payload, _send_progress, cancel_event)
                             )
                             if not task_ok:
                                 continue

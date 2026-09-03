@@ -25,8 +25,12 @@ const path = require('path')
 const UNUSED_PACKAGES = [
   // Old Streamlit web-UI stack
   'streamlit', 'plotly', 'pydeck', 'altair', 'narwhals', 'tornado',
-  // Materials-science stack (not referenced by pyFAI / fabio / silx)
-  'pymatgen', 'spglib',
+  // NOTE: 'pymatgen' and 'spglib' are NOT trimmed — the calibrant generator
+  // (handle_calibrant_generate) lazily imports pymatgen.core /
+  // pymatgen.analysis.diffraction.xrd at runtime, and CIF parsing needs spglib.
+  // Their remaining deps (monty, tabulate, palettable, uncertainties) are kept
+  // too; plotly/sympy/networkx/mpmath/pygments stay trimmed and are verified
+  // NOT imported on that code path (empirically tested).
   // Symbolic math — only referenced by scipy/special/_precompute (dev scripts)
   // and scipy/special/tests, never at runtime
   'sympy', 'mpmath',
@@ -96,6 +100,7 @@ module.exports = async function afterPack(context) {
 
   let removedCount = 0
   let removedBytes = 0
+  const removedNames = []
 
   for (const name of UNUSED_PACKAGES) {
     const pkgDir = path.join(sitePackages, name)
@@ -108,6 +113,7 @@ module.exports = async function afterPack(context) {
       fs.rmSync(pkgDir, { recursive: true, force: true })
       removedBytes += sz
       removedCount++
+      removedNames.push(name)
       console.log(`[afterPack]   removed ${name}/ (${bytesToMB(sz).toFixed(1)} MB)`)
 
       // Queue matching metadata dirs (case-insensitive prefix match).
@@ -133,6 +139,47 @@ module.exports = async function afterPack(context) {
       console.log(`[afterPack]   removed ${entry}`)
     } catch (err) {
       console.warn(`[afterPack]   WARNING: could not remove ${entry}: ${err.message}`)
+    }
+  }
+
+  // Rewrite the packaged requirements files to match the trimmed runtime.
+  // The launcher's startup health check validates EVERY entry of
+  // requirements.lock.txt via importlib.metadata; any entry whose package was
+  // trimmed above would fail that check and abort the backend with exit code
+  // 2 ("内置 Python 发生了意外退出"). Only the PACKAGED copies are rewritten —
+  // the dev tree (BETA/python) keeps the full list.
+  const normalizeName = (name) => name.toLowerCase().replace(/[-_.]+/g, '-')
+  const removedSet = new Set(removedNames.map(normalizeName))
+  const requirementsFiles = [
+    path.join(context.appOutDir, 'resources', 'python', 'requirements.lock.txt'),
+    path.join(context.appOutDir, 'resources', 'python', 'requirements.in'),
+  ]
+  for (const reqFile of requirementsFiles) {
+    let content
+    try {
+      content = fs.readFileSync(reqFile, 'utf8')
+    } catch {
+      continue
+    }
+    const keptLines = []
+    const dropped = []
+    for (const rawLine of content.split(/\r?\n/)) {
+      const line = rawLine.trim()
+      if (line && !line.startsWith('#') && !line.startsWith('-')) {
+        const pkgName = line.split(/[<>=;[ ]/)[0]
+        if (removedSet.has(normalizeName(pkgName))) {
+          dropped.push(pkgName)
+          continue
+        }
+      }
+      keptLines.push(rawLine)
+    }
+    if (dropped.length > 0) {
+      fs.writeFileSync(reqFile, keptLines.join('\n'), 'utf8')
+      console.log(
+        `[afterPack] rewrote ${path.relative(context.appOutDir, reqFile)}: ` +
+        `dropped ${dropped.length} trimmed entries (${dropped.join(', ')})`,
+      )
     }
   }
 

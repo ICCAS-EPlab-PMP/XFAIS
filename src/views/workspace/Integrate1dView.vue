@@ -392,7 +392,10 @@ const unitOptions = UNIT_OPTIONS
 
 function onUnitChange(event: Event): void {
   const val = (event.target as HTMLSelectElement).value as IntegrationUnit
-  Object.assign(advancedOptions, { unit: val })
+  // Radial range values are unit-dependent; clear them on unit switch so
+  // stale numbers can't silently clip the result window.
+  // 径向范围数值与单位绑定，切换单位时清空，避免残留数值截断结果窗口。
+  Object.assign(advancedOptions, { unit: val, radialMin: null, radialMax: null })
 }
 
 // === Form state / 表单状态 ===

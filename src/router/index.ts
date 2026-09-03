@@ -153,6 +153,16 @@ const router = createRouter({
       },
     },
     {
+      path: '/workspace/orientation-analysis',
+      name: 'orientation-analysis',
+      component: () => import('@/views/workspace/OrientationAnalysisView.vue'),
+      meta: {
+        titleKey: 'orientationAnalysis.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'orientationAnalysis.subtitle',
+      },
+    },
+    {
       path: '/workspace/poni-importer',
       name: 'poni-importer',
       component: () => import('@/views/workspace/PoniImporterView.vue'),

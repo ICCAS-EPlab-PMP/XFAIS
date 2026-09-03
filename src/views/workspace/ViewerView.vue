@@ -1117,7 +1117,7 @@ async function rescanImportFolder(): Promise<void> {
     }
     if (importMode.value === 'append') {
       const existingSet = new Set(selectedFiles.value)
-      const newFiles = files.filter(p => !existingSet.has(p))
+      const newFiles = files.filter((p: string) => !existingSet.has(p))
       await handleFileBatchSelected([...selectedFiles.value, ...newFiles])
     } else {
       await handleFileBatchSelected(files)

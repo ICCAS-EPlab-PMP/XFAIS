@@ -31,6 +31,8 @@ export interface DesktopPythonStatus {
 
 const desktopApi = {
   getAppMeta: (): Promise<DesktopAppMeta> => ipcRenderer.invoke(IPC_CHANNELS.appMeta) as Promise<DesktopAppMeta>,
+  readTextFile: (filePath: string): Promise<string> =>
+    ipcRenderer.invoke(IPC_CHANNELS.readTextFile, filePath) as Promise<string>,
   dialog: {
     openFile: (options?: DialogOpenFileOptions): Promise<DialogOpenFileResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.dialogOpenFile, options) as Promise<DialogOpenFileResult>,

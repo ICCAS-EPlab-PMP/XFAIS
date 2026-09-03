@@ -62,8 +62,22 @@
       </div>
     </div>
 
+    <!-- Region navigation / 大区域导航 -->
+    <nav class="region-nav">
+      <a
+        v-for="region in regions"
+        :key="region.id"
+        href="#"
+        class="region-nav-item"
+        :data-testid="`region-nav-${region.id}`"
+        @click.prevent="scrollToRegion(region.id)"
+      >
+        {{ t(region.labelKey) }}
+      </a>
+    </nav>
+
     <!-- Row 1: Common Integration / 常用积分 -->
-    <div class="card-section">
+    <div id="region-integration" class="card-section">
       <h2 class="section-header">{{ t('home.sections.commonIntegration') }}</h2>
       <div class="card-row">
         <router-link
@@ -81,7 +95,7 @@
     </div>
 
     <!-- Row 2: GIWAXS / 掠入射衍射 -->
-    <div class="card-section">
+    <div id="region-giwaxs" class="card-section">
       <h2 class="section-header">{{ t('home.sections.giwaxs') }}</h2>
       <div class="card-row">
         <router-link
@@ -99,7 +113,7 @@
     </div>
 
     <!-- Row 3: Image Tools / 图像工具 -->
-    <div class="card-section">
+    <div id="region-imageTools" class="card-section">
       <h2 class="section-header">{{ t('home.sections.imageTools') }}</h2>
       <div class="card-row">
         <router-link
@@ -117,7 +131,7 @@
     </div>
 
     <!-- Row 4: Background Subtraction (standalone) -->
-    <div class="card-section">
+    <div id="region-background" class="card-section">
       <h2 class="section-header">{{ t('home.sections.backgroundSubtraction') }}</h2>
       <div class="card-row">
         <router-link
@@ -134,8 +148,26 @@
       </div>
     </div>
 
+    <!-- Application Zone / 应用专区 -->
+    <div id="region-application" class="card-section">
+      <h2 class="section-header">{{ t('home.sections.applicationZone') }}</h2>
+      <div class="card-row">
+        <router-link
+          v-for="card in applicationCards"
+          :key="card.key"
+          :to="card.route"
+          class="feature-card"
+          :data-testid="`home-card-${card.key}`"
+        >
+          <span class="feature-icon">{{ card.icon }}</span>
+          <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
+          <p>{{ t(`home.cards.${card.key}.description`) }}</p>
+        </router-link>
+      </div>
+    </div>
+
     <!-- Row 5: PyFAI辅助功能 -->
-    <div class="card-section">
+    <div id="region-pyfai" class="card-section">
       <h2 class="section-header">{{ t('home.sections.pyfaiTools') }}</h2>
       <div class="card-row">
         <router-link
@@ -201,6 +233,21 @@ interface FeatureCard {
   icon: string
 }
 
+// Region navigation entries (anchor-jump targets). / 大区域导航条目（锚点跳转目标）。
+const regions: Array<{ id: string; labelKey: string }> = [
+  { id: 'integration', labelKey: 'home.sections.commonIntegration' },
+  { id: 'giwaxs', labelKey: 'home.sections.giwaxs' },
+  { id: 'imageTools', labelKey: 'home.sections.imageTools' },
+  { id: 'background', labelKey: 'home.sections.backgroundSubtraction' },
+  { id: 'application', labelKey: 'home.sections.applicationZone' },
+  { id: 'pyfai', labelKey: 'home.sections.pyfaiTools' },
+]
+
+function scrollToRegion(id: string): void {
+  const el = document.getElementById(`region-${id}`)
+  if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
+
 // Row 1: Common Integration (3 cards)
 const integrationCards: FeatureCard[] = [
   {
@@ -217,6 +264,15 @@ const integrationCards: FeatureCard[] = [
     key: 'integrateCake',
     route: '/workspace/integrate-cake',
     icon: '扇'
+  }
+]
+
+// Application Zone / 应用专区（领域专用分析）
+const applicationCards: FeatureCard[] = [
+  {
+    key: 'orientationAnalysis',
+    route: '/workspace/orientation-analysis',
+    icon: '⇅'
   }
 ]
 
@@ -645,10 +701,41 @@ function openFabIOCitation(): void {
 }
 
 /* Section headers */
+/* Region navigation — sticky anchor-jump bar / 大区域导航（粘性锚点跳转条）*/
+.region-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 10px;
+  position: sticky;
+  top: 8px;
+  z-index: 10;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+.region-nav-item {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #2563eb;
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgba(37, 99, 235, 0.08);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.region-nav-item:hover {
+  background: rgba(37, 99, 235, 0.18);
+}
+
 .card-section {
   display: flex;
   flex-direction: column;
   gap: 14px;
+  scroll-margin-top: 64px;
 }
 
 .section-header {

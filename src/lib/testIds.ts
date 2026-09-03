@@ -28,6 +28,7 @@ export const testIds = {
   geometryModePoni: 'geometry-mode-poni',
   geometryModeManual: 'geometry-mode-manual',
   geometryPoniInput: 'geometry-poni-input',
+  geometryPoniSummary: 'geometry-poni-summary',
   geometryPixel1: 'geometry-pixel1',
   geometryDistance: 'geometry-distance',
   geometryWavelength: 'geometry-wavelength',
@@ -108,6 +109,12 @@ export const testIds = {
   azimuthChart: 'azimuth-chart',
   azimuthExport: 'azimuth-export',
 
+  // Orientation Analysis page / 取向度分析页面
+  orientationPage: 'orientation-page',
+  orientationRunBtn: 'orientation-run-btn',
+  orientationChart: 'orientation-chart',
+  orientationExport: 'orientation-export',
+
   // Shared line chart (line/points mode toggle) / 共享折线图（线/点切换）
   lineChartMode: 'line-chart-mode',
   lineChartModeLine: 'line-chart-mode-line',
@@ -154,6 +161,7 @@ export const testIds = {
   fiberOopMax: 'fiber-oop-max',
   fiberNptIp: 'fiber-npt-ip',
   fiberNptOop: 'fiber-npt-oop',
+  fiberAlgorithmMethod: 'fiber-algorithm-method',
   fiberSolidAngle: 'fiber-solid-angle',
   fiberRunBtn: 'fiber-run-btn',
   fiberError: 'fiber-error',

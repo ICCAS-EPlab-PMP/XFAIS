@@ -168,6 +168,20 @@ const registerDialogHandlers = (): void => {
       return canceled ? null : filePaths[0] ?? null
     }
   )
+
+  // Read a UTF-8 text file (e.g. a pasted azimuthal profile CSV) into the
+  // renderer. Used by the curves-input mode of orientation analysis.
+  // 读取 UTF-8 文本文件（如方位角分布 CSV）到渲染进程。供取向分析的曲线输入模式使用。
+  ipcMain.handle(
+    IPC_CHANNELS.readTextFile,
+    async (_event, filePath?: string): Promise<string> => {
+      if (!filePath || typeof filePath !== 'string') {
+        throw new Error('readTextFile requires a file path. / readTextFile 需要文件路径。')
+      }
+      const { readFile } = await import('node:fs/promises')
+      return readFile(filePath, 'utf-8')
+    }
+  )
 }
 
 interface PendingTask {
@@ -736,6 +750,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   bg_subtract: '/api/bg_subtract',
   image_math: '/api/image_math',
   image_stitch: '/api/image_stitch',
+  orientation_analysis: '/api/orientation_analysis',
   poni_importer: '/api/poni_importer'
 }
 

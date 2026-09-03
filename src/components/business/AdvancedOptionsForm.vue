@@ -227,6 +227,15 @@ const integratorOptions: Array<{ value: IntegratorType; label: string }> = [
 ]
 
 function onFieldInput(field: keyof AdvancedOptions, raw: string): void {
+  // Radial range inputs must be clearable: an empty input means "no limit".
+  // Without this, a stale value silently keeps truncating results after the
+  // user clears the field ("invisible range" bug).
+  // 径向范围输入必须可清空：空输入表示"不限"。
+  // 否则用户清空输入框后，残留旧值仍会静默截断结果（"隐形范围" bug）。
+  if ((field === 'radialMin' || field === 'radialMax') && raw.trim() === '') {
+    emit('update:modelValue', { ...props.modelValue, [field]: null })
+    return
+  }
   const num = parseFloat(raw)
   if (isNaN(num)) return
   emit('update:modelValue', { ...props.modelValue, [field]: num })

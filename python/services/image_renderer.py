@@ -409,6 +409,7 @@ class ImageRenderer:
         cmap_name = settings.get("cmap", "viridis")
         use_log = settings.get("use_log", False)
         vmin, vmax = settings.get("clim", (0.0, 1.0))
+        log_floor = settings.get("log_floor")
 
         # Resolve colormap / 解析色图
         if isinstance(cmap_name, str):
@@ -420,8 +421,21 @@ class ImageRenderer:
 
         # Normalize to [0, 1] / 归一化到 [0, 1]
         if use_log:
+            # When log_floor is set, clamp finite sub-floor values (including 0)
+            # to the floor so they map to a real low color instead of being
+            # collapsed to NaN (darkest). True NaN stays NaN -> nan_to_num -> 0.
+            # log_floor 设置时，将有限的小于阈值的值（含 0）clamp 到阈值，
+            # 映射到真实低色而非被压缩为 NaN（最暗色）。
+            # 真 NaN 保持 NaN -> nan_to_num -> 0，与 clamp 值区分。
+            if log_floor is not None and float(log_floor) > 0:
+                floor = float(log_floor)
+                d_clamped = d.copy()
+                finite = np.isfinite(d_clamped)
+                d_clamped[finite & (d_clamped < floor)] = floor
+            else:
+                d_clamped = d
             with np.errstate(divide="ignore", invalid="ignore"):
-                dl = np.log10(np.where(d > 0, d, np.nan))
+                dl = np.log10(np.where(d_clamped > 0, d_clamped, np.nan))
             lo = np.log10(max(vmin, 1e-6))
             hi = np.log10(max(vmax, 1e-5))
             norm = np.clip((dl - lo) / (hi - lo + 1e-15), 0, 1)
@@ -519,6 +533,9 @@ class ImageRenderer:
         tick_bold: bool = False,
         flip_x: bool = True,
         flip_y: bool = True,
+        log_floor: float | None = None,
+        x_tick_step: float | None = None,
+        y_tick_step: float | None = None,
     ) -> bytes:
         """Render PNG with matplotlib colorbar + optional axis labels.
         使用 matplotlib 渲染带色条和可选坐标轴标注的 PNG（出版质量）。
@@ -602,7 +619,7 @@ class ImageRenderer:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
         from matplotlib.colors import LogNorm, Normalize
-        from matplotlib.ticker import MaxNLocator, ScalarFormatter
+        from matplotlib.ticker import MaxNLocator, MultipleLocator, ScalarFormatter
 
         d = np.asarray(data, dtype=np.float64)
         if d.ndim != 2:
@@ -634,7 +651,19 @@ class ImageRenderer:
         d = d.copy()
         d[~np.isfinite(d)] = np.nan
         if use_log:
-            d[d <= 0] = np.nan
+            if log_floor is not None and float(log_floor) > 0:
+                # Clamp finite sub-floor values (including 0) to the floor so
+                # they render as a real low color. True NaN stays NaN -> set_bad.
+                # This lets users distinguish "low signal clamped" from
+                # "integration gap (NaN)" by color.
+                # 将有限的小于阈值的值（含 0）clamp 到阈值，渲染为真实低色。
+                # 真 NaN 保持 NaN -> set_bad，使用户能通过颜色区分
+                # "低信号被 clamp"与"积分空洞 (NaN)"。
+                floor = float(log_floor)
+                finite = np.isfinite(d)
+                d[finite & (d < floor)] = floor
+            else:
+                d[d <= 0] = np.nan
         cmap = cmap.copy()
         if bg == "transparent":
             cmap.set_bad(alpha=0)  # transparent NaN pixels / NaN 像素透明
@@ -706,13 +735,19 @@ class ImageRenderer:
             # X axis (qip) / X 轴 (qip)
             if show_axis_title and xtext:
                 ax.set_xlabel(xtext, fontsize=font_size, color=edge_color, fontweight=axis_fw)
-            ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
+            if x_tick_step is not None and float(x_tick_step) > 0:
+                ax.xaxis.set_major_locator(MultipleLocator(float(x_tick_step)))
+            else:
+                ax.xaxis.set_major_locator(MaxNLocator(nbins=6))
             ax.xaxis.set_major_formatter(ScalarFormatter(useMathText=True))
             ax.tick_params(axis="x", labelsize=font_size - 2, colors=edge_color)
             # Y axis (qoop) / Y 轴 (qoop)
             if show_axis_title and ytext:
                 ax.set_ylabel(ytext, fontsize=font_size, color=edge_color, fontweight=axis_fw)
-            ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
+            if y_tick_step is not None and float(y_tick_step) > 0:
+                ax.yaxis.set_major_locator(MultipleLocator(float(y_tick_step)))
+            else:
+                ax.yaxis.set_major_locator(MaxNLocator(nbins=6))
             ax.yaxis.set_major_formatter(ScalarFormatter(useMathText=True))
             ax.tick_params(axis="y", labelsize=font_size - 2, colors=edge_color)
             # Optionally hide tick marks + numbers while keeping the title / 可隐藏刻度仅留标题

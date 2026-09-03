@@ -58,6 +58,11 @@
                   />
                 </label>
               </div>
+              <!-- Override PONI rotations (PONI mode only) / 覆盖 PONI 旋转（仅 PONI 模式） -->
+              <label v-if="geometry.poniPath" class="fib-toggle" style="margin-top:6px">
+                <input v-model="overridePoniRot" type="checkbox" />
+                <span class="fib-toggle-label">{{ t('integrateFiber.overridePoniRot') }}</span>
+              </label>
             </fieldset>
 
             <!-- Sample orientation / 样品方向 -->
@@ -256,6 +261,21 @@
                     @input="onFiberParam('nptOop', $event)"
                   />
                 </label>
+                <!-- pyFAI integration algorithm (same set as the 1D page) -->
+                <!-- pyFAI 积分算法（与 1D 积分页一致） -->
+                <label class="fib-field" style="grid-column: 1 / -1">
+                  <span class="fib-label">{{ t('integrateFiber.method') }}</span>
+                  <select
+                    class="fib-select"
+                    :value="fiberParams.method"
+                    :data-testid="testIds.fiberAlgorithmMethod"
+                    @change="onSelectParam('method', $event)"
+                  >
+                    <option v-for="m in algorithmOptions" :key="m.value" :value="m.value">
+                      {{ m.label }}
+                    </option>
+                  </select>
+                </label>
               </div>
             </fieldset>
           </div>
@@ -294,6 +314,17 @@
             <label v-if="resultClimMode === 'manual'" class="fib-field fib-contrast-field">
               <span class="fib-label">{{ t('business.display.climMax') }}</span>
               <input v-model.number="resultClimMax" type="number" class="fib-input" step="any" />
+            </label>
+            <!-- Log floor: clamp sub-threshold values in log mode (collapsed by default) -->
+            <!-- 对数阈值：对数模式下 clamp 小于阈值的值（默认折叠关闭） -->
+            <label class="fib-toggle" style="margin-top:8px">
+              <input v-model="logFloorEnabled" type="checkbox" :disabled="!useLog" />
+              <span class="fib-toggle-label">{{ t('integrateFiber.logFloorEnable') }}</span>
+            </label>
+            <label v-if="logFloorEnabled && useLog" class="fib-field fib-contrast-field">
+              <span class="fib-label">{{ t('integrateFiber.logFloor') }}</span>
+              <input v-model.number="logFloorValue" type="number" class="fib-input" step="any" min="0" />
+              <span class="fib-hint">{{ t('integrateFiber.logFloorHint') }}</span>
             </label>
           </div>
         </div>
@@ -576,6 +607,35 @@
               </label>
 
               <div class="fib-grid fib-roi-grid">
+                <!-- ROI qip/qoop units — user-selectable, kept in sync with the
+                     sidebar units so the rectangle, numeric ranges and backend
+                     integration always share one unit system. -->
+                <!-- ROI 的 qip/qoop 单位由用户选择，与侧栏坐标单位双向同步，
+                     保证框选矩形、数值范围与后端积分始终同一单位体系。 -->
+                <label class="fib-field" style="grid-column: 1 / -1">
+                  <span class="fib-label">{{ t('integrateFiber.unitIp') }}</span>
+                  <select
+                    class="fib-select"
+                    :value="fiberParams.unitIp"
+                    @change="onSelectParam('unitIp', $event)"
+                  >
+                    <option v-for="u in unitIpOptions" :key="u.value" :value="u.value">
+                      {{ u.label }}
+                    </option>
+                  </select>
+                </label>
+                <label class="fib-field" style="grid-column: 1 / -1">
+                  <span class="fib-label">{{ t('integrateFiber.unitOop') }}</span>
+                  <select
+                    class="fib-select"
+                    :value="fiberParams.unitOop"
+                    @change="onSelectParam('unitOop', $event)"
+                  >
+                    <option v-for="u in unitOopOptions" :key="u.value" :value="u.value">
+                      {{ u.label }}
+                    </option>
+                  </select>
+                </label>
                 <label class="fib-field">
                   <span class="fib-label">IP min</span>
                   <input v-model.number="roiIpMin" type="number" class="fib-input" step="any" />
@@ -597,6 +657,11 @@
                   <input v-model.number="roiNpt" type="number" class="fib-input" min="50" step="50" />
                 </label>
               </div>
+
+              <p class="fib-hint" style="grid-column: 1 / -1; margin: 0">
+                Units apply to the ROI ranges and 1D profiles; re-run the 2D integration to refresh the map axes after changing them.
+                单位同时作用于 ROI 数值范围与 1D 剖面；更改后请重新执行 2D 积分以刷新图坐标。
+              </p>
 
               <label class="fib-toggle" style="margin:8px 0">
                 <input v-model="roiAbsQ" type="checkbox" />
@@ -628,15 +693,30 @@
               </div>
             </div>
 
-            <!-- 1D result curve / 1D 结果曲线 -->
+            <!-- 1D result curves: out-of-plane (qoop) + in-plane (qip) -->
+            <!-- 1D 结果曲线：面外 (qoop) + 面内 (qip) 两个方向 -->
             <div v-if="roi1dResult" class="fib-roi-chart-main">
               <h3>1D ROI Result / 1D 区域积分结果</h3>
-              <LineChart
-                :traces="roi1dTraces"
-                :x-title="roi1dResult?.unit ? `q (${roi1dResult.unit})` : 'q'"
-                :y-title="'Intensity'"
-                :legend-visible="false"
-              />
+              <div class="fib-roi-charts">
+                <div class="fib-roi-chart-cell">
+                  <p class="fib-roi-chart-caption">{{ roiOopCaption }}</p>
+                  <LineChart
+                    :traces="roi1dTraces"
+                    :x-title="roi1dResult?.unit ? `${roi1dResult.unit}` : ''"
+                    :y-title="'Intensity'"
+                    :legend-visible="false"
+                  />
+                </div>
+                <div v-if="roi1dTracesIp.length > 0" class="fib-roi-chart-cell">
+                  <p class="fib-roi-chart-caption">{{ roiIpCaption }}</p>
+                  <LineChart
+                    :traces="roi1dTracesIp"
+                    :x-title="roi1dResult?.unitIp ? `${roi1dResult.unitIp}` : ''"
+                    :y-title="'Intensity'"
+                    :legend-visible="false"
+                  />
+                </div>
+              </div>
             </div>
           </div>
 
@@ -667,9 +747,17 @@
               </div>
             </div>
 
-            <!-- Batch export all results as PNG using current PNG options. -->
-            <!-- 一键批量导出全部为 PNG（用当前 PNG 选项）。单张/其它格式导出在左栏「导出结果」。 -->
+            <!-- Export current result as single PNG / 导出当前结果为单张 PNG -->
+            <!-- Batch export all results as PNG / 批量导出全部为 PNG -->
             <div class="fib-png-batch-row">
+              <button
+                type="button"
+                class="fib-run-btn fib-batch-png-btn"
+                :disabled="!result || pngBatchExporting"
+                @click="onExportCurrentPng"
+              >
+                {{ t('integrateFiber.exportCurrentPng') }}
+              </button>
               <button
                 type="button"
                 class="fib-run-btn fib-batch-png-btn"
@@ -773,6 +861,16 @@
                   <label class="fib-toggle">
                     <input v-model="pngShowTicks" type="checkbox" />
                     <span class="fib-toggle-label">Tick marks &amp; numbers / 刻度与数值</span>
+                  </label>
+                </div>
+                <div v-if="pngShowTicks" class="fib-grid" style="margin-top:8px">
+                  <label class="fib-field">
+                    <span class="fib-label">{{ t('integrateFiber.xTickStep') }}</span>
+                    <input v-model.number="pngXTickStep" type="number" class="fib-input" step="any" :placeholder="t('integrateFiber.tickStepPlaceholder')" />
+                  </label>
+                  <label class="fib-field">
+                    <span class="fib-label">{{ t('integrateFiber.yTickStep') }}</span>
+                    <input v-model.number="pngYTickStep" type="number" class="fib-input" step="any" :placeholder="t('integrateFiber.tickStepPlaceholder')" />
                   </label>
                 </div>
 
@@ -966,6 +1064,26 @@ interface FiberResultSummary {
 }
 
 /** Fiber-specific parameters / 纤维专用参数 */
+/**
+ * pyFAI integration algorithm. 'auto' omits the method argument entirely,
+ * reproducing the pre-0.2.4 behavior (pyFAI default: no pixel splitting,
+ * histogram). The explicit values change how pixels are split/rebinned and
+ * can look "stretched" under the nonlinear GIWAXS χ–q transform.
+ * pyFAI 积分算法。'auto' 表示完全不传 method 参数，与旧版行为一致
+ * （pyFAI 默认：不分裂像素的直方图法）。显式算法会改变像素分裂/重排方式，
+ * 在 GIWAXS 非线性 χ–q 变换下可能出现"拉伸"观感。
+ */
+type FiberAlgorithmMethod = 'auto' | 'splitpixel' | 'csr' | 'lut' | 'bbox' | 'numpy'
+
+const algorithmOptions: Array<{ value: FiberAlgorithmMethod; label: string }> = [
+  { value: 'auto', label: 'Default (pyFAI, no split)' },
+  { value: 'splitpixel', label: 'SplitPixel (full split)' },
+  { value: 'csr', label: 'CSR (fast)' },
+  { value: 'lut', label: 'LUT (fast)' },
+  { value: 'bbox', label: 'BBox (approx.)' },
+  { value: 'numpy', label: 'NumPy (fallback)' },
+]
+
 interface FiberParams {
   rot1Deg: number
   rot2Deg: number
@@ -982,6 +1100,7 @@ interface FiberParams {
   oopMax: number
   nptIp: number
   nptOop: number
+  method: FiberAlgorithmMethod
 }
 
 // ── i18n ──────────────────────────────────────────────────────────────────
@@ -1088,7 +1207,12 @@ const fiberParams = reactive<FiberParams>({
   oopMax: 20,
   nptIp: 400,
   nptOop: 400,
+  method: 'auto',
 })
+
+/** When true (PONI mode only), user rot1/rot2/rot3 override the PONI file values.
+ *  PONI 模式下开启时，用户输入的 rot1/rot2/rot3 覆盖 PONI 文件中的旋转值。 */
+const overridePoniRot = ref(false)
 
 const maskConfig = ref<MaskConfig>({
   valueRangeMin: 0,
@@ -1223,6 +1347,12 @@ const pngAxisTitleBold = ref(false)     // x/y 轴标题加粗
 const pngTickBold = ref(false)          // 刻度数字加粗
 const pngFlipX = ref(true)              // X 轴反转（默认开，匹配样品方向约定）
 const pngFlipY = ref(true)              // Y 轴反转（默认开）
+// Log floor (problem 2): clamp sub-threshold finite values in log mode / 对数阈值
+const logFloorEnabled = ref(false)       // 对数阈值开关（默认关）
+const logFloorValue = ref(0.01)          // 阈值（小于此值的有限数据以此值显示）
+// Tick step (problem 5): custom axis tick spacing / 刻度间隔
+const pngXTickStep = ref<number | null>(null)  // X 刻度间隔（null=自动）
+const pngYTickStep = ref<number | null>(null)  // Y 刻度间隔（null=自动）
 
 // ── Tab navigation / Tab 导航 ──
 const activeTab = ref<'roi' | 'png'>('roi')
@@ -1260,7 +1390,12 @@ const roiNpt = ref(100)
 const roiAbsQ = ref(true)  // default: take |q| / 默认q轴取绝对值
 const roiRunning = ref(false)
 const roiError = ref<string | null>(null)
-const roi1dResult = ref<{ curves: Array<{ radial: number[]; intensity: number[]; filename: string }>; unit: string } | null>(null)
+const roi1dResult = ref<{
+  curves: Array<{ radial: number[]; intensity: number[]; filename: string }>
+  unit: string
+  curvesIp: Array<{ radial: number[]; intensity: number[]; filename: string }>
+  unitIp: string
+} | null>(null)
 const roiImageWrapperRef = ref<HTMLElement | null>(null)
 const roiCanvasRef = ref<HTMLCanvasElement | null>(null)
 
@@ -1380,6 +1515,7 @@ async function loadFiberResult(index: number): Promise<void> {
       clim: resultClimMode.value === 'manual'
         ? [resultClimMin.value, resultClimMax.value]
         : [null, null],
+      log_floor: logFloorEnabled.value && useLog.value ? logFloorValue.value : null,
     },
   })
   const data = raw as {
@@ -1453,6 +1589,9 @@ async function refreshMplPreview(): Promise<void> {
         tickBold: pngTickBold.value,
         flipX: pngFlipX.value,
         flipY: pngFlipY.value,
+        logFloor: logFloorEnabled.value && useLog.value ? logFloorValue.value : null,
+        xTickStep: pngXTickStep.value,
+        yTickStep: pngYTickStep.value,
         // In auto mode, forward the on-screen contrast (resultContrast) so the
         // preview matches the heatmap exactly instead of Python recomputing it.
         // 自动模式下透传屏幕对比度，使预览与热图一致而非后端重算。
@@ -1519,6 +1658,7 @@ function buildRenderSettings(): Record<string, unknown> {
     clim_mode: 'auto',
     clim: [null, null],
     preview_scale: 1.0,
+    log_floor: logFloorEnabled.value && useLog.value ? logFloorValue.value : null,
   }
 }
 
@@ -1527,16 +1667,24 @@ function buildGeometryPayload(): Record<string, unknown> {
   if (geo.poniPath) {
     return { poniPath: geo.poniPath }
   }
-  // Manual params: match FiberIntegratorService.build_integrator's manual_params format
-  const pixelUm = geo.pixel1 ?? 172.0
+  // Return raw fields (original units) so resolve_geometry_center can read
+  // pixel1/distance/wavelength/centerX/centerY directly, and task-adapter's
+  // buildFiberGeometry can normalize (unit conversion + rot) for fiber_1d_roi.
+  // Previously this returned a {manual:{dist,poni1,...}} dict with wrong units
+  // (mm/Å instead of m) and swapped poni1/poni2, causing ROI geometry mismatch.
+  // 返回原始字段（原始单位），使 resolve_geometry_center 可直接读取
+  // pixel1/distance/wavelength/centerX/centerY，task-adapter 的 buildFiberGeometry
+  // 可为 fiber_1d_roi 做归一化（单位转换 + rot）。
   return {
-    manual: {
-      dist: geo.distance ?? 200.0,
-      poni1: (geo.centerX ?? 512.0) * pixelUm * 1e-6,
-      poni2: (geo.centerY ?? 512.0) * pixelUm * 1e-6,
-      wavelength: geo.wavelength ?? 1.5418,
-      pixel_size_um: pixelUm,
-    },
+    pixel1: geo.pixel1,
+    pixel2: geo.pixel2,
+    distance: geo.distance,
+    wavelength: geo.wavelength,
+    centerX: geo.centerX,
+    centerY: geo.centerY,
+    rot1: fiberParams.rot1Deg,
+    rot2: fiberParams.rot2Deg,
+    rot3: fiberParams.rot3Deg,
   }
 }
 
@@ -1838,10 +1986,14 @@ function buildParams(previewOnly = false): Record<string, unknown> {
           wavelength: geo.wavelength,
           centerX: geo.centerX,
           centerY: geo.centerY,
+          rot1: fiberParams.rot1Deg,
+          rot2: fiberParams.rot2Deg,
+          rot3: fiberParams.rot3Deg,
         },
     rot1Deg: fiberParams.rot1Deg,
     rot2Deg: fiberParams.rot2Deg,
     rot3Deg: fiberParams.rot3Deg,
+    overridePoniRot: overridePoniRot.value,
     sampleOrientation: fiberParams.sampleOrientation,
     incidentAngleDeg: fiberParams.incidentAngleDeg,
     tiltAngleDeg: fiberParams.tiltAngleDeg,
@@ -1856,6 +2008,10 @@ function buildParams(previewOnly = false): Record<string, unknown> {
       : [fiberParams.oopMin, fiberParams.oopMax],
     nptIp: fiberParams.nptIp,
     nptOop: fiberParams.nptOop,
+    // 'auto' → omit the key so the backend passes no method to pyFAI,
+    // matching the pre-feature behavior exactly.
+    // 'auto' → 不发送该键，后端不向 pyFAI 传 method，与旧版行为完全一致。
+    method: fiberParams.method === 'auto' ? undefined : fiberParams.method,
     mask: {
       valueRangeMin: maskConfig.value.valueRangeMin,
       valueRangeMax: maskConfig.value.valueRangeMax,
@@ -1878,7 +2034,13 @@ async function runPreviewIntegration(): Promise<void> {
   previewError.value = null
   result.value = null
 
-  const params = buildParams(true) // previewOnly = true
+  // Integrate ALL imported files so batch export can produce every result.
+  // Previously previewOnly=true only integrated the first file, so the batch
+  // cache contained a single result and batch PNG export only produced 1 file.
+  // 积分所有导入文件，使批量导出能生成全部结果。
+  // 此前 previewOnly=true 只积分第一个文件，batch cache 只有一个结果，
+  // 导致批量 PNG 导出只能导出一张。
+  const params = buildParams(false)
 
   try {
     const response = await transport.submitTask('integrate_fiber', params)
@@ -1898,6 +2060,13 @@ async function runPreviewIntegration(): Promise<void> {
         : []
       if (batchCachePath.value && resultSummaries.value.length > 0) {
         await loadFiberResult(0)
+        // Load the first page of result thumbnails — previously this was never
+        // called on completion, so the shared result strip stayed empty until
+        // the user happened to change the colormap (which re-triggers it).
+        // 加载第一页结果缩略图——此前完成后从不调用，缩略图条一直为空，
+        // 直到用户碰巧改色图才经 watcher 触发。
+        resultThumbCurrentPage.value = 1
+        void loadFiberResultThumbnails(1)
         // Auto-collapse layout: expand export section, collapse sidebar geometry/
         // integration groups and the main-area image preview + thumbnails
         // (now redundant with the shared result heatmap). Display settings stays
@@ -2002,6 +2171,9 @@ async function onExport(payload: { format: ExportFormat; path: string; mode: Exp
       tickBold: pngTickBold.value,
       flipX: pngFlipX.value,
       flipY: pngFlipY.value,
+      logFloor: logFloorEnabled.value && useLog.value ? logFloorValue.value : null,
+      xTickStep: pngXTickStep.value,
+      yTickStep: pngYTickStep.value,
       // Forward on-screen contrast (auto or manual) so exported PNG matches heatmap.
       // 透传屏幕对比度（自动或手动），使导出 PNG 与热图一致。
       clim: resultClimMode.value === 'manual'
@@ -2017,11 +2189,15 @@ async function onExport(payload: { format: ExportFormat; path: string; mode: Exp
     const response = await transport.submitTask('export_integration', params)
 
     const removeOk = transport.onTaskResult(response.taskId, (r) => {
-      const d = r.data as { success?: boolean; error?: string; path?: string }
+      const d = r.data as { success?: boolean; error?: string; path?: string; files?: string[]; errors?: string[] }
       if (d?.success) {
+        const count = d.files?.length ?? 1
+        const errInfo = d.errors?.length ? ` (${d.errors.length} failed)` : ''
         toast.push({
           title: t('integrateFiber.title'),
-          message: `${payload.format.toUpperCase()} → ${d.path ?? payload.path}`,
+          message: count > 1
+            ? `${payload.format.toUpperCase()} → ${count} files${errInfo}`
+            : `${payload.format.toUpperCase()} → ${d.path ?? payload.path}`,
           tone: 'success',
         })
       } else {
@@ -2035,6 +2211,29 @@ async function onExport(payload: { format: ExportFormat; path: string; mode: Exp
     })
   } catch (err) {
     toast.push({ title: t('integrateFiber.title'), message: String(err), tone: 'error' })
+  }
+}
+
+/**
+ * Export only the current result as a single annotated PNG (save-file dialog).
+ * Reuses the `single` path of onExport.
+ * 仅导出当前结果为单张带标注 PNG（保存文件对话框），复用 onExport 的 single 路径。
+ */
+async function onExportCurrentPng(): Promise<void> {
+  if (!result.value) return
+  let savePath = ''
+  if (transport.isDesktop()) {
+    savePath = await transport.selectSavePath({
+      filters: [{ name: 'PNG', extensions: ['png'] }],
+    }) ?? ''
+    if (!savePath) return
+    if (!savePath.toLowerCase().endsWith('.png')) savePath += '.png'
+  }
+  pngBatchExporting.value = true
+  try {
+    await onExport({ format: 'png', path: savePath, mode: 'single' })
+  } finally {
+    pngBatchExporting.value = false
   }
 }
 
@@ -2384,6 +2583,39 @@ const roi1dTraces = computed<LineTrace[]>(() => {
   }))
 })
 
+/** In-plane (X = qip) traces — second integration direction / 面内剖面曲线 */
+const roi1dTracesIp = computed<LineTrace[]>(() => {
+  if (!roi1dResult.value) return []
+  return roi1dResult.value.curvesIp.map((c, i) => ({
+    x: c.radial,
+    y: c.intensity,
+    name: c.filename || `Curve ${i + 1}`,
+    mode: 'lines' as const,
+  }))
+})
+
+/** Chart captions follow the user-selected units (no hardcoded qz/qy) /
+ * 曲线标题跟随用户所选单位（不再写死 qz/qy） */
+const roiOopCaption = computed(() => {
+  const u = roi1dResult.value?.unit
+  const label = u ? (UNIT_LABELS[u] ?? u) : ''
+  return label ? `${label}（面外 OOP）` : '面外 OOP'
+})
+const roiIpCaption = computed(() => {
+  const u = roi1dResult.value?.unitIp
+  const label = u ? (UNIT_LABELS[u] ?? u) : ''
+  return label ? `${label}（面内 IP）` : '面内 IP'
+})
+
+// A drawn ROI rectangle lives in the 2D map's units; when the user changes
+// units, it is stale until the map is re-integrated — drop it so it cannot
+// silently mismatch the numeric ranges.
+// 框选矩形基于 2D 图当前单位；单位变更后直到重新积分为止都是过期的，
+// 直接清除以免与数值范围不一致。
+watch([() => fiberParams.unitIp, () => fiberParams.unitOop], () => {
+  clearRoiRect()
+})
+
 async function runRoiIntegration(): Promise<void> {
   if (!canRunRoi.value || !result.value) return
 
@@ -2412,6 +2644,13 @@ async function runRoiIntegration(): Promise<void> {
       filePath: activeFilePath.value ?? files.value[0] ?? '',
       files: [...files.value],
       geometry: buildGeometryPayload(),
+      // Top-level rot fields are read by task-adapter's buildFiberGeometry
+      // (same as the 2D integrate_fiber path) so ROI 1D uses identical geometry.
+      // 顶层 rot 字段由 task-adapter 的 buildFiberGeometry 读取（与 2D 积分路径一致）。
+      rot1Deg: fiberParams.rot1Deg,
+      rot2Deg: fiberParams.rot2Deg,
+      rot3Deg: fiberParams.rot3Deg,
+      overridePoniRot: overridePoniRot.value,
       fiberParams: {
         rot1Deg: fiberParams.rot1Deg,
         rot2Deg: fiberParams.rot2Deg,
@@ -2436,8 +2675,16 @@ async function runRoiIntegration(): Promise<void> {
     })
 
     const data = raw as {
-      results: Array<{ filename: string; radial: number[]; intensity: number[]; error?: string }>
+      results: Array<{
+        filename: string
+        radial: number[]
+        intensity: number[]
+        radial_ip?: number[]
+        intensity_ip?: number[]
+        error?: string
+      }>
       unit: string
+      unit_ip?: string
     }
     const ok = data.results?.filter(r => !r.error && r.radial?.length > 0) ?? []
     if (ok.length === 0) {
@@ -2447,6 +2694,10 @@ async function runRoiIntegration(): Promise<void> {
     roi1dResult.value = {
       curves: ok.map(r => ({ radial: r.radial, intensity: r.intensity, filename: r.filename })),
       unit: data.unit,
+      curvesIp: ok
+        .filter(r => (r.radial_ip?.length ?? 0) > 0)
+        .map(r => ({ radial: r.radial_ip as number[], intensity: r.intensity_ip as number[], filename: r.filename })),
+      unitIp: data.unit_ip ?? '',
     }
     // Auto-expand the ROI section to reveal the 1D curve / 自动展开显示1D曲线
     roiExpanded.value = true
@@ -2472,18 +2723,34 @@ async function exportRoi1d(): Promise<void> {
     if (!outputPath.toLowerCase().endsWith('.csv')) outputPath += '.csv'
   }
 
-  const params = {
+  // Deep-clone to strip Vue reactive proxies before IPC serialization.
+  // Without this, Electron throws "An object could not be cloned." because
+  // the radial/intensity arrays inside roi1dResult are reactive Proxies.
+  // 深拷贝以去除 Vue reactive proxy，否则 Electron IPC 报
+  // "An object could not be cloned."（roi1dResult 内的数组是 reactive Proxy）。
+  const params: Record<string, unknown> = JSON.parse(JSON.stringify({
     format,
     outputPath,
     dataType: '1d',
-    mode: 'single' as ExportMode,
-    results: roi1dResult.value.curves.map(c => ({
-      radial: c.radial,
-      intensity: c.intensity,
-      label: c.filename,
-      unit: roi1dResult.value?.unit ?? 'q_nm^-1',
-    })),
-  }
+    mode: 'single',
+    // Both directions are exported: qoop curves keep the original labels,
+    // qip curves are suffixed so the two sets stay distinguishable in CSV.
+    // 两个方向都导出：qoop 曲线保留原标签，qip 曲线加后缀以便区分。
+    results: [
+      ...roi1dResult.value.curves.map(c => ({
+        radial: c.radial,
+        intensity: c.intensity,
+        label: c.filename,
+        unit: roi1dResult.value?.unit ?? 'q_nm^-1',
+      })),
+      ...roi1dResult.value.curvesIp.map(c => ({
+        radial: c.radial,
+        intensity: c.intensity,
+        label: `${c.filename} (qip)`,
+        unit: roi1dResult.value?.unitIp || roi1dResult.value?.unit || 'q_nm^-1',
+      })),
+    ],
+  }))
 
   try {
     const response = await transport.submitTask('export_integration', params)
@@ -2539,7 +2806,7 @@ watch(roiMode, (enabled) => {
 // === Watchers / 监听器 ===
 
 /** Re-render preview when display settings change / 显示设置变更时重新渲染预览 */
-watch([colormap, useLog], () => {
+watch([colormap, useLog, logFloorEnabled, logFloorValue], () => {
   if (activeFilePath.value && previewExpanded.value) {
     loadPreview(activeFilePath.value)
   }
@@ -2563,7 +2830,7 @@ watch([resultClimMode, resultClimMin, resultClimMax], () => {
 // 当 PNG 选项变化时刷新带坐标轴预览；matplotlib 渲染较慢，故做防抖。
 let mplRefreshTimer: ReturnType<typeof setTimeout> | null = null
 watch(
-  [pngShowLabels, pngNoDataBg, pngFontSize, pngShowColorbar, pngShowTitle, pngBorderWidth, pngEdgeColor, pngXLabel, pngYLabel, pngFontFamily, pngShowAxisTitle, pngShowTicks, pngTitleBold, pngAxisTitleBold, pngTickBold, pngFlipX, pngFlipY, colormap, useLog, resultClimMode, resultClimMin, resultClimMax],
+  [pngShowLabels, pngNoDataBg, pngFontSize, pngShowColorbar, pngShowTitle, pngBorderWidth, pngEdgeColor, pngXLabel, pngYLabel, pngFontFamily, pngShowAxisTitle, pngShowTicks, pngTitleBold, pngAxisTitleBold, pngTickBold, pngFlipX, pngFlipY, colormap, useLog, logFloorEnabled, logFloorValue, resultClimMode, resultClimMin, resultClimMax, pngXTickStep, pngYTickStep],
   () => {
     if (mplRefreshTimer) clearTimeout(mplRefreshTimer)
     mplRefreshTimer = setTimeout(() => { void refreshMplPreview() }, 300)
@@ -2579,10 +2846,29 @@ watch(
     geometry.value.wavelength,
     geometry.value.centerX,
     geometry.value.centerY,
+    fiberParams.rot1Deg,
+    fiberParams.rot2Deg,
+    fiberParams.rot3Deg,
+    overridePoniRot.value,
   ],
   () => {
     if (activeFilePath.value && previewExpanded.value) {
       void loadPreviewIfExpanded()
+    }
+    // Invalidate stale 2D results so users know to re-integrate after
+    // changing geometry or rotation parameters. Without this the old
+    // cached heatmap stays visible, making it look like params had no effect.
+    // 几何或旋转参数变化后使旧的 2D 结果失效，提示用户重新积分。
+    // 否则旧缓存热图残留，造成"参数不影响积分"的错觉。
+    if (result.value) {
+      result.value = null
+      batchCachePath.value = null
+      resultSummaries.value = []
+      currentResultIndex.value = 0
+      resultThumbnailItems.value = []
+      resultContrast.value = null
+      roi1dResult.value = null
+      toast.push({ title: t('integrateFiber.title'), message: t('integrateFiber.geomChangedHint'), tone: 'info' })
     }
   },
 )
@@ -3324,6 +3610,21 @@ onUnmounted(() => {
   color: var(--text-primary);
 }
 
+/* Two-chart layout: qoop + qip side by side, stacking on narrow widths */
+/* 双图布局：qoop 与 qip 并排，窄屏自动堆叠 */
+.fib-roi-charts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 12px;
+}
+
+.fib-roi-chart-caption {
+  margin: 0 0 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 /* ── Line profiles ── */
 
 .fib-profiles {
@@ -3382,6 +3683,7 @@ onUnmounted(() => {
 }
 
 .fib-batch-png-btn {
+  flex: 1;
   white-space: nowrap;
 }
 

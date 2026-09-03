@@ -312,6 +312,26 @@ def _normalize_poni_data(raw: Dict[str, Any]) -> Dict[str, Any]:
                 normalized['pixel_size'] = float(val)
             break
 
+    # Registry detectors (e.g. `Detector: Pilatus300k`) carry their pixel size
+    # in the pyFAI detector class, not in a `PixelSize:` line — resolve it so
+    # the parsed pixel size (and derived beam-center-in-pixels) is never 0.
+    # 注册表探测器（如 `Detector: Pilatus300k`）的像素尺寸保存在 pyFAI 探测器
+    # 类中而非 `PixelSize:` 行——此处回退解析，避免像素尺寸（及换算的像素
+    # 光束中心）为 0。
+    if 'pixel_size' not in normalized:
+        det_name = str(raw.get('Detector') or raw.get('detector') or '').strip()
+        if det_name:
+            try:
+                import pyFAI.detectors as _detectors  # type: ignore
+                det_cls = getattr(_detectors, det_name, None)
+                if det_cls is not None:
+                    det = det_cls()
+                    pixel1 = getattr(det, 'pixel1', None)
+                    if pixel1:
+                        normalized['pixel_size'] = float(pixel1)
+            except Exception:  # noqa: BLE001 — registry lookup is best-effort
+                pass
+
     # PONI1 (beam center X / 光束中心X)
     for key in ['Poni1', 'poni1', 'Poni_1', 'beam_center_x']:
         if key in raw:
@@ -630,8 +650,19 @@ def export_to_manual_params(poni_data: Dict[str, Any]) -> Dict[str, Any]:
         manual_params['pixel_size'] = poni_data['pixel_size'] * 1e6  # m to um
 
     # Beam center in pixels / 光束中心（像素）
+    # poni1/poni2 are in METERS in PONI data; convert via pixel size so the
+    # exported "beam_center in pixels" contract actually holds.
+    # poni1/poni2 在 PONI 数据中以米为单位；需按像素尺寸换算为像素，
+    # 才符合导出 "beam_center 单位为像素" 的约定。
     if 'poni1' in poni_data and 'poni2' in poni_data:
-        manual_params['beam_center'] = [poni_data['poni1'], poni_data['poni2']]
+        pixel_m = float(poni_data.get('pixel_size') or 0.0)
+        if pixel_m > 0:
+            manual_params['beam_center'] = [
+                poni_data['poni1'] / pixel_m,
+                poni_data['poni2'] / pixel_m,
+            ]
+        else:
+            manual_params['beam_center'] = [poni_data['poni1'], poni_data['poni2']]
 
     # Rotations in degrees / 旋转（度）
     rotations = []

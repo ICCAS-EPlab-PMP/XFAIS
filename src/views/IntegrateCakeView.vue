@@ -406,7 +406,12 @@ const unitOptions = UNIT_OPTIONS
 
 function onUnitChange(event: Event): void {
   const val = (event.target as HTMLSelectElement).value as IntegrationUnit
-  Object.assign(advancedOptions, { unit: val })
+  // Radial range values are unit-dependent (e.g. 0–5 entered as 2θ degrees
+  // means something completely different in q). Clear them on unit switch so
+  // stale numbers can't silently clip the result window.
+  // 径向范围数值与单位绑定（如按 2θ 输入的 0–5 换成 q 后含义完全不同）。
+  // 切换单位时清空，避免残留数值静默截断结果窗口。
+  advancedOptions.value = { ...advancedOptions.value, unit: val, radialMin: null, radialMax: null }
 }
 
 // ── State / 状态 ────────────────────────────────────────────────────────────

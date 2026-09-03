@@ -610,8 +610,18 @@ function drawOverlays() {
     }
 
     if (overlay.type === 'sectorBoundary') {
-      const cx = overlay.centerX
-      const cy = overlay.centerY
+      // Angles are pyFAI chi in degrees. pyFAI's chi is measured from the
+      // positive column axis (+x → right) with +90° pointing along increasing
+      // row (+y → DOWN on the displayed image), so positive angles run
+      // clockwise on screen. The endpoint must therefore ADD sin to cy;
+      // subtracting it (math-class y-up) mirrors the sector vertically and
+      // makes the overlay show the opposite wedge from what is integrated.
+      // 角度为 pyFAI 的 chi（度）。pyFAI 的 chi 从列正方向（+x → 右）起算，
+      // +90° 指向行增加方向（+y → 图像显示中的下方），即正角度在屏幕上顺时针。
+      // 端点计算必须对 cy 加 sin；若按数学习惯减去，扇区会上下镜像，
+      // 导致叠加层显示的楔形与实际积分的楔形相反。
+      const cx = overlay.centerX * scaleX
+      const cy = overlay.centerY * scaleY
       const r = overlay.radius ?? Math.max(naturalWidth.value, naturalHeight.value)
 
       ctx.strokeStyle = '#1e40af'
@@ -622,7 +632,7 @@ function drawOverlays() {
         const rad = (angleDeg * Math.PI) / 180
         ctx.beginPath()
         ctx.moveTo(cx, cy)
-        ctx.lineTo(cx + r * Math.cos(rad), cy - r * Math.sin(rad))
+        ctx.lineTo(cx + r * Math.cos(rad) * scaleX, cy + r * Math.sin(rad) * scaleY)
         ctx.stroke()
       }
 
