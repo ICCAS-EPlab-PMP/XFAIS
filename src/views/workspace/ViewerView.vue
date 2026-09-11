@@ -334,6 +334,40 @@
               </label>
             </div>
 
+            <!-- Line-profile sub-mode / 沿线剖面子模式 -->
+            <div class="vw-field">
+              <label class="vw-toggle" :title="t('viewer.lineProfileHint')">
+                <input v-model="lineProfileMode" type="checkbox" :disabled="pngExporting" />
+                <span>{{ t('viewer.lineProfile') }}</span>
+              </label>
+            </div>
+            <template v-if="lineProfileMode">
+              <div class="vw-grid-2">
+                <label class="vw-field">
+                  <span class="vw-label">{{ t('viewer.lineProfileWidth') }}</span>
+                  <input
+                    v-model.number="lineProfileWidth"
+                    type="number"
+                    class="vw-input"
+                    step="1"
+                    min="1"
+                    @change="scheduleLineProfileRecompute"
+                  />
+                </label>
+                <label class="vw-field">
+                  <span class="vw-label">{{ t('viewer.lineProfileXAxis') }}</span>
+                  <select v-model="lineProfileXAxis" class="vw-input">
+                    <option value="distance_px">{{ t('viewer.lineProfileXDistance') }}</option>
+                    <option value="q" :disabled="!lineProfileHasGeometry">q</option>
+                    <option value="two_theta" :disabled="!lineProfileHasGeometry">2θ</option>
+                    <option value="chi" :disabled="!lineProfileHasGeometry">χ</option>
+                  </select>
+                </label>
+              </div>
+              <p v-if="!lineProfileHasGeometry" class="vw-hint">{{ t('viewer.lineProfileNoGeometry') }}</p>
+              <p class="vw-hint">{{ t('viewer.lineProfileDrawHint') }}</p>
+            </template>
+
             <p class="vw-hint">{{ t('viewer.pixelInfoClickHint') }}</p>
           </template>
         </div>
@@ -378,7 +412,9 @@
                 :overlays="imageOverlays"
                 :data-width="imageSize?.width"
                 :data-height="imageSize?.height"
+                :line-draw-mode="pixelInfoMode && lineProfileMode"
                 @image:click="onImageClick"
+                @line:drawn="onLineDrawn"
               />
               <div v-if="isLoadingFullRes && previewB64" class="vw-fullres-loading">
                 <span>{{ t('viewer.loadingFullRes') }}</span>
@@ -445,6 +481,25 @@
                 </div>
               </dl>
               <p v-else class="vw-hint">{{ t('viewer.pixelInfoClickHint') }}</p>
+            </div>
+
+            <!-- Line-profile plot (only in line-profile sub-mode) / 沿线剖面图（仅沿线剖面子模式） -->
+            <div
+              v-if="pixelInfoMode && lineProfileMode"
+              class="vw-pixel-info vw-line-profile"
+              :data-testid="testIds.viewerStats"
+            >
+              <h4 class="vw-stats-title">{{ t('viewer.lineProfile') }}</h4>
+              <div v-if="lineProfileLoading" class="vw-hint">{{ t('viewer.lineProfileLoading') }}</div>
+              <LineChart
+                v-else-if="lineProfileResult"
+                :traces="lineProfileTraces"
+                :x-label="lineProfileXLabel"
+                :x-unit="lineProfileXUnit"
+                :y-label="t('viewer.lineProfileIntensity')"
+                y-unit="a.u."
+              />
+              <p v-else class="vw-hint">{{ t('viewer.lineProfileDrawHint') }}</p>
             </div>
           </div>
 
@@ -528,6 +583,8 @@ import ThumbnailStrip from '@/components/business/ThumbnailStrip.vue'
 import type { ThumbnailItem } from '@/components/business/ThumbnailStrip.vue'
 import ImagePreview from '@/components/charts/ImagePreview.vue'
 import type { Overlay } from '@/components/charts/ImagePreview.vue'
+import LineChart from '@/components/charts/LineChart.vue'
+import type { LineTrace } from '@/components/charts/LineChart.vue'
 import GeometryForm from '@/components/business/GeometryForm.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 
@@ -1060,7 +1117,7 @@ async function rescanImportFolder(): Promise<void> {
     }
     if (importMode.value === 'append') {
       const existingSet = new Set(selectedFiles.value)
-      const newFiles = files.filter(p => !existingSet.has(p))
+      const newFiles = files.filter((p: string) => !existingSet.has(p))
       await handleFileBatchSelected([...selectedFiles.value, ...newFiles])
     } else {
       await handleFileBatchSelected(files)
@@ -1189,6 +1246,34 @@ let cleanupRingError: (() => void) | null = null
 let ringDebounceTimer: ReturnType<typeof setTimeout> | undefined
 /** Image natural size captured for overlay sizing / 用于叠加尺寸的图像自然尺寸。 */
 const imageSize = ref<{ width: number; height: number } | null>(null)
+
+// === Line-profile sub-mode state / 沿线剖面子模式状态 ===
+/** When true, ImagePreview enters line-draw mode and a profile is computed on draw. */
+/** 为 true 时，ImagePreview 进入画线模式并在绘制时计算剖面。 */
+const lineProfileMode = ref(false)
+/** Band width in pixels (>=1). Mean is taken across this perpendicular band. */
+/** 带宽（像素，>=1）。在垂直于线的该带宽内取平均。 */
+const lineProfileWidth = ref(1)
+/** Current line endpoints in data-space pixels (col=x, row=y). */
+/** 当前线段端点，数据空间像素（col=x, row=y）。 */
+const lineSegment = ref<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
+/** X-axis selector for the profile plot. */
+/** 剖面图的横坐标选择器。 */
+const lineProfileXAxis = ref<'distance_px' | 'q' | 'two_theta' | 'chi'>('distance_px')
+interface LineProfileResult {
+  distance_px: number[]
+  intensity: number[]
+  q: number[] | null
+  two_theta: number[] | null
+  chi: number[] | null
+  length_px: number
+  n_samples: number
+  width: number
+  aggregate: string
+  has_geometry: boolean
+}
+const lineProfileResult = ref<LineProfileResult | null>(null)
+const lineProfileLoading = ref(false)
 
 // === Pixel-info mode helpers / 像素信息模式辅助函数 ===
 
@@ -1334,6 +1419,85 @@ async function onImageClick(e: { pixelX: number; pixelY: number }): Promise<void
   }
 }
 
+/**
+ * Compute the mean-intensity profile along a user-drawn line via the backend
+ * 'line_profile' action. Endpoints arrive in data-space pixels from
+ * ImagePreview's line:drawn event (pixelX = col, pixelY = row); they are mapped
+ * to the row/col payload the backend expects.
+ * 通过后端 'line_profile' action 计算用户绘制线段的平均强度剖面。端点来自
+ * ImagePreview 的 line:drawn 事件（pixelX = col, pixelY = row），按数据空间像素；
+ * 这里映射到后端期望的 row/col 载荷。
+ */
+async function onLineDrawn(seg: {
+  pixelX0: number; pixelY0: number; pixelX1: number; pixelY1: number
+}): Promise<void> {
+  if (!filePath.value) return
+  // Persist the segment so the overlay can render it after the drag ends.
+  // 保存线段，使叠加层在拖拽结束后仍能渲染。
+  lineSegment.value = {
+    x0: seg.pixelX0, y0: seg.pixelY0, x1: seg.pixelX1, y1: seg.pixelY1,
+  }
+  lineProfileLoading.value = true
+  try {
+    const result = await submitAndWait('viewer_config', {
+      action: 'line_profile',
+      filePath: filePath.value,
+      geometry: buildGeometryPayload(),
+      pixelX0: seg.pixelX0, pixelY0: seg.pixelY0,
+      pixelX1: seg.pixelX1, pixelY1: seg.pixelY1,
+      width: lineProfileWidth.value,
+      frame: currentFrame.value,
+      dataset: selectedDataset.value || undefined,
+      channel: channelCount.value > 1 ? selectedChannel.value : undefined,
+    }) as LineProfileResult | { status?: string; message?: string }
+    if (result && Array.isArray((result as LineProfileResult).intensity)) {
+      lineProfileResult.value = result as LineProfileResult
+      // If the backend had no geometry, force the x-axis back to pixel distance
+      // and clear any stale q/2θ/chi selection so the plot stays valid.
+      // 若后端无几何信息，将横坐标强制切回像素距离，并清除陈旧的 q/2θ/chi 选择，
+      // 保证图表有效。
+      if (!(result as LineProfileResult).has_geometry) {
+        lineProfileXAxis.value = 'distance_px'
+      }
+    } else if (result && (result as { status?: string }).status === 'error') {
+      toast.push({
+        title: t('viewer.lineProfile'),
+        message: (result as { message?: string }).message ?? t('viewer.lineProfileError'),
+        tone: 'error',
+      })
+    }
+  } catch (err) {
+    toast.push({
+      title: t('viewer.lineProfile'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    lineProfileLoading.value = false
+  }
+}
+
+/**
+ * Recompute the profile when the band width changes (reuses the current
+ * endpoints). Debounced so spinner-stepping the width input doesn't fire a
+ * request per tick.
+ * 带宽变化时重新计算剖面（复用当前端点）。防抖处理，避免每次步进带宽输入都发请求。
+ */
+let lineProfileWidthTimer: ReturnType<typeof setTimeout> | undefined
+function scheduleLineProfileRecompute(): void {
+  if (!lineSegment.value || !filePath.value) return
+  if (lineProfileWidthTimer) clearTimeout(lineProfileWidthTimer)
+  lineProfileWidthTimer = setTimeout(() => {
+    lineProfileWidthTimer = undefined
+    if (lineSegment.value) {
+      void onLineDrawn({
+        pixelX0: lineSegment.value.x0, pixelY0: lineSegment.value.y0,
+        pixelX1: lineSegment.value.x1, pixelY1: lineSegment.value.y1,
+      })
+    }
+  }, 300)
+}
+
 /** Image overlays: ring mask (under) + beam-center crosshair (over). / 图像叠加：圆环遮罩（下）+ 光束中心十字（上）。 */
 const imageOverlays = computed<Overlay[]>(() => {
   if (!pixelInfoMode.value) return []
@@ -1355,7 +1519,69 @@ const imageOverlays = computed<Overlay[]>(() => {
       color: '#eab308', // yellow / 黄色
     })
   }
+  // Drawn line segment (line-profile sub-mode). Rendered in data space,
+  // same as beamCenter, so ImagePreview scales it to the displayed image.
+  // 绘制的线段（沿线剖面子模式）。以数据空间坐标渲染，与 beamCenter 一致，
+  // 由 ImagePreview 缩放到所显示图像。
+  if (lineProfileMode.value && lineSegment.value) {
+    overlays.push({
+      type: 'lineSegment',
+      x0: lineSegment.value.x0,
+      y0: lineSegment.value.y0,
+      x1: lineSegment.value.x1,
+      y1: lineSegment.value.y1,
+      color: '#22d3ee', // cyan / 青色
+      lineWidth: 2,
+    })
+  }
   return overlays
+})
+
+// === Line-profile plot bindings / 沿线剖面图绑定 ===
+
+/** Whether geometry-based x-axes are available (requires a successful profile with geometry). */
+/** 是否可用基于几何的横坐标（需要带几何信息的成功剖面结果）。 */
+const lineProfileHasGeometry = computed(() => !!lineProfileResult.value?.has_geometry)
+
+/** X values for the profile plot, selected by lineProfileXAxis. */
+/** 剖面图的横坐标值，由 lineProfileXAxis 选择。 */
+const lineProfileXValues = computed<number[]>(() => {
+  const r = lineProfileResult.value
+  if (!r) return []
+  switch (lineProfileXAxis.value) {
+    case 'q': return r.q ?? []
+    case 'two_theta': return r.two_theta ?? []
+    case 'chi': return r.chi ?? []
+    default: return r.distance_px
+  }
+})
+
+/** Single-trace payload for <LineChart>. */
+/** <LineChart> 的单条 trace 载荷。 */
+const lineProfileTraces = computed<LineTrace[]>(() => {
+  const r = lineProfileResult.value
+  if (!r) return []
+  return [{ x: lineProfileXValues.value, y: r.intensity }]
+})
+
+/** Human-readable x-axis label for the current selection. */
+/** 当前选择对应的横坐标可读标签。 */
+const lineProfileXLabel = computed(() => {
+  switch (lineProfileXAxis.value) {
+    case 'q': return 'q'
+    case 'two_theta': return '2θ'
+    case 'chi': return 'χ'
+    default: return t('viewer.lineProfileXDistance')
+  }
+})
+
+const lineProfileXUnit = computed(() => {
+  switch (lineProfileXAxis.value) {
+    case 'q': return 'Å⁻¹'
+    case 'two_theta': return '°'
+    case 'chi': return '°'
+    default: return 'px'
+  }
 })
 
 // === File handling / 文件处理 ===

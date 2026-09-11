@@ -70,6 +70,51 @@ const buildNormalizedGeometry = (geometryInput: unknown): Record<string, unknown
   }
 }
 
+/**
+ * Build the geometry payload consumed by FiberIntegratorService.build_integrator.
+ * Shared by the integrate_fiber (2D) and fiber_1d_roi (ROI 1D) paths so that
+ * rot1/rot2/rot3 and unit conversions are identical between them.
+ *
+ * - Manual mode: sends manual_params with rot1/rot2/rot3 (radians).
+ * - PONI mode: sends poni_path + optional rot_overrides when the user enables
+ *   "Override PONI rotations" (overridePoniRot). Legacy use_poni_rot3 /
+ *   override_rot3_rad fields are kept for backward compatibility.
+ *
+ * 构建 FiberIntegratorService.build_integrator 消费的 geometry 载荷。
+ * 2D 积分与 ROI 1D 积分共用，确保 rot1/rot2/rot3 及单位转换完全一致。
+ */
+const buildFiberGeometry = (params: Record<string, unknown>): Record<string, unknown> => {
+  const geometry = buildNormalizedGeometry(params.geometry)
+  const manualGeo = asRecord(geometry.manual)
+  const overridePoni = asBoolean(params.overridePoniRot, false)
+  const poniPath = asString(geometry.poni_path)
+  const rot1Rad = asNumber(params.rot1Deg, 0) * Math.PI / 180
+  const rot2Rad = asNumber(params.rot2Deg, 0) * Math.PI / 180
+  const rot3Rad = asNumber(params.rot3Deg, 0) * Math.PI / 180
+  return {
+    manual: poniPath ? undefined : {
+      dist: asNumber(manualGeo.dist_mm, 200) / 1000,
+      poni1: asNumber(manualGeo.center_y_px, 512) * asNumber(manualGeo.pixel_size_um, 172) * 1e-6,
+      poni2: asNumber(manualGeo.center_x_px, 512) * asNumber(manualGeo.pixel_size_um, 172) * 1e-6,
+      wavelength: asNumber(manualGeo.wavelength_A, 1.5418) * 1e-10,
+      rot1: asNumber(manualGeo.rot1_deg, 0) * Math.PI / 180,
+      rot2: asNumber(manualGeo.rot2_deg, 0) * Math.PI / 180,
+      rot3: asNumber(manualGeo.rot3_deg, 0) * Math.PI / 180,
+      pixel_size_um: asNumber(manualGeo.pixel_size_um, 172),
+    },
+    poni_path: poniPath,
+    poni_bytes: geometry.poni_bytes,
+    rot_overrides: (poniPath && overridePoni) ? {
+      rot1: rot1Rad,
+      rot2: rot2Rad,
+      rot3: rot3Rad,
+    } : undefined,
+    // Legacy fields (backward compat) / 旧字段（向后兼容）
+    override_rot3_rad: rot3Rad,
+    use_poni_rot3: !overridePoni,
+  }
+}
+
 // ── Public API ───────────────────────────────────────────────────────────────
 
 export const normalizeTaskParams = (command: string, params: Record<string, unknown>): Record<string, unknown> => {
@@ -196,25 +241,13 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         ip_range: Array.isArray(params.ipRange) ? params.ipRange : undefined,
         oop_range: Array.isArray(params.oopRange) ? params.oopRange : undefined,
         npt_ip: asNumber(params.nptIp, 400),
-        npt_oop: asNumber(params.nptOop, 400)
+        npt_oop: asNumber(params.nptOop, 400),
+        method: asString(params.method)
       }
-      const manualGeo = asRecord(geometry.manual)
-      const geometryForFiber = {
-        manual: geometry.poni_path ? undefined : {
-          dist: asNumber(manualGeo.dist_mm, 200) / 1000,
-          poni1: asNumber(manualGeo.center_y_px, 512) * asNumber(manualGeo.pixel_size_um, 172) * 1e-6,
-          poni2: asNumber(manualGeo.center_x_px, 512) * asNumber(manualGeo.pixel_size_um, 172) * 1e-6,
-          wavelength: asNumber(manualGeo.wavelength_A, 1.5418) * 1e-10,
-          rot1: asNumber(manualGeo.rot1_deg, 0) * Math.PI / 180,
-          rot2: asNumber(manualGeo.rot2_deg, 0) * Math.PI / 180,
-          rot3: asNumber(params.rot3Deg, 0) * Math.PI / 180,
-          pixel_size_um: asNumber(manualGeo.pixel_size_um, 172)
-        },
-        poni_path: geometry.poni_path,
-        poni_bytes: geometry.poni_bytes,
-        override_rot3_rad: asNumber(params.rot3Deg, 0) * Math.PI / 180,
-        use_poni_rot3: true
-      }
+      // Shared geometry builder keeps rot1/rot2/rot3 + unit conversions
+      // identical to the ROI 1D path.
+      // 共享 geometry 构建器，确保 rot1/rot2/rot3 与单位转换与 ROI 1D 路径一致。
+      const geometryForFiber = buildFiberGeometry(params)
       return {
         files: fileList,
         geometry: geometryForFiber,
@@ -254,7 +287,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         thumbnailOnly: typeof params.thumbnailOnly === 'boolean' ? params.thumbnailOnly : undefined,
         thumbnail_only: typeof params.thumbnailOnly === 'boolean' ? params.thumbnailOnly : (typeof params.thumbnail_only === 'boolean' ? params.thumbnail_only : undefined),
         settings: asRecord(params.settings),
-        geometry: asRecord(params.geometry),
+        geometry: action === 'fiber_1d_roi' ? buildFiberGeometry(params) : asRecord(params.geometry),
         config: params.config,
         includeImageData: typeof params.includeImageData === 'boolean' ? params.includeImageData : undefined,
         include_image_data: typeof params.include_image_data === 'boolean' ? params.include_image_data : undefined,
@@ -283,11 +316,50 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         pixelY: typeof params.pixelY === 'number' ? params.pixelY
           : (typeof params.pixel_y === 'number' ? params.pixel_y : undefined),
         unit: asString(params.unit),
+        // line_profile fields (passed through verbatim; consumed only by the
+        // viewer_config 'line_profile' action). Endpoints use row/col semantics
+        // matching the backend: pixelX = col, pixelY = row. / 沿线剖面字段
+        // （原样透传，仅被 viewer_config 的 'line_profile' action 消费）。
+        // 端点采用与后端一致的 row/col 语义：pixelX = col, pixelY = row。
+        row0: typeof params.row0 === 'number' ? params.row0
+          : (typeof params.pixelY0 === 'number' ? params.pixelY0 : undefined),
+        col0: typeof params.col0 === 'number' ? params.col0
+          : (typeof params.pixelX0 === 'number' ? params.pixelX0 : undefined),
+        row1: typeof params.row1 === 'number' ? params.row1
+          : (typeof params.pixelY1 === 'number' ? params.pixelY1 : undefined),
+        col1: typeof params.col1 === 'number' ? params.col1
+          : (typeof params.pixelX1 === 'number' ? params.pixelX1 : undefined),
+        width: typeof params.width === 'number' ? params.width : undefined,
+        n_samples: typeof params.n_samples === 'number' ? params.n_samples
+          : (typeof params.nSamples === 'number' ? params.nSamples : undefined),
+        aggregate: asString(params.aggregate),
+        // fiber_1d_roi fields (passed through verbatim for GIWAXS ROI 1D integration)
+        // GIWAXS ROI 1D 积分字段（原样透传）
+        fiberParams: asRecord(params.fiberParams),
+        ipRange: Array.isArray(params.ipRange) ? params.ipRange : undefined,
+        oopRange: Array.isArray(params.oopRange) ? params.oopRange : undefined,
+        npt1d: typeof params.npt1d === 'number' ? params.npt1d : 100,
+        positiveQOnly: typeof params.positiveQOnly === 'boolean' ? params.positiveQOnly : undefined,
+        absoluteIntensity: typeof params.absoluteIntensity === 'boolean' ? params.absoluteIntensity : undefined,
+        correctSolidAngle: typeof params.correctSolidAngle === 'boolean' ? params.correctSolidAngle : undefined,
+        maskConfig: asRecord(params.maskConfig),
+        // fiber_result_mpl_preview fields (annotated WYSIWYG preview + PNG export).
+        // The whole pngOptions object is forwarded verbatim so colormap/clim/
+        // showLabels/no-data-fill/border/edge-color reach the backend renderer.
+        // 带坐标轴预览与 PNG 导出字段：pngOptions 整体原样透传。
+        unitIp: asString(params.unitIp),
+        unitOop: asString(params.unitOop),
+        pngOptions: asRecord(params.pngOptions),
       }
     }
     case 'mask_maker': {
       const action = asString(params.action)
-      // load_preview action: same as viewer_config image loading
+      // load_preview action: same as viewer_config image loading.
+      // `settings` (colormap / log / clim) MUST be forwarded — the backend
+      // re-renders the preview with them; dropping it left manual contrast
+      // with no effect. / load_preview 与 viewer_config 的图像加载一致。
+      // `settings`（色图/对数/clim）必须透传——后端据此重渲染预览；
+      // 丢失该字段会导致手动对比度完全无效。
       if (action === 'load_preview' || action === 'load') {
         const filePath = asString(params.filePath)
         return {
@@ -300,6 +372,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           h5_dataset_path: asString(params.dataset),
           channel: typeof params.channel === 'number' || typeof params.channel === 'string' ? params.channel : undefined,
           h5_channel: typeof params.channel === 'number' || typeof params.channel === 'string' ? params.channel : undefined,
+          settings: asRecord(params.settings),
         }
       }
       // All other mask operations: pass through as-is (draw_shape, apply_threshold, export_mask, load_mask)
@@ -353,6 +426,151 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         suffix_filter: asString(params.suffix) ?? asString(params.suffix_filter) ?? '',
         recursive: asBoolean(params.recursive ?? true, true),
       }
+    }
+    case 'orientation_analysis': {
+      const inputMode = asString(params.inputMode) ?? 'curves'
+      const bgRaw = asRecord(params.background)
+      const refChi = Array.isArray(bgRaw.referenceChi) ? bgRaw.referenceChi : null
+      const refInt = Array.isArray(bgRaw.referenceIntensity) ? bgRaw.referenceIntensity : null
+      const hermansRaw = asRecord(params.hermans)
+      const fwhmRaw = asRecord(params.fwhm)
+      const wilchinskyRaw = asRecord(params.wilchinsky)
+      const cellRaw = asRecord(wilchinskyRaw.cell)
+      const reflectionsRaw = Array.isArray(wilchinskyRaw.reflections) ? wilchinskyRaw.reflections : []
+      const base: Record<string, unknown> = {
+        input_mode: inputMode,
+        methods: Array.isArray(params.methods)
+          ? params.methods.filter((m): m is string => typeof m === 'string')
+          : ['hermans'],
+        // NOTE: "scattering_geometry" (transmission/reflection) is kept distinct
+        // from the PONI "geometry" dict used in image mode — the Python handler
+        // maps scattering_geometry → analyze_orientation(geometry=...).
+        // 注意：「scattering_geometry」（透射/反射）与图像模式的 PONI「geometry」
+        // 字典分开；Python handler 把 scattering_geometry 映射到 analyze_orientation。
+        scattering_geometry: asString(params.scatteringGeometry) ?? 'transmission',
+        symmetry: asString(params.symmetry) ?? 'auto',
+        missing: asString(params.missing) ?? 'interp',
+        crystallinity: asOptionalNumber(params.crystallinity),
+        background: {
+          mode: asString(bgRaw.mode) ?? 'constant',
+          auto_estimate: asBoolean(bgRaw.autoEstimate, true),
+          constant: asOptionalNumber(bgRaw.constant),
+          reference_scale: asOptionalNumber(bgRaw.referenceScale),
+          reference_curve: (refChi && refInt) ? [refChi, refInt] : undefined,
+        },
+        hermans: {
+          chi_zero: asString(hermansRaw.chiZero) ?? 'meridian',
+          equatorial_to_chain: asBoolean(hermansRaw.equatorialToChain, true),
+          reference_chi_deg: asOptionalNumber(hermansRaw.referenceChiDeg),
+        },
+        fwhm: { peak_window: asOptionalNumber(fwhmRaw.peakWindow) },
+        wilchinsky: {
+          cell: asNumber(cellRaw.a, 0) > 0 ? {
+            a: asNumber(cellRaw.a, 0), b: asNumber(cellRaw.b, 0),
+            c: asNumber(cellRaw.c, 0), beta: asNumber(cellRaw.beta, 90),
+          } : undefined,
+          reflections: reflectionsRaw.map((r) => {
+            const rr = asRecord(r)
+            return {
+              h: asNumber(rr.h, 0), k: asNumber(rr.k, 0), l: asNumber(rr.l, 0),
+              cos2: asNumber(rr.cos2, asNumber(rr.cos2Chi, 0)),
+            }
+          }),
+          unique_axis: asString(wilchinskyRaw.uniqueAxis) ?? 'b',
+        },
+      }
+      if (inputMode === 'image') {
+        const fileList = Array.isArray(params.files) && params.files.length > 0
+          ? params.files.filter((f): f is string => typeof f === 'string')
+          : (asString(params.filePath) ? [params.filePath] : [])
+        Object.assign(base, {
+          files: fileList,
+          geometry,
+          valid_min: asNumber(activeMask.valueRangeMin, 0),
+          valid_max: asNumber(activeMask.valueRangeMax, 1e10),
+          custom_mask_path: asString(activeMask.customMaskPath),
+          h5_dataset_path: h5DatasetPath,
+          h5_channel: h5Channel,
+          frame_index: frameIndex,
+          options: {
+            npt: asNumber(params.npt, 360),
+            npt_rad: asNumber(params.nptRad, 100),
+            unit: normalizeUnit(params.chiUnit) ?? 'chi_deg',
+            radial_unit: normalizeUnit(params.radialUnit) ?? 'q_nm^-1',
+            radial_min: asOptionalNumber(params.radialMin),
+            radial_max: asOptionalNumber(params.radialMax),
+            azimuth_min: asOptionalNumber(params.azimuthMin),
+            azimuth_max: asOptionalNumber(params.azimuthMax),
+            drop_empty_bins: asBoolean(params.dropEmptyBins, true),
+            polarization_factor: polarizationFactor,
+            dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
+            custom_mask_path: asString(activeMask.customMaskPath),
+          },
+        })
+      } else {
+        base.chi = Array.isArray(params.chi)
+          ? params.chi.filter((v): v is number => typeof v === 'number') : []
+        base.intensity = Array.isArray(params.intensity)
+          ? params.intensity.filter((v): v is number => typeof v === 'number') : []
+      }
+      return base
+    }
+    case 'lamellar_analysis': {
+      const inputMode = asString(params.inputMode) ?? 'curves'
+      const bgRaw = asRecord(params.background)
+      const braggRaw = asRecord(params.bragg)
+      const corrRaw = asRecord(params.correlation)
+      const base: Record<string, unknown> = {
+        input_mode: inputMode,
+        q_unit: asString(params.qUnit) ?? 'nm^-1',
+        methods: Array.isArray(params.methods)
+          ? params.methods.filter((m): m is string => typeof m === 'string')
+          : ['bragg', 'correlation'],
+        background: {
+          mode: asString(bgRaw.mode) ?? 'auto',
+          constant: asOptionalNumber(bgRaw.constant),
+        },
+        minority_phase: asString(params.minorityPhase) ?? 'crystalline',
+        bragg: {
+          smooth_window: asOptionalNumber(braggRaw.smoothWindow),
+          q_min: asOptionalNumber(braggRaw.qMin),
+          q_max: asOptionalNumber(braggRaw.qMax),
+        },
+        correlation: {
+          r_max_nm: asOptionalNumber(corrRaw.rMaxNm),
+        },
+      }
+      if (inputMode === 'image') {
+        const fileList = Array.isArray(params.files) && params.files.length > 0
+          ? params.files.filter((f): f is string => typeof f === 'string')
+          : (asString(params.filePath) ? [params.filePath] : [])
+        Object.assign(base, {
+          files: fileList,
+          geometry,
+          valid_min: asNumber(activeMask.valueRangeMin, 0),
+          valid_max: asNumber(activeMask.valueRangeMax, 1e10),
+          custom_mask_path: asString(activeMask.customMaskPath),
+          h5_dataset_path: h5DatasetPath,
+          h5_channel: h5Channel,
+          frame_index: frameIndex,
+          options: {
+            npt: asNumber(params.npt, 1000),
+            radial_unit: normalizeUnit(params.radialUnit) ?? 'q_nm^-1',
+            radial_min: asOptionalNumber(params.radialMin),
+            radial_max: asOptionalNumber(params.radialMax),
+            drop_empty_bins: asBoolean(params.dropEmptyBins, true),
+            polarization_factor: polarizationFactor,
+            dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
+            custom_mask_path: asString(activeMask.customMaskPath),
+          },
+        })
+      } else {
+        base.q = Array.isArray(params.q)
+          ? params.q.filter((v): v is number => typeof v === 'number') : []
+        base.intensity = Array.isArray(params.intensity)
+          ? params.intensity.filter((v): v is number => typeof v === 'number') : []
+      }
+      return base
     }
     default:
       return params
@@ -465,6 +683,61 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
             }
           }),
           failed
+        }
+      }
+    }
+    case 'orientation_analysis': {
+      const numArray = (v: unknown): number[] =>
+        Array.isArray(v) ? v.filter((x): x is number => typeof x === 'number') : []
+      const mapSingle = (src: Record<string, unknown>) => ({
+        chi: numArray(src.chi),
+        intensity: numArray(src.intensity),
+        foldedIntensity: numArray(src.folded_intensity),
+        correctedIntensity: numArray(src.corrected_intensity),
+        background: numArray(src.background),
+        foldInfo: asRecord(src.fold_info),
+        backgroundInfo: asRecord(src.background_info),
+        results: Array.isArray(src.results) ? src.results.map((entry) => asRecord(entry)) : [],
+        crystallinityHint: asRecord(src.crystallinity_hint),
+        warnings: Array.isArray(src.warnings)
+          ? src.warnings.filter((w): w is string => typeof w === 'string') : [],
+        quality: asRecord(src.quality),
+        sourceLabel: asString(src.source_label),
+      })
+      // Batch mode: same conditions, one analysis per file + per-file failures.
+      // 批量模式：同条件逐文件分析 + 逐文件失败列表。
+      if (Array.isArray(result.items)) {
+        return {
+          kind: 'result',
+          data: {
+            batch: true,
+            items: result.items.map((entry) => mapSingle(asRecord(entry))),
+            failed: Array.isArray(result.failed) ? result.failed : [],
+          }
+        }
+      }
+      return {
+        kind: 'result',
+        data: mapSingle(result)
+      }
+    }
+    case 'lamellar_analysis': {
+      const numArray = (v: unknown): number[] =>
+        Array.isArray(v) ? v.filter((x): x is number => typeof x === 'number') : []
+      return {
+        kind: 'result',
+        data: {
+          q: numArray(result.q_nm),
+          intensity: numArray(result.intensity),
+          correctedIntensity: numArray(result.corrected_intensity),
+          background: asRecord(result.background),
+          gammaR: numArray(result.gamma_r),
+          gamma: numArray(result.gamma),
+          results: Array.isArray(result.results) ? result.results.map((entry) => asRecord(entry)) : [],
+          warnings: Array.isArray(result.warnings)
+            ? result.warnings.filter((w): w is string => typeof w === 'string') : [],
+          quality: asRecord(result.quality),
+          sourceLabel: asString(result.source_label),
         }
       }
     }

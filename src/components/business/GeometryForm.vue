@@ -16,7 +16,7 @@
         type="button"
         :class="['gf-mode-btn', { active: mode === 'manual' }]"
         :data-testid="testIds.geometryModeManual"
-        @click="mode = 'manual'"
+        @click="switchToManual"
       >
         {{ t('business.geometry.manualMode') }}
       </button>
@@ -32,6 +32,29 @@
         :data-testid="testIds.geometryPoniInput"
         @update:model-value="onPoniPathChange"
       />
+      <!-- Geometry summary of the selected PONI: makes the active calibration
+           (distance / wavelength / pixel / beam center) visible so a SAXS PONI
+           can't silently masquerade as WAXS.
+           所选 PONI 的几何摘要：显示实际生效的标定参数（距离/波长/像素/光束中心），
+           避免 SAXS 标定被误当作 WAXS 使用。 -->
+      <div v-if="poniSummary" class="gf-poni-summary" :data-testid="testIds.geometryPoniSummary">
+        <div v-if="poniSummary.detector" class="gf-poni-summary-row gf-poni-summary-row--head">
+          <span>{{ poniSummary.detector }}</span>
+        </div>
+        <div class="gf-poni-summary-row">
+          <span>d</span><span>{{ poniSummary.distanceMm.toFixed(1) }} mm</span>
+        </div>
+        <div class="gf-poni-summary-row">
+          <span>λ</span><span>{{ poniSummary.wavelengthA.toFixed(4) }} Å</span>
+        </div>
+        <div class="gf-poni-summary-row">
+          <span>px</span><span>{{ poniSummary.pixelUm.toFixed(1) }} µm</span>
+        </div>
+        <div v-if="Number.isFinite(poniSummary.centerX) && Number.isFinite(poniSummary.centerY)" class="gf-poni-summary-row">
+          <span>center</span><span>({{ poniSummary.centerX.toFixed(0) }}, {{ poniSummary.centerY.toFixed(0) }}) px</span>
+        </div>
+      </div>
+      <div v-else-if="poniPath && poniSummaryLoading" class="gf-poni-summary gf-poni-summary--muted">…</div>
     </div>
 
     <!-- Manual params mode / 手动参数模式 -->
@@ -110,6 +133,7 @@
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
+import { useTransport } from '@/lib/transport'
 import FileDialogButton from './FileDialogButton.vue'
 
 /** Geometry parameters shape / 几何参数结构 */
@@ -150,9 +174,76 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const transport = useTransport()
 
 const mode = ref<GeometryMode>(props.modelValue.poniPath ? 'poni' : 'manual')
 const poniPath = ref<string | null>(props.modelValue.poniPath ?? null)
+
+// ── PONI geometry summary / PONI 几何摘要 ──────────────────────────────────
+// Parsed from the selected PONI so the user sees which calibration is
+// actually in effect (a 2.5 m SAXS PONI vs a 0.17 m WAXS one).
+// 从所选 PONI 解析并展示实际生效的标定参数，避免拿 SAXS 标定当 WAXS 用。
+
+interface PoniSummary {
+  distanceMm: number
+  wavelengthA: number
+  pixelUm: number
+  centerX: number
+  centerY: number
+  detector: string | null
+}
+
+const poniSummary = ref<PoniSummary | null>(null)
+const poniSummaryLoading = ref(false)
+
+function applyPoniSummary(path: string): void {
+  poniSummary.value = null
+  poniSummaryLoading.value = true
+  transport.submitTask('poni_importer', { action: 'parse', file_path: path }).then((response) => {
+    const offResult = transport.onTaskResult(response.taskId, (payload) => {
+      const data = payload.data as {
+        poni_data?: {
+          distance?: number
+          wavelength?: number
+          pixel_size?: number
+          poni1?: number
+          poni2?: number
+          detector_name?: string
+        }
+      } | null
+      const d = data?.poni_data
+      if (typeof d?.distance === 'number' && typeof d.wavelength === 'number') {
+        const px = typeof d.pixel_size === 'number' && d.pixel_size > 0 ? d.pixel_size : null
+        poniSummary.value = {
+          distanceMm: d.distance * 1000,
+          wavelengthA: d.wavelength * 1e10,
+          pixelUm: (px ?? 0) * 1e6,
+          centerX: px && typeof d.poni2 === 'number' ? d.poni2 / px : NaN,
+          centerY: px && typeof d.poni1 === 'number' ? d.poni1 / px : NaN,
+          detector: typeof d.detector_name === 'string' && d.detector_name ? d.detector_name : null,
+        }
+      }
+      poniSummaryLoading.value = false
+      offResult()
+      offError()
+    })
+    const offError = transport.onTaskError(response.taskId, () => {
+      poniSummaryLoading.value = false
+      offResult()
+      offError()
+    })
+  }).catch(() => {
+    poniSummaryLoading.value = false
+  })
+}
+
+watch(poniPath, (path) => {
+  if (path) applyPoniSummary(path)
+  else poniSummary.value = null
+})
+
+// Parse once on mount when the form starts in PONI mode / 表单以 PONI 模式初始挂载时解析一次
+if (poniPath.value) applyPoniSummary(poniPath.value)
 
 watch(() => props.modelValue.poniPath, (val) => {
   poniPath.value = val ?? null
@@ -162,6 +253,19 @@ watch(() => props.modelValue.poniPath, (val) => {
 function onPoniPathChange(path: string | null): void {
   poniPath.value = path
   emit('update:modelValue', { ...props.modelValue, poniPath: path })
+}
+
+function switchToManual(): void {
+  mode.value = 'manual'
+  // Clear poniPath so downstream consumers use manual params instead of PONI.
+  // Without this, a stale poniPath causes every downstream layer to silently
+  // ignore all manual edits ("ghost PONI" bug).
+  // 清除 poniPath，使下游使用手动参数而非 PONI。
+  // 否则残留的 poniPath 会导致所有手动编辑被静默忽略（"幽灵 PONI" bug）。
+  if (props.modelValue.poniPath) {
+    poniPath.value = null
+    emit('update:modelValue', { ...props.modelValue, poniPath: null })
+  }
 }
 
 function onFieldInput(field: keyof GeometryParams, raw: string): void {
@@ -226,6 +330,41 @@ function onFieldInput(field: keyof GeometryParams, raw: string): void {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* PONI geometry summary / PONI 几何摘要 */
+.gf-poni-summary {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface-alt);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gf-poni-summary--muted {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+}
+
+.gf-poni-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.gf-poni-summary-row--head {
+  color: var(--text-primary);
+  font-weight: 600;
+  padding-bottom: 2px;
+}
+
+.gf-poni-summary-row span:first-child {
+  color: var(--text-muted);
 }
 
 .gf-grid {

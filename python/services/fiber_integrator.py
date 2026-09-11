@@ -49,9 +49,19 @@ class FiberIntegratorService:
         override_rot3_rad: float = 0.0,
         raw_shape: Optional[tuple] = None,
         manual_params: Optional[dict] = None,
+        rot_overrides: Optional[dict] = None,
     ) -> Optional[FiberIntegrator]:
         """Build a FiberIntegrator from PONI or manual parameters.
-        从PONI或手动参数构建FiberIntegrator。"""
+        从PONI或手动参数构建FiberIntegrator。
+
+        rot_overrides (PONI mode only): dict with keys "rot1"/"rot2"/"rot3"
+        (values in radians). When a key is present, its value overrides the
+        corresponding rotation from the PONI file. Keys absent fall back to
+        the PONI value. This lets users fine-tune detector tilt on top of a
+        calibrated PONI without re-calibrating.
+        rot_overrides（仅 PONI 模式）：含 "rot1"/"rot2"/"rot3" 键（弧度值）的
+        字典。键存在时覆盖 PONI 文件中的对应旋转；键缺失则回退到 PONI 值。
+        """
         try:
             if (poni_path or poni_bytes) and not manual_params:
                 if poni_bytes:
@@ -64,11 +74,24 @@ class FiberIntegratorService:
                 else:
                     poni = PoniFile(data=str(poni_path))
 
-                eff_rot3 = poni.rot3 if use_poni_rot3 else override_rot3_rad
+                # Resolve rotations: rot_overrides takes precedence per-key,
+                # then fall back to legacy use_poni_rot3/override_rot3_rad for
+                # rot3, then the PONI file value.
+                # 旋转解析：rot_overrides 按键优先，rot3 再回退到旧的
+                # use_poni_rot3/override_rot3_rad，最后回退到 PONI 文件值。
+                ro = rot_overrides or {}
+                eff_rot1 = ro["rot1"] if "rot1" in ro else poni.rot1
+                eff_rot2 = ro["rot2"] if "rot2" in ro else poni.rot2
+                if "rot3" in ro:
+                    eff_rot3 = ro["rot3"]
+                elif use_poni_rot3:
+                    eff_rot3 = poni.rot3
+                else:
+                    eff_rot3 = override_rot3_rad
                 return FiberIntegrator(
                     dist=poni.dist, poni1=poni.poni1, poni2=poni.poni2,
                     wavelength=poni.wavelength,
-                    rot1=poni.rot1, rot2=poni.rot2, rot3=eff_rot3,
+                    rot1=eff_rot1, rot2=eff_rot2, rot3=eff_rot3,
                     detector=poni.detector,
                 )
             elif manual_params:
@@ -129,6 +152,12 @@ class FiberIntegratorService:
         }
         if polarization_factor is not None:
             kw["polarization_factor"] = polarization_factor
+        # Integration algorithm (pyFAI method): splitpixel / csr / lut / bbox /
+        # numpy. Absent → pyFAI default.
+        # 积分算法（pyFAI method）：splitpixel / csr / lut / bbox / numpy。
+        # 缺省时使用 pyFAI 默认算法。
+        if params.get("method"):
+            kw["method"] = params["method"]
         if not params.get("use_auto", False):
             kw["ip_range"] = params.get("ip_range")
             kw["oop_range"] = params.get("oop_range")
@@ -139,6 +168,17 @@ class FiberIntegratorService:
             I, qip, qoop = result.intensity, result.radial, result.azimuthal
         else:
             I, qip, qoop = result
+
+        # Mark empty bins (no pixel contributions, count==0) as NaN so they
+        # can be distinguished from real zero-intensity bins and rendered as
+        # transparent/no-data. pyFAI fills empty bins with 0 by default,
+        # making them indistinguishable from genuine zeros.
+        # 将无像素贡献的空 bin（count==0）标记为 NaN，使其可与真实零强度
+        # 区分，并在渲染时显示为透明/无数据色。pyFAI 默认用 0 填充空 bin。
+        count = getattr(result, "count", None)
+        if count is not None:
+            I = I.copy()
+            I[count == 0] = np.nan
 
         return {
             "intensity": I,

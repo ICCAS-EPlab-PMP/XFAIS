@@ -83,6 +83,17 @@ def _ws_client(port: int):
     return connect
 
 
+async def _recv_task_message(ws) -> dict:
+    """Receive the next task message, skipping the connect-time session_info frame.
+
+    跳过连接建立时服务端主动下发的 session_info，返回首条任务消息。
+    """
+    while True:
+        msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+        if msg.get("type") != "session_info":
+            return msg
+
+
 def test_ws_connect(ws_server):
     """WebSocket 客户端能成功连接 / Client can connect to WebSocket server."""
     service, port = ws_server
@@ -112,7 +123,7 @@ def test_ws_submit_task(ws_server):
                 "payload": {"test": True},
             }))
 
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            msg = await _recv_task_message(ws)
             assert msg["type"] == "task_accepted"
             assert msg["task_id"] == "t1"
 
@@ -180,7 +191,7 @@ def test_ws_cancel_task(ws_server):
                 "payload": {},
             }))
 
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            msg = await _recv_task_message(ws)
             assert msg["type"] == "task_accepted"
 
             await asyncio.sleep(0.15)
@@ -222,7 +233,7 @@ def test_ws_error_unknown_route(ws_server):
                 "payload": {},
             }))
 
-            msg = json.loads(await asyncio.wait_for(ws.recv(), timeout=5))
+            msg = await _recv_task_message(ws)
             assert msg["type"] == "task_error"
             assert msg["task_id"] == "err-route"
             assert msg["code"] == "ROUTE_NOT_FOUND"

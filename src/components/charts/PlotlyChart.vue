@@ -49,9 +49,7 @@ function renderChart(): void {
     props.data,
     resolvedLayout(),
     resolvedConfig()
-  ).then(() => {
-    bindEvents()
-  })
+  )
 }
 
 function bindEvents(): void {
@@ -86,6 +84,7 @@ function setupResizeObserver(): void {
 
 onMounted(() => {
   renderChart()
+  bindEvents()
   setupResizeObserver()
 })
 
@@ -131,5 +130,12 @@ defineExpose({
 .plotly-chart-container {
   width: 100%;
   min-height: 320px;
+}
+/* Force Plotly hover tooltip visibility / 强制 Plotly hover tooltip 可见 */
+.plotly-chart-container :deep(.hoverlayer .hovertext) {
+  pointer-events: none;
+}
+.plotly-chart-container :deep(.hoverlayer .hovertext path) {
+  stroke: #475569 !important;
 }
 </style>

@@ -36,35 +36,72 @@
       <p v-else class="empty-hint">—</p>
     </div>
 
-    <!-- Contrast adjustment -->
-    <div class="props-group">
-      <h4 class="group-title">{{ t('maskMaker.properties.contrast') }}</h4>
-      <div class="contrast-form">
-        <div class="contrast-row">
-          <input
-            type="range"
-            class="contrast-slider"
-            :min="0.2"
-            :max="5"
-            :step="0.05"
-            :value="contrast"
-            :disabled="!imageLoaded"
-            @input="onContrastInput(($event.target as HTMLInputElement).value)"
-          />
-          <span class="contrast-value">{{ contrast.toFixed(2) }}×</span>
-        </div>
-        <div class="contrast-presets">
-          <button
-            v-for="preset in contrastPresets"
-            :key="preset.value"
-            class="preset-btn"
-            :class="{ active: Math.abs(contrast - preset.value) < 0.01 }"
-            :disabled="!imageLoaded"
-            @click="onContrastInput(String(preset.value))"
+    <!-- Contrast via absolute clim values (same as other views). -->
+    <!-- 对比度：绝对 clim 值调节 —— 与其他功能（查看器等）一致。 -->
+    <div v-if="imageLoaded" class="props-group">
+      <h4 class="group-title">{{ t('maskMaker.display.title') }}</h4>
+      <div class="display-form">
+        <label class="field-label">
+          {{ t('maskMaker.display.colormap') }}
+          <select
+            :value="colormap"
+            class="field-input"
+            @change="$emit('update:colormap', ($event.target as HTMLSelectElement).value)"
           >
-            {{ preset.label }}
-          </button>
+            <option v-for="cm in colormapOptions" :key="cm" :value="cm">{{ cm }}</option>
+          </select>
+        </label>
+        <label class="toggle-label">
+          <input
+            type="checkbox"
+            :checked="useLog"
+            @change="$emit('update:useLog', ($event.target as HTMLInputElement).checked)"
+          />
+          <span>{{ t('maskMaker.display.logScale') }}</span>
+        </label>
+        <div class="clim-mode-row">
+          <span class="field-label field-label--inline">{{ t('maskMaker.display.contrastMode') }}</span>
+          <label class="radio-label">
+            <input
+              type="radio"
+              value="auto"
+              :checked="climMode === 'auto'"
+              @change="$emit('update:climMode', 'auto')"
+            />
+            <span>{{ t('maskMaker.display.contrastAuto') }}</span>
+          </label>
+          <label class="radio-label">
+            <input
+              type="radio"
+              value="manual"
+              :checked="climMode === 'manual'"
+              @change="$emit('update:climMode', 'manual')"
+            />
+            <span>{{ t('maskMaker.display.contrastManual') }}</span>
+          </label>
         </div>
+        <template v-if="climMode === 'manual'">
+          <label class="field-label">
+            {{ t('maskMaker.display.contrastMin') }}
+            <input
+              :value="climMin"
+              type="number"
+              class="field-input"
+              step="any"
+              @input="$emit('update:climMin', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+          <label class="field-label">
+            {{ t('maskMaker.display.contrastMax') }}
+            <input
+              :value="climMax"
+              type="number"
+              class="field-input"
+              step="any"
+              @input="$emit('update:climMax', Number(($event.target as HTMLInputElement).value))"
+            />
+          </label>
+        </template>
       </div>
     </div>
 
@@ -134,6 +171,7 @@
 <script setup lang="ts">
 import { reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 import type { MaskImageInfo, MaskStats, ThresholdMode } from '@/types/mask'
 
 const { t } = useI18n()
@@ -142,7 +180,12 @@ defineProps<{
   imageInfo: MaskImageInfo | null
   maskStats: MaskStats | null
   imageLoaded: boolean
-  contrast: number
+  // Display settings (v-model .prop-style passthrough; parent owns the state).
+  colormap: string
+  useLog: boolean
+  climMode: 'auto' | 'manual'
+  climMin: number
+  climMax: number
 }>()
 
 const emit = defineEmits<{
@@ -152,25 +195,25 @@ const emit = defineEmits<{
     threshold_min?: number
     threshold_max?: number
   }]
-  'update:contrast': [value: number]
+  'update:colormap': [value: string]
+  'update:useLog': [value: boolean]
+  'update:climMode': [value: 'auto' | 'manual']
+  'update:climMin': [value: number]
+  'update:climMax': [value: number]
 }>()
 
 const localThreshold = reactive({
   min: 0,
-  max: 65535,
+  // int32 upper bound — detector data may exceed uint16 range.
+  // int32 上限 —— 探测器数据可能超过 uint16 范围。
+  max: 2147483647,
 })
 
-const contrastPresets = [
-  { value: 0.5, label: '0.5×' },
-  { value: 1, label: '1×' },
-  { value: 2, label: '2×' },
-  { value: 3, label: '3×' },
-  { value: 5, label: '5×' },
+const colormapOptions = [
+  'smooth_WAXS_foxtrot',
+  'smooth_WAXS_fit2D',
+  ...Object.keys(COLORMAP_PRESETS),
 ]
-
-function onContrastInput(val: string): void {
-  emit('update:contrast', parseFloat(val))
-}
 
 function formatNumber(value: number): string {
   if (!Number.isFinite(value)) return '—'
@@ -304,84 +347,41 @@ function formatNumber(value: number): string {
   cursor: not-allowed;
 }
 
-/* Contrast controls */
-.contrast-form {
+/* Display settings (colormap / log / clim) — mirrors the viewer */
+.display-form {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-}
-
-.contrast-row {
-  display: flex;
-  align-items: center;
   gap: 8px;
 }
 
-.contrast-slider {
-  flex: 1;
-  -webkit-appearance: none;
-  appearance: none;
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.12);
-  outline: none;
+.field-label--inline {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.72rem;
 }
 
-.contrast-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--primary);
-  cursor: pointer;
-  border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-}
-
-.contrast-slider:disabled::-webkit-slider-thumb {
-  opacity: 0.4;
-}
-
-.contrast-value {
-  font-family: var(--font-mono);
+.toggle-label,
+.radio-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 0.75rem;
   color: var(--text-primary);
-  min-width: 40px;
-  text-align: right;
-}
-
-.contrast-presets {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.preset-btn {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.7);
-  color: var(--text-primary);
-  font-size: 0.7rem;
-  font-weight: 600;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  user-select: none;
 }
 
-.preset-btn:hover:not(:disabled) {
-  background: var(--primary-bg);
-  border-color: var(--primary);
+.toggle-label input[type="checkbox"],
+.radio-label input[type="radio"] {
+  accent-color: var(--primary);
+  width: 13px;
+  height: 13px;
 }
 
-.preset-btn.active {
-  background: var(--primary);
-  color: var(--text-inverse);
-  border-color: var(--primary);
-}
-
-.preset-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
+.clim-mode-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 </style>

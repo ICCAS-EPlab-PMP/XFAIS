@@ -76,6 +76,7 @@ declare module 'plotly.js-dist-min' {
     yaxis?: LayoutAxis
     showlegend?: boolean
     legend?: { font?: { color?: string; size?: number }; bgcolor?: string; x?: number; y?: number }
+    hoverlabel?: { bgcolor?: string; bordercolor?: string; font?: { color?: string; size?: number; family?: string } }
     autosize?: boolean
     width?: number
     height?: number

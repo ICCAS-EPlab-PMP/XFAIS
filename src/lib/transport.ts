@@ -167,6 +167,13 @@ export interface ITransport {
    */
   installPyfai(): Promise<{ success: boolean; command?: string; error?: string }>
 
+  /**
+   * One-click pip install of pyFAI + PySide6 (into the embedded runtime in
+   * desktop mode; into the backend env in web mode).
+   * 一键 pip 安装 pyFAI + PySide6（桌面模式装进内嵌运行时；Web 模式装进后端环境）。
+   */
+  installPyfaiDeps(): Promise<{ success: boolean; output?: string; error?: string }>
+
   /** Export a .bat launcher script for pyFAI-calib2. */
   exportBatPyfai(): Promise<{ success: boolean; error?: string }>
 

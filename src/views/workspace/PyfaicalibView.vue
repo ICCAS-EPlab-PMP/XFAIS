@@ -132,24 +132,64 @@
       </div>
     </div>
 
-    <!-- Export bat script section (replaces launch section) -->
+    <!-- Action section: direct launch (detect → open) / 直接启动（检测→打开） -->
     <div v-if="canLaunch" class="pc-action-section">
       <hr class="pc-divider">
-      <p class="pc-export-hint">{{ t('pyfaiCalib.exportBatHint') }}</p>
-      <button
-        type="button"
-        class="pc-export-btn"
-        :disabled="exporting"
-        @click="handleExportBat"
-      >
-        {{ exporting ? t('pyfaiCalib.exporting') : t('pyfaiCalib.exportBat') }}
-      </button>
+      <p class="pc-export-hint">{{ t('pyfaiCalib.launchHint') }}</p>
+      <div class="pc-action-btn-row">
+        <button
+          type="button"
+          class="pc-launch-btn"
+          :disabled="launching"
+          @click="handleLaunch"
+        >
+          {{ launching ? t('pyfaiCalib.launching') : t('pyfaiCalib.launchBtn') }}
+        </button>
+        <button
+          type="button"
+          class="pc-export-btn"
+          :disabled="exporting"
+          @click="handleExportBat"
+        >
+          {{ exporting ? t('pyfaiCalib.exporting') : t('pyfaiCalib.exportBat') }}
+        </button>
+      </div>
+      <p v-if="launchMessage" class="pc-launch-message" :class="launchSuccess ? 'pc-success' : 'pc-error'">
+        {{ launchMessage }}
+      </p>
       <p v-if="exportMessage" class="pc-export-message" :class="exportSuccess ? 'pc-export-message--ok' : 'pc-export-message--error'">
         {{ exportMessage }}
       </p>
     </div>
 
-    <!-- Install instructions -->
+    <!-- Download / install section (when not launchable) / 下载与安装（当前不可启动时） -->
+    <div v-if="!canLaunch || needsQtBinding" class="pc-action-section">
+      <hr class="pc-divider">
+      <h3>{{ t('pyfaiCalib.downloadTitle') }}</h3>
+      <p class="pc-export-hint">{{ t('pyfaiCalib.downloadHint') }}</p>
+      <div class="pc-action-btn-row">
+        <button
+          type="button"
+          class="pc-launch-btn"
+          :disabled="installing"
+          @click="handleInstallDeps"
+        >
+          {{ installing ? t('pyfaiCalib.installing') : t('pyfaiCalib.installBtn') }}
+        </button>
+        <button
+          type="button"
+          class="pc-export-btn"
+          @click="openDownloadPage"
+        >
+          {{ t('pyfaiCalib.openDownloadPage') }}
+        </button>
+      </div>
+      <p v-if="installMessage" class="pc-launch-message" :class="installSuccess ? 'pc-success' : 'pc-error'">
+        {{ installMessage }}
+      </p>
+    </div>
+
+    <!-- Install instructions (manual fallback) / 手动安装指引（回退方案） -->
     <div v-if="showInstallInfo" class="pc-install-section">
       <hr class="pc-divider">
       <h3>{{ t('pyfaiCalib.installInstructions') }}</h3>
@@ -177,6 +217,20 @@
           </button>
         </div>
       </div>
+
+      <!-- Launcher script export stays available as the last-resort path -->
+      <!-- 启动脚本导出保留为最终回退方案 -->
+      <button
+        type="button"
+        class="pc-export-btn"
+        :disabled="exporting"
+        @click="handleExportBat"
+      >
+        {{ exporting ? t('pyfaiCalib.exporting') : t('pyfaiCalib.exportBat') }}
+      </button>
+      <p v-if="exportMessage" class="pc-export-message" :class="exportSuccess ? 'pc-export-message--ok' : 'pc-export-message--error'">
+        {{ exportMessage }}
+      </p>
     </div>
   </section>
 </template>
@@ -202,6 +256,14 @@ const exporting = ref(false)
 const exportMessage = ref('')
 const exportSuccess = ref(false)
 const statusResult = ref<PyfaiCheckResult | null>(null)
+// Direct launch (detect → open) / 直接启动（检测→打开）
+const launching = ref(false)
+const launchMessage = ref('')
+const launchSuccess = ref(false)
+// One-click pip install / 一键 pip 安装
+const installing = ref(false)
+const installMessage = ref('')
+const installSuccess = ref(false)
 
 const canLaunch = computed(() => {
   if (!statusResult.value) return false
@@ -260,6 +322,8 @@ const handleCheck = async (): Promise<void> => {
   checking.value = true
   statusResult.value = null
   exportMessage.value = ''
+  launchMessage.value = ''
+  installMessage.value = ''
   try {
     const result = await transport.checkPyfai()
     statusResult.value = result as unknown as PyfaiCheckResult
@@ -272,6 +336,55 @@ const handleCheck = async (): Promise<void> => {
   } finally {
     checking.value = false
   }
+}
+
+/** Directly open pyFAI-calib2 (desktop: native spawn; web: backend interpreter). */
+const handleLaunch = async (): Promise<void> => {
+  launching.value = true
+  launchMessage.value = ''
+  try {
+    const result = await transport.launchPyfai()
+    launchSuccess.value = !!result?.success
+    launchMessage.value = result?.success
+      ? t('pyfaiCalib.launchSuccess')
+      : (result?.error ?? t('pyfaiCalib.launchFail'))
+  } catch (err) {
+    launchSuccess.value = false
+    launchMessage.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    launching.value = false
+    setTimeout(() => { launchMessage.value = '' }, 8000)
+  }
+}
+
+/** One-click pip install of pyFAI + PySide6. Large download — be patient. */
+const handleInstallDeps = async (): Promise<void> => {
+  installing.value = true
+  installMessage.value = t('pyfaiCalib.installing')
+  installSuccess.value = false
+  try {
+    const result = await transport.installPyfaiDeps()
+    installSuccess.value = !!result?.success
+    if (result?.success) {
+      installMessage.value = t('pyfaiCalib.installSuccess')
+      // Re-check so the status cards and Launch button refresh.
+      await handleCheck()
+    } else {
+      installMessage.value = result?.error
+        ? `${t('pyfaiCalib.installFail')}: ${result.error}`
+        : t('pyfaiCalib.installFail')
+    }
+  } catch (err) {
+    installSuccess.value = false
+    installMessage.value = err instanceof Error ? err.message : String(err)
+  } finally {
+    installing.value = false
+  }
+}
+
+/** Open the official pyFAI installation page in the system browser. */
+function openDownloadPage(): void {
+  window.open('https://pyfai.readthedocs.io/en/latest/installation.html', '_blank', 'noopener')
 }
 
 const handleCopyPip = async (): Promise<void> => {
@@ -474,6 +587,13 @@ handleCheck()
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.pc-action-btn-row {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
 }
 
 .pc-launch-btn {
