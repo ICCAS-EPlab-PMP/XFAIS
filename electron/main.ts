@@ -437,34 +437,55 @@ const registerPyfaiHandlers = (): void => {
     }
 
     try {
+      // Detach calib2 COMPLETELY: stdio pipes to this process are a leak —
+      // `unref()` only drops the process handle, the open pipes keep the
+      // Electron event loop referenced, so quitting X-FAIS while calib2 runs
+      // would leave a zombie X-FAIS.exe (reproduced empirically). Instead,
+      // stderr goes to a temp log file: no parent-side handles, calib2 can
+      // never block on a full pipe, and the early-failure message is still
+      // captured for the 800 ms startup check.
+      // 完全脱离 calib2：与本进程相连的 stdio 管道是泄漏点——`unref()`
+      // 只解除进程句柄，未关闭的管道会挂住 Electron 事件循环，导致开着
+      // calib2 时退出 X-FAIS 留下僵尸进程（已实证复现）。改为 stderr 重定向
+      // 到临时日志文件：父进程零句柄、calib2 绝不会因管道写满而阻塞，且
+      // 800ms 启动检测仍能读取失败信息。
+      const fsSync = await import('node:fs')
+      const osMod = await import('node:os')
+      const calibLogPath = path.join(
+        osMod.tmpdir(),
+        `x-fais-calib2-${Date.now()}.log`
+      )
+      const errFd = fsSync.openSync(calibLogPath, 'a')
       const spawnOpts = isWindows
-        ? { detached: true, stdio: ['ignore' as const, 'pipe' as const, 'pipe' as const], windowsHide: false }
-        : { detached: true, stdio: ['ignore' as const, 'pipe' as const, 'pipe' as const] }
+        ? { detached: true, stdio: ['ignore' as const, 'ignore' as const, errFd], windowsHide: false }
+        : { detached: true, stdio: ['ignore' as const, 'ignore' as const, errFd] }
       const child = exePath
         ? safeSpawn(exePath, [], spawnOpts)
         : safeSpawn(pythonCmd!, ['-m', 'pyFAI.app.calib2'], spawnOpts)
+      child.unref()
+      // The child inherited the fd; close our copy so this process holds
+      // nothing of calib2's. / 子进程已继承 fd；关闭自身副本，父进程不持有。
+      fsSync.closeSync(errFd)
 
-      let startupFailed = false
       let startupError = ''
-
-      child.stderr?.setEncoding('utf8')
-      child.stderr?.on('data', (chunk: string) => {
-        startupError += chunk
-      })
-
       child.on('error', (err) => {
-        startupFailed = true
         startupError = err.message
       })
 
-      child.unref()
-
       await new Promise(resolve => setTimeout(resolve, 800))
 
-      if (startupFailed || (child.exitCode !== null && child.exitCode !== 0)) {
-        const errorMsg = startupError.includes('Qt wrapper')
+      const exitedEarly = child.exitCode !== null && child.exitCode !== 0
+      if (startupError || exitedEarly) {
+        // Read the captured stderr for the failure reason (e.g. missing Qt).
+        // 读取捕获的 stderr 以获取失败原因（如缺少 Qt 绑定）。
+        let logTail = ''
+        try {
+          logTail = fsSync.readFileSync(calibLogPath, 'utf-8')
+        } catch { /* log may be unreadable — fall back to exit code */ }
+        const combined = `${startupError}\n${logTail}`
+        const errorMsg = combined.includes('Qt wrapper') || combined.includes('qt.binding') || combined.includes('QtBinding')
           ? 'pyFAI-calib2 需要 Qt 绑定（PySide6 或 PyQt6），但当前 Python 环境中未安装。\n请在终端运行: pip install PySide6'
-          : `pyFAI-calib2 启动失败: ${startupError || `进程退出码 ${child.exitCode}`}`
+          : `pyFAI-calib2 启动失败: ${combined.trim() || `进程退出码 ${child.exitCode}`}`
         return { success: false, error: errorMsg }
       }
 
@@ -484,6 +505,90 @@ const registerPyfaiHandlers = (): void => {
       success: false,
       command: 'pip install pyfai',
       error: '请打开终端（CMD 或 PowerShell），运行以下命令安装 pyFAI：'
+    }
+  })
+
+  // One-click dependency install: pip install pyFAI + PySide6 into the
+  // EMBEDDED runtime (guaranteed present & pip-enabled in desktop builds).
+  // Runs via async spawn so the renderer stays responsive during the multi-
+  // minute download (a synchronous execSync would freeze ALL IPC for the
+  // whole install). / 一键依赖安装：向内嵌运行时 pip 安装 pyFAI + PySide6。
+  // 用异步 spawn 执行，数分钟的下载期间渲染器保持响应（同步 execSync 会把
+  // 整个 IPC 阻塞到安装结束，应用假死）。
+  ipcMain.handle('pyfai:installDeps', async (): Promise<{ success: boolean; output?: string; error?: string }> => {
+    const { pythonExe } = getEmbeddedPythonPaths()
+    if (!existsSync(pythonExe)) {
+      return {
+        success: false,
+        error: '未找到内置 Python 运行时。请在系统 Python 中手动运行: pip install pyfai PySide6，或打开官方下载页面获取。'
+      }
+    }
+    const shellOpts = isWindows ? { windowsHide: true as const } : {}
+    const runAsync = (args: string[], timeoutMs: number): Promise<string> =>
+      new Promise((resolve) => {
+        let out = ''
+        let settled = false
+        const finish = (ok: boolean) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          resolve(ok ? out : `${out}\n[exit != 0]`)
+        }
+        const timer = setTimeout(() => finish(false), timeoutMs)
+        const previousNoAsar = process.noAsar
+        process.noAsar = true
+        let child: ReturnType<typeof spawn>
+        try {
+          child = spawn(pythonExe, args, { stdio: ['ignore', 'pipe', 'pipe'], ...shellOpts })
+        } catch (err) {
+          process.noAsar = previousNoAsar
+          finish(false)
+          return
+        } finally {
+          process.noAsar = previousNoAsar
+        }
+        child.stdout?.setEncoding('utf8')
+        child.stderr?.setEncoding('utf8')
+        child.stdout?.on('data', (c: string) => { out += c })
+        child.stderr?.on('data', (c: string) => { out += c })
+        child.on('error', (err) => { out += `\n${(err as Error).message}`; finish(false) })
+        child.on('close', (code) => finish(code === 0))
+      })
+
+    try {
+      // Self-heal: if pip itself is missing (trimmed runtime / broken install),
+      // restore it from ensurepip's bundled wheel before installing.
+      // 自愈：若 pip 缺失（被裁剪的运行时/损坏安装），先用 ensurepip 内置
+      // wheel 恢复，再执行安装。
+      const probeOk = await new Promise<boolean>((resolve) => {
+        const previousNoAsar = process.noAsar
+        process.noAsar = true
+        let child: ReturnType<typeof spawn>
+        try {
+          child = spawn(pythonExe, ['-c', 'import pip'], { stdio: 'ignore', ...shellOpts })
+        } catch {
+          process.noAsar = previousNoAsar
+          resolve(false)
+          return
+        } finally {
+          process.noAsar = previousNoAsar
+        }
+        child.on('error', () => resolve(false))
+        child.on('close', (code) => resolve(code === 0))
+      })
+      if (!probeOk) {
+        await runAsync(['-m', 'ensurepip', '--upgrade'], 5 * 60 * 1000)
+      }
+      const output = await runAsync(
+        ['-m', 'pip', 'install', '--disable-pip-version-check', 'pyfai', 'PySide6'],
+        20 * 60 * 1000,
+      )
+      const failed = output.includes('[exit != 0]')
+      return failed
+        ? { success: false, error: output.slice(-2000) }
+        : { success: true, output: output.slice(-2000) }
+    } catch (err) {
+      return { success: false, error: (err as Error).message }
     }
   })
 
@@ -751,6 +856,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   image_math: '/api/image_math',
   image_stitch: '/api/image_stitch',
   orientation_analysis: '/api/orientation_analysis',
+  lamellar_analysis: '/api/lamellar_analysis',
   poni_importer: '/api/poni_importer'
 }
 
@@ -1157,7 +1263,27 @@ app.on('before-quit', (event) => {
 
   event.preventDefault()
   isQuitting = true
-  void pythonManager?.shutdown().finally(() => {
+
+  // Hard-exit backstop: whatever happens in the python shutdown (hung HTTP,
+  // stuck child), closing the window must ALWAYS terminate X-FAIS.exe — a
+  // lingering process is what makes the next installer abort with
+  // "X-FAIS 无法关闭，请手动关闭它".
+  // 强退兜底：无论 python 关闭流程发生什么（HTTP 挂起、子进程卡死），
+  // 关闭窗口后 X-FAIS.exe 必须真正退出——残留进程正是下次安装报
+  // “X-FAIS 无法关闭，请手动关闭它”的原因。
+  const hardExitTimer = setTimeout(() => {
+    app.exit(0)
+  }, 15000)
+  hardExitTimer.unref()
+
+  void Promise.race([
+    pythonManager?.shutdown() ?? Promise.resolve(),
+    new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, 10000)
+      t.unref()
+    }),
+  ]).finally(() => {
+    clearTimeout(hardExitTimer)
     app.quit()
   })
 })

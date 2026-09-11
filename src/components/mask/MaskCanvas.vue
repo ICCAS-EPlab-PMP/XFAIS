@@ -67,7 +67,6 @@ const props = defineProps<{
   maskVersion: number
   activeTool: MaskTool
   maskMode: MaskMode
-  contrast?: number
   placeholder?: string
 }>()
 
@@ -117,7 +116,6 @@ const transformStyle = computed(() => ({
 const imageStyle = computed(() => ({
   transform: `translate(${panX.value}px, ${panY.value}px) scale(${zoom.value})`,
   transformOrigin: '0 0',
-  filter: `contrast(${props.contrast ?? 1})`,
 }))
 
 // ── Coordinate conversion ─────────────────────────────────────────────────────

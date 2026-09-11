@@ -30,26 +30,23 @@
         :mask-version="maskVersion"
         :active-tool="activeTool"
         :mask-mode="maskMode"
-        :contrast="contrastValue"
         :placeholder="t('maskMaker.empty')"
         @shape-drawn="handleShapeDrawn"
       />
     </div>
 
     <!-- Right: Properties -->
-    <MaskProperties
-      :image-info="imageInfo"
-      :mask-stats="maskStats"
-      :image-loaded="imageLoaded"
-      :contrast="contrastValue"
-      :colormap="colormap"
-      :use-log="useLog"
-      :clim-mode="climMode"
-      :clim-min="climMin"
-      :clim-max="climMax"
-      @apply-threshold="handleApplyThreshold"
-      @update:contrast="contrastValue = $event"
-      @update:colormap="onDisplayChange('colormap', $event)"
+      <MaskProperties
+        :image-info="imageInfo"
+        :mask-stats="maskStats"
+        :image-loaded="imageLoaded"
+        :colormap="colormap"
+        :use-log="useLog"
+        :clim-mode="climMode"
+        :clim-min="climMin"
+        :clim-max="climMax"
+        @apply-threshold="handleApplyThreshold"
+        @update:colormap="onDisplayChange('colormap', $event)"
       @update:use-log="onDisplayChange('useLog', $event)"
       @update:clim-mode="onDisplayChange('climMode', $event)"
       @update:clim-min="onDisplayChange('climMin', $event)"
@@ -112,9 +109,8 @@ const canvasRef = ref<InstanceType<typeof MaskCanvas> | null>(null)
 // Since store.getMask() returns the same Uint8Array reference, Vue's watch cannot detect
 // in-place mutations. We use a monotonically increasing counter as a reactivity signal.
 const maskVersion = ref(0)
-const contrastValue = ref(1)
 
-// Display settings (colormap / log / clim) — mirror the viewer. The backend
+// Display settings (colormap / log / clim) — mirrors the viewer. The backend
 // `mask_maker` route reuses viewer_config's load/load_preview action, which
 // honors render_settings via _build_render_settings, so no backend change is
 // needed: changing these triggers a re-render with the new settings.
@@ -124,7 +120,9 @@ const colormap = ref('smooth_WAXS_foxtrot')
 const useLog = ref(false)
 const climMode = ref<'auto' | 'manual'>('auto')
 const climMin = ref(0)
-const climMax = ref(1)
+// Default upper bound follows int32 — detector data may exceed uint16.
+// 默认上限按 int32 设置 —— 探测器数据可能超过 uint16 范围。
+const climMax = ref(2147483647)
 const autoContrast = ref<{ autoMin: number; autoMax: number; logMin: number; logMax: number } | null>(null)
 const climInitialized = ref(false)
 

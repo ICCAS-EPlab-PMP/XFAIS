@@ -56,6 +56,17 @@
             </label>
           </div>
           <p v-if="azimuthError" class="cake-error">{{ azimuthError }}</p>
+          <div class="cake-azimuth-options">
+            <label class="cake-toggle-label">
+              <input v-model="azimuthClockwise" type="checkbox" />
+              <span>{{ t('integrateCake.azimuthRange.clockwise') }}</span>
+            </label>
+            <label class="cake-toggle-label">
+              <input v-model="showAzimuthMask" type="checkbox" />
+              <span>{{ t('integrateCake.azimuthRange.grayMask') }}</span>
+            </label>
+          </div>
+          <p class="cake-fieldset-hint">{{ t('integrateCake.azimuthRange.directionHint') }}</p>
         </fieldset>
 
         <!-- Output Unit (standalone, pulled out of Advanced Options) / 输出单位（独立于高级选项） -->
@@ -227,7 +238,10 @@
                 </div>
                 <div class="cake-info-item">
                   <span class="cake-info-label">{{ t('integrateCake.imagePreview.sector') }}</span>
-                  <span class="cake-info-value">{{ azimuthMin.toFixed(1) }}° → {{ azimuthMax.toFixed(1) }}°</span>
+                  <span class="cake-info-value">
+                    {{ azimuthMin.toFixed(1) }}° → {{ azimuthMax.toFixed(1) }}°
+                    （{{ azimuthClockwise ? t('integrateCake.azimuthRange.clockwise') : t('integrateCake.azimuthRange.counterClockwise') }}）
+                  </span>
                 </div>
               </div>
             </div>
@@ -447,6 +461,26 @@ const polarizationFactor = ref<number | null>(null)
 const azimuthMin = ref(-180)
 const azimuthMax = ref(180)
 
+// Sweep-direction convention for the user-entered azimuth range. pyFAI's chi
+// is natively clockwise on screen (0° → right, +90° → down), so "clockwise"
+// passes the values through; "counter-clockwise" negates them before they
+// reach pyFAI / the overlay, letting users work in their intuitive convention.
+// 用户输入方位角范围的扫掠方向约定。pyFAI 的 chi 在屏幕上原生顺时针
+// （0°→右，+90°→下），“顺时针”直接透传；“逆时针”在送入 pyFAI/叠加层前取负，
+// 让用户按自己的直觉习惯工作。
+const azimuthClockwise = ref(true)
+// Shade the unselected region with a translucent gray mask on the preview.
+// 在预览图上用半透明灰色蒙版罩住未选区域。
+const showAzimuthMask = ref(true)
+
+/** Effective pyFAI-space azimuth range / 换算到 pyFAI 空间的方位角范围 */
+const pyfaiAzimuth = computed(() => {
+  if (azimuthClockwise.value) {
+    return { min: azimuthMin.value, max: azimuthMax.value }
+  }
+  return { min: -azimuthMax.value, max: -azimuthMin.value }
+})
+
 const selectedFilePath = ref<string | null>(null)
 
 // === File state / 文件状态 ===
@@ -513,6 +547,15 @@ const resolvedBeamCenter = ref<{ x: number; y: number } | null>(
   { x: geometry.value.centerX, y: geometry.value.centerY }
 )
 const previewImageSize = ref<{ width: number; height: number; origWidth: number; origHeight: number } | null>(null)
+
+// Keep the beam center (crosshair + gray mask + sector rays) in sync when the
+// geometry changes — e.g. loading a different PONI after the preview is shown
+// must move the overlays, not leave them at the previous center.
+// 几何变化时同步光束中心（十字 + 灰色蒙版 + 扇区边界线）——例如预览已显示后
+// 再加载其他 PONI，叠加层必须跟随新中心，而不是停留在旧位置。
+watch(geometry, () => {
+  void resolveBeamCenter()
+}, { deep: true })
 
 // ── H5 dataset/channel/frame selection / H5 数据集/通道/帧选择 ──
 
@@ -595,11 +638,24 @@ const imageOverlays = computed<Overlay[]>(() => {
     })
   }
 
-  // Sector boundary lines from center / 从中心出发的扇区边界线
+  // Sector boundary lines + gray mask over the unselected region, both in
+  // pyFAI-space angles (direction-converted) so the display always matches
+  // what will actually be integrated.
+  // 扇区边界线 + 未选区域灰色蒙版，均用（经方向换算的）pyFAI 空间角度，
+  // 保证显示与实际积分区域一致。
   if (resolvedBeamCenter.value) {
+    const { min, max } = pyfaiAzimuth.value
+    if (showAzimuthMask.value) {
+      overlays.push({
+        type: 'sectorMask',
+        angles: [min, max],
+        centerX: resolvedBeamCenter.value.x,
+        centerY: resolvedBeamCenter.value.y,
+      })
+    }
     overlays.push({
       type: 'sectorBoundary',
-      angles: [azimuthMin.value, azimuthMax.value],
+      angles: [min, max],
       centerX: resolvedBeamCenter.value.x,
       centerY: resolvedBeamCenter.value.y,
     })
@@ -1023,8 +1079,10 @@ async function handleRun(): Promise<void> {
     maskConfig: { ...maskConfig.value },
     advancedOptions: { ...advancedOptions.value },
     polarizationFactor: polarizationFactor.value,
-    azimuthMin: azimuthMin.value,
-    azimuthMax: azimuthMax.value,
+    // Direction-converted pyFAI-space range (clockwise passthrough / CCW negated)
+    // 方向换算后的 pyFAI 空间范围（顺时针透传 / 逆时针取负）
+    azimuthMin: pyfaiAzimuth.value.min,
+    azimuthMax: pyfaiAzimuth.value.max,
   }
 
   try {
@@ -1431,6 +1489,12 @@ onUnmounted(() => {
 }
 
 /* ── Fieldset for azimuth range / 方位角范围的 fieldset ── */
+
+.cake-azimuth-options {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
 
 .cake-fieldset {
   border: 1px solid var(--border);

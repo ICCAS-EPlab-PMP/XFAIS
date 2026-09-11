@@ -273,6 +273,11 @@ const applicationCards: FeatureCard[] = [
     key: 'orientationAnalysis',
     route: '/workspace/orientation-analysis',
     icon: '⇅'
+  },
+  {
+    key: 'lamellar',
+    route: '/workspace/lamellar-analysis',
+    icon: '≡'
   }
 ]
 

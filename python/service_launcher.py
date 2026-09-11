@@ -32,12 +32,20 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Awaitable, Callable
 
-from services.export_helper import ExportHelper, IntegrationResult
-
 # 确保无论从哪里启动都能找到 python 包 / ensure the python package is importable
+# Must run BEFORE the `from services...` import below: importing this module
+# directly (e.g. pytest collecting it first) doesn't otherwise have the
+# services package on sys.path.
+# 必须先于下方 `from services...` 导入执行：单独导入本模块（如 pytest 优先收集）
+# 时，services 包尚不在 sys.path 中。
 _PACKAGE_DIR = Path(__file__).resolve().parent.parent  # electron/
+_PACKAGE_ROOT = Path(__file__).resolve().parent  # python/ (contains services/)
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
+if str(_PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PACKAGE_ROOT))
+
+from services.export_helper import ExportHelper, IntegrationResult  # noqa: E402
 
 SERVICE_NAME = "waxs_saxs_embedded_runtime"
 
@@ -67,6 +75,11 @@ API_ROUTES: list[str] = [
     "/api/image_math",
     "/api/image_stitch",
     "/api/orientation_analysis",
+    "/api/lamellar_analysis",
+    "/api/check_pyfai",
+    "/api/launch_pyfai",
+    "/api/install_pyfai",
+    "/api/export_bat_pyfai",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -142,6 +155,7 @@ PoniImporter = _LazyImportProxy("python.services.poni_importer")
 ImageMath = _LazyImportProxy("python.services.image_math")
 ImageStitch = _LazyImportProxy("python.services.image_stitch")
 PolymerOrientation = _LazyImportProxy("python.services.orientation_analysis")
+LamellarAnalysis = _LazyImportProxy("python.services.lamellar_analysis")
 
 
 # ---------------------------------------------------------------------------
@@ -5530,11 +5544,15 @@ async def _orientation_extract_profile(
     payload: dict[str, Any],
     send_progress: Callable[[float, str], Awaitable[None]],
     cancel_event: asyncio.Event,
+    fpath: str | None = None,
 ) -> tuple[Any, Any, str | None, str | None]:
     """Extract one I(χ) azimuthal profile from an image + geometry.
     从图像+几何提取一条方位角分布 I(χ)，供取向分析使用。
 
-    Returns (chi_list, intensity_list, label, error). On success error is None.
+    `fpath` overrides payload["files"][0] so batch mode can loop over files
+    while reusing the same geometry/mask/options.
+    fpath 覆盖 payload["files"][0]，使批量模式可在同一几何/掩膜/选项下循环文件。
+    On success error is None. 返回 (chi_list, intensity_list, label, error)。
     """
     await send_progress(0.1, "Loading geometry... / 加载几何...")
     geo = payload.get("geometry", {})
@@ -5547,10 +5565,11 @@ async def _orientation_extract_profile(
     if ai is None:
         return None, None, None, "Failed to create integrator / 积分器创建失败"
 
-    files = payload.get("files", [])
-    if not files:
-        return None, None, None, "No files / 无文件"
-    fpath = files[0]
+    if fpath is None:
+        files = payload.get("files", [])
+        if not files:
+            return None, None, None, "No files / 无文件"
+        fpath = files[0]
     if cancel_event.is_set():
         raise asyncio.CancelledError()
     await send_progress(0.35, f"Loading {fpath} / 加载 {fpath}")
@@ -5607,25 +5626,14 @@ async def handle_orientation_analysis(
 ) -> dict[str, Any]:
     """Polymer orientation analysis handler. 聚合物取向度分析处理函数。
 
-    Two input modes / 两种输入模式:
+    Input modes / 输入模式:
       - input_mode "image": integrate an image+PONI to I(χ) first, then analyze.
+        Multiple files under the SAME experimental conditions (geometry, radial
+        range, methods…) run as a batch: one analysis per file + a summary.
+        同一实验条件（几何、径向范围、方法…）下的多文件按批处理：逐文件分析并汇总。
       - input_mode "curves": use caller-supplied chi/intensity arrays directly.
     """
     input_mode = payload.get("input_mode", "curves")
-    label: str | None = None
-    if input_mode == "image":
-        chi_list, intensity_list, label, err = await _orientation_extract_profile(
-            payload, send_progress, cancel_event,
-        )
-        if err:
-            return {"status": "error", "message": err}
-    else:
-        chi_list = payload.get("chi", [])
-        intensity_list = payload.get("intensity", [])
-
-    if not chi_list or len(chi_list) < 2:
-        return {"status": "error", "message": "Insufficient azimuthal data. / 方位角数据不足。"}
-
     opts = {
         "methods": payload.get("methods", ["hermans"]),
         "geometry": payload.get("scattering_geometry", "transmission"),
@@ -5637,15 +5645,430 @@ async def handle_orientation_analysis(
         "wilchinsky": payload.get("wilchinsky", {}),
         "crystallinity": payload.get("crystallinity"),
     }
+
+    def _analyze(chi_list: Any, intensity_list: Any) -> dict[str, Any]:
+        return PolymerOrientation.analyze_orientation(chi_list, intensity_list, **opts)
+
+    if input_mode == "image":
+        files = payload.get("files", []) or []
+        if not files:
+            return {"status": "error", "message": "No files / 无文件"}
+
+        if len(files) == 1:
+            chi_list, intensity_list, label, err = await _orientation_extract_profile(
+                payload, send_progress, cancel_event,
+            )
+            if err:
+                return {"status": "error", "message": err}
+            if not chi_list or len(chi_list) < 2:
+                return {"status": "error", "message": "Insufficient azimuthal data. / 方位角数据不足。"}
+            try:
+                result = await _run_blocking(_analyze, chi_list, intensity_list)
+            except ValueError as exc:
+                return {"status": "error", "message": str(exc)}
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                return {"status": "error", "message": f"Orientation analysis failed: {exc}"}
+            await send_progress(1.0, "Complete / 完成")
+            result["status"] = "ok"
+            if label is not None:
+                result["source_label"] = label
+            return result
+
+        # ── Batch: same conditions, one analysis per file / 批量：同条件逐文件 ──
+        items: list[dict[str, Any]] = []
+        failed: list[dict[str, str]] = []
+        n = len(files)
+        for i, fpath in enumerate(files):
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+            base = i / n
+            span = 1.0 / n
+
+            async def _file_progress(p: float, msg: str, _b: float = base, _s: float = span) -> None:
+                await send_progress(min(_b + p * _s, 0.999), f"[{i + 1}/{n}] {msg}")
+
+            try:
+                chi_list, intensity_list, label, err = await _orientation_extract_profile(
+                    payload, _file_progress, cancel_event, fpath=str(fpath),
+                )
+                if err:
+                    failed.append({"file": str(fpath), "reason": err})
+                    continue
+                if not chi_list or len(chi_list) < 2:
+                    failed.append({"file": str(fpath), "reason": "Insufficient azimuthal data / 方位角数据不足"})
+                    continue
+                result = await _run_blocking(_analyze, chi_list, intensity_list)
+                result["status"] = "ok"
+                result["source_label"] = label or str(fpath)
+                items.append(result)
+            except ValueError as exc:
+                failed.append({"file": str(fpath), "reason": str(exc)})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                failed.append({"file": str(fpath), "reason": f"Orientation analysis failed: {exc}"})
+
+        await send_progress(1.0, "Complete / 完成")
+        if not items:
+            reasons = "; ".join(f.get("reason", "") for f in failed[:3])
+            return {"status": "error", "message": f"All {n} files failed. {reasons}"}
+        return {
+            "status": "ok",
+            "batch": True,
+            "items": items,
+            "failed": failed,
+        }
+
+    # Curves mode / 曲线模式
+    chi_list = payload.get("chi", [])
+    intensity_list = payload.get("intensity", [])
+    if not chi_list or len(chi_list) < 2:
+        return {"status": "error", "message": "Insufficient azimuthal data. / 方位角数据不足。"}
     try:
-        result = await _run_blocking(
-            PolymerOrientation.analyze_orientation, chi_list, intensity_list, **opts,
-        )
+        result = await _run_blocking(_analyze, chi_list, intensity_list)
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         return {"status": "error", "message": f"Orientation analysis failed: {exc}"}
+    await send_progress(1.0, "Complete / 完成")
+    result["status"] = "ok"
+    return result
+
+
+# ---------------------------------------------------------------------------
+# pyFAI-calib2 tool helpers (web mode) / pyFAI-calib2 工具辅助（Web 模式）
+# ---------------------------------------------------------------------------
+
+def _pyfai_current_env() -> dict[str, Any]:
+    """Probe pyFAI + Qt binding in the CURRENT interpreter (the backend env).
+
+    在当前解释器（即后端环境）中探测 pyFAI 与 Qt 绑定。Web 模式下后端即用户的
+    Python 环境——pyFAI 必然存在（后端依赖它），缺少的通常是 Qt 绑定。
+    """
+    info: dict[str, Any] = {"available": False, "version": None, "calib2Path": None, "hasQtBinding": False}
+    try:
+        import pyFAI  # noqa: F401
+        info["version"] = getattr(pyFAI, "version", None) or getattr(pyFAI, "__version__", None)
+        info["available"] = True
+    except Exception:
+        return info
+    for mod in ("PySide6", "PyQt6", "PyQt5"):
+        try:
+            __import__(f"{mod}.QtWidgets")
+            info["hasQtBinding"] = True
+            break
+        except Exception:
+            continue
+    return info
+
+
+async def handle_check_pyfai(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Web-mode pyFAI availability check. Web 模式 pyFAI 可用性检查。
+
+    The single (current) interpreter is reported as the "system" environment;
+    there is no embedded runtime in web mode.
+    单一（当前）解释器报告为 system 环境；Web 模式没有内嵌运行时。
+    """
+    await send_progress(0.3, "Checking pyFAI... / 正在检查 pyFAI...")
+    cur = await _run_blocking(_pyfai_current_env)
+    unavailable = {"available": False, "version": None, "calib2Path": None, "hasQtBinding": False}
+    overall = "system_only" if cur["available"] else "not_found"
+    await send_progress(1.0, "Complete / 完成")
+    return {"status": "ok", "embedded": unavailable, "system": cur, "overall": overall}
+
+
+async def handle_launch_pyfai(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Launch pyFAI-calib2 from the backend interpreter (web mode).
+
+    从后端解释器启动 pyFAI-calib2（Web 模式）。
+    """
+    import subprocess as _sp
+
+    cur = await _run_blocking(_pyfai_current_env)
+    if not cur["available"]:
+        return {"status": "error", "message": "pyFAI is not available in the backend environment. / 后端环境中不可用。"}
+    if not cur["hasQtBinding"]:
+        return {
+            "status": "error",
+            "message": (
+                "pyFAI-calib2 needs a Qt binding (PySide6/PyQt6/PyQt5) which is "
+                "missing in this environment. Install via: pip install PySide6 "
+                "/ 缺少 Qt 绑定，请运行: pip install PySide6"
+            ),
+        }
+
+    await send_progress(0.4, "Launching pyFAI-calib2... / 正在启动...")
+    # stderr → temp log file (NOT a pipe): an unread PIPE blocks the child
+    # once its 64 KB buffer fills, and a pipe ties calib2 to this backend's
+    # lifetime. The file keeps the early-failure message readable.
+    # stderr → 临时日志文件（而非管道）：不读取的 PIPE 会在 64KB 缓冲写满后
+    # 阻塞子进程，且管道会把 calib2 绑定到本后端的生存期。文件仍可读取
+    # 早期失败信息。
+    log_path = os.path.join(tempfile.gettempdir(), f"x-fais-calib2-{int(time.time())}.log")
+    try:
+        err_fh = open(log_path, "ab")
+        try:
+            kwargs: dict[str, Any] = {
+                "stdin": _sp.DEVNULL,
+                "stdout": _sp.DEVNULL,
+                "stderr": err_fh,
+            }
+            if sys.platform == "win32":
+                kwargs["creationflags"] = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            else:
+                kwargs["start_new_session"] = True
+            proc = _sp.Popen([sys.executable, "-m", "pyFAI.app.calib2"], **kwargs)
+        finally:
+            err_fh.close()  # child inherits the handle; parent drops its copy
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "message": f"Failed to launch pyFAI-calib2: {exc} / 启动失败：{exc}"}
+
+    # Give the GUI process a moment to fail fast (e.g. Qt errors) before reporting.
+    # 给 GUI 进程片刻时间以便快速失败（如 Qt 错误），再报告结果。
+    await asyncio.sleep(1.2)
+    if proc.poll() is not None and proc.returncode not in (0, None):
+        tail = ""
+        try:
+            with open(log_path, "rb") as fh:
+                tail = fh.read()[-400:].decode("utf-8", "replace")
+        except Exception:  # noqa: BLE001
+            pass
+        return {"status": "error", "message": f"pyFAI-calib2 exited early ({proc.returncode}). {tail}"}
+
+    await send_progress(1.0, "Launched / 已启动")
+    return {"status": "ok"}
+
+
+async def handle_install_pyfai(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Install/repair pyFAI + PySide6 into the backend env via pip (web mode).
+
+    通过 pip 在后端环境安装/修复 pyFAI + PySide6（Web 模式）。下载量较大
+    （PySide6 数百 MB），运行中通过进度消息反馈。
+    """
+    await send_progress(0.05, "Running pip install... / 正在执行 pip install...")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "pip", "install", "--disable-pip-version-check",
+            "pyfai", "PySide6",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "message": f"Failed to start pip: {exc} / 无法启动 pip：{exc}"}
+
+    chunks: list[bytes] = []
+    total = 0
+    assert proc.stdout is not None
+    while True:
+        line = await proc.stdout.readline()
+        if not line:
+            break
+        chunks.append(line)
+        total += len(line)
+        await send_progress(min(0.95, 0.05 + total / 5_000_000), line.decode("utf-8", "replace").strip()[:120])
+        if cancel_event.is_set():
+            proc.kill()
+            return {"status": "error", "message": "Cancelled / 已取消"}
+
+    code = await proc.wait()
+    output = b"".join(chunks).decode("utf-8", "replace")
+    await send_progress(1.0, "Done / 完成")
+    if code != 0:
+        return {"status": "error", "message": output[-800:]}
+    return {"status": "ok", "command": "pip install pyfai PySide6", "output": output[-2000:]}
+
+
+def _generate_calib2_script() -> str:
+    """Cross-platform launcher script text for pyFAI-calib2 (web mode export).
+
+    生成 pyFAI-calib2 启动脚本文本（Web 模式导出）。
+    """
+    if sys.platform == "win32":
+        return (
+            "@echo off\r\n"
+            "chcp 65001 >nul\r\n"
+            "echo ============================================\r\n"
+            "echo   pyFAI-calib2 launcher (X-FAIS)\r\n"
+            "echo ============================================\r\n"
+            "where python >nul 2>&1\r\n"
+            "if %errorlevel% neq 0 (\r\n"
+            "    echo [ERROR] Python not found. Install Python 3.8+ first.\r\n"
+            "    pause\r\n"
+            "    exit /b 1\r\n"
+            ")\r\n"
+            "python -c \"import pyFAI\" >nul 2>&1\r\n"
+            "if %errorlevel% neq 0 (\r\n"
+            "    echo [ERROR] pyFAI not installed. Run: pip install pyfai PySide6\r\n"
+            "    pause\r\n"
+            "    exit /b 1\r\n"
+            ")\r\n"
+            "python -c \"from PySide6 import QtWidgets\" >nul 2>&1\r\n"
+            "if %errorlevel% neq 0 (\r\n"
+            "    echo [ERROR] Qt binding missing. Run: pip install PySide6\r\n"
+            "    pause\r\n"
+            "    exit /b 1\r\n"
+            ")\r\n"
+            "echo Launching pyFAI-calib2...\r\n"
+            "python -m pyFAI.app.calib2\r\n"
+        )
+    return (
+        "#!/usr/bin/env bash\n"
+        "# pyFAI-calib2 launcher (X-FAIS)\n"
+        "if ! command -v python3 &>/dev/null; then\n"
+        "    echo \"[ERROR] python3 not found.\"\n"
+        "    exit 1\n"
+        "fi\n"
+        "python3 -c 'import pyFAI' &>/dev/null || { echo \"[ERROR] pyFAI missing: pip3 install pyfai PySide6\"; exit 1; }\n"
+        "python3 -c 'from PySide6 import QtWidgets' &>/dev/null || { echo \"[ERROR] Qt binding missing: pip3 install PySide6\"; exit 1; }\n"
+        "exec python3 -m pyFAI.app.calib2\n"
+    )
+
+
+async def handle_export_bat_pyfai(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Return a pyFAI-calib2 launcher script for browser download (web mode).
+
+    返回 pyFAI-calib2 启动脚本内容供浏览器下载（Web 模式）。后端不落盘——
+    由前端保存，规避任何服务端路径写入。
+    """
+    content = _generate_calib2_script()
+    is_win = sys.platform == "win32"
+    filename = "pyFAI-calib2-launcher." + ("bat" if is_win else "sh")
+    await send_progress(1.0, "Ready / 就绪")
+    return {"status": "ok", "content": content, "filename": filename}
+
+
+async def handle_lamellar_analysis(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """SAXS lamellar structure analysis handler. SAXS 片晶结构分析处理函数。
+
+    Input modes / 输入模式:
+      - input_mode "image": integrate an image+geometry to I(q) first
+        (radial 1-D integration, q unit only), then analyze.
+      - input_mode "curves": use caller-supplied q/intensity arrays directly.
+    """
+    input_mode = payload.get("input_mode", "curves")
+    label: str | None = None
+    q_list: Any = []
+    i_list: Any = []
+    q_unit = payload.get("q_unit", "nm^-1")
+
+    if input_mode == "image":
+        if q_unit not in ("nm^-1", "A^-1"):
+            return {
+                "status": "error",
+                "message": "Image mode requires a q radial unit (q_nm^-1 / q_A^-1). / 图像模式需要 q 径向单位。",
+            }
+        await send_progress(0.05, "Loading geometry... / 加载几何...")
+        geo = payload.get("geometry", {})
+        ai: Any = None
+        if geo.get("poni_path"):
+            ai, _cx, _cy = await _run_blocking(IntegratorFactory.from_poni_path, geo["poni_path"])
+        elif geo.get("manual"):
+            ai, _cx, _cy = await _run_blocking(IntegratorFactory.from_manual_params, **geo["manual"])
+        else:
+            ai, _cx, _cy = await _run_blocking(
+                IntegratorFactory.from_manual_params,
+                float(geo.get("pixel1", geo.get("pixel_size_um", 172.0))),
+                float(geo.get("distance", geo.get("dist_mm", 200.0))),
+                float(geo.get("wavelength", geo.get("wavelength_A", 1.5418))),
+                float(geo.get("centerX", geo.get("center_x_px", 512.0))),
+                float(geo.get("centerY", geo.get("center_y_px", 512.0))),
+            )
+        if ai is None:
+            return {"status": "error", "message": "Failed to create integrator / 积分器创建失败"}
+
+        files = payload.get("files", [])
+        if not files:
+            return {"status": "error", "message": "No files / 无文件"}
+        fpath = files[0]
+        if cancel_event.is_set():
+            raise asyncio.CancelledError()
+        await send_progress(0.25, f"Loading {fpath} / 加载 {fpath}")
+        try:
+            data, dead_mask, meta = await _run_blocking(
+                ImageLoader.load, fpath,
+                payload.get("h5_dataset_path"), payload.get("h5_channel"),
+                payload.get("frame_index", 0),
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "error", "message": f"Failed to load image: {exc} / 图像加载失败：{exc}"}
+        if data is None:
+            return {"status": "error", "message": "No data loaded / 无数据"}
+
+        opts = payload.get("options", {})
+        custom_mask = None
+        custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
+        if custom_mask_path:
+            custom_mask = await _run_blocking(MaskBuilder.load_mask_file, str(custom_mask_path))
+        mask = await _run_blocking(
+            MaskBuilder.build, data,
+            payload.get("valid_min", 0.0), payload.get("valid_max", 1e10),
+            dead_mask, custom_mask,
+        )
+
+        integrate_kwargs: dict[str, Any] = {
+            "data": data,
+            "npt": opts.get("npt", 1000),
+            "unit": "q_nm^-1" if q_unit == "nm^-1" else "q_A^-1",
+            "mask": mask.astype(np.uint8),
+            "method": opts.get("method", "splitpixel"),
+            "correctSolidAngle": opts.get("correct_solid_angle", True),
+        }
+        radial_min = opts.get("radial_min")
+        radial_max = opts.get("radial_max")
+        if radial_min is not None and radial_max is not None and float(radial_min) < float(radial_max):
+            integrate_kwargs["radial_range"] = (float(radial_min), float(radial_max))
+        await send_progress(0.45, "Integrating radially / 径向积分中")
+        if hasattr(ai, "integrate1d_ng"):
+            res = ai.integrate1d_ng(**integrate_kwargs)
+        else:
+            res = ai.integrate1d(**integrate_kwargs)
+        q_list, i_list = _drop_empty_bins(res, opts.get("drop_empty_bins", True))
+        label = meta.get("filename", fpath)
+    else:
+        q_list = payload.get("q", [])
+        i_list = payload.get("intensity", [])
+
+    if not q_list or len(q_list) < 8:
+        return {"status": "error", "message": "Insufficient SAXS data (≥8 q points needed). / SAXS 数据不足（至少 8 个 q 点）。"}
+
+    opts = {
+        "q_unit": q_unit,
+        "methods": payload.get("methods", ["bragg", "correlation"]),
+        "background": payload.get("background", {"mode": "auto"}),
+        "minority_phase": payload.get("minority_phase", "crystalline"),
+        "bragg": payload.get("bragg", {}),
+        "correlation": payload.get("correlation", {}),
+    }
+    try:
+        result = await _run_blocking(LamellarAnalysis.analyze_lamellar, q_list, i_list, **opts)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        return {"status": "error", "message": f"Lamellar analysis failed: {exc}"}
 
     await send_progress(1.0, "Complete / 完成")
     result["status"] = "ok"
@@ -5676,6 +6099,11 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/image_math": handle_image_math,
     "/api/image_stitch": handle_image_stitch,
     "/api/orientation_analysis": handle_orientation_analysis,
+    "/api/lamellar_analysis": handle_lamellar_analysis,
+    "/api/check_pyfai": handle_check_pyfai,
+    "/api/launch_pyfai": handle_launch_pyfai,
+    "/api/install_pyfai": handle_install_pyfai,
+    "/api/export_bat_pyfai": handle_export_bat_pyfai,
 }
 
 
@@ -5785,9 +6213,83 @@ def _start_ws_in_thread(service: WebSocketService, host: str, port: int) -> None
         traceback.print_exc()
 
 
+def _start_parent_watchdog() -> None:
+    """Exit this process as soon as the parent (Electron) dies.
+
+    父进程（Electron）死亡时立即退出本进程。
+
+    The desktop app passes the parent PID via XFAIS_PARENT_PID. Without this
+    watchdog, a crash / force-kill of the app leaves the backend python.exe
+    orphaned under the install directory — and the NSIS installer's running-app
+    check (which matches ANY process under $INSTDIR) then deadlocks with
+    "X-FAIS 无法关闭，请手动关闭它". Never active in standalone/web mode
+    (no env var → no watchdog).
+    桌面版通过 XFAIS_PARENT_PID 传入父进程 PID。若无此看门狗，应用崩溃/被
+    强杀时后端 python.exe 会滞留在安装目录下——NSIS 安装器的进程检查
+    （匹配 $INSTDIR 下任意进程）随之死锁在“无法关闭”提示。独立/Web 模式
+    无该环境变量，看门狗不生效。
+    """
+    raw = os.environ.get("XFAIS_PARENT_PID", "").strip()
+    if not raw:
+        return
+    try:
+        parent_pid = int(raw)
+    except ValueError:
+        return
+    if parent_pid <= 0 or parent_pid == os.getpid():
+        return
+
+    def _watch() -> None:  # pragma: no cover - platform/timing dependent
+        try:
+            if sys.platform == "win32":
+                import ctypes
+                import time as _time
+
+                k32 = ctypes.windll.kernel32
+                SYNCHRONIZE = 0x00100000
+                ERROR_ACCESS_DENIED = 5
+                # Obtain a waitable handle; access-denied means the parent is
+                # alive but protected (keep retrying), any other error (e.g.
+                # 87 = invalid parameter) means it no longer exists.
+                # 获取可等待句柄；拒绝访问=父进程仍存活仅受保护（继续重试），
+                # 其他错误（如 87 无效参数）= 父进程已不存在。
+                handle = 0
+                while True:
+                    handle = k32.OpenProcess(SYNCHRONIZE, False, parent_pid)
+                    if handle:
+                        break
+                    if k32.GetLastError() != ERROR_ACCESS_DENIED:
+                        os._exit(0)
+                    _time.sleep(2.0)
+                try:
+                    WAIT_TIMEOUT = 0x00000102
+                    while k32.WaitForSingleObject(handle, 2000) == WAIT_TIMEOUT:
+                        pass
+                finally:
+                    k32.CloseHandle(handle)
+            else:
+                import time as _time
+
+                while True:
+                    try:
+                        os.kill(parent_pid, 0)
+                    except ProcessLookupError:
+                        break
+                    except PermissionError:
+                        pass  # Exists but owned by another user → keep watching. / 仍在运行
+                    _time.sleep(2.0)
+        except Exception:  # noqa: BLE001 — never let the watchdog crash the service
+            pass
+        os._exit(0)
+
+    threading.Thread(target=_watch, name="parent-watchdog", daemon=True).start()
+
+
 def run_server(host: str, port: int, expected_python: str, requirements_lock: str) -> int:
     """Start the combined HTTP + WebSocket service / 启动 HTTP + WebSocket 组合服务。"""
     global _ws_service
+
+    _start_parent_watchdog()
 
     report = build_health_report(expected_python, requirements_lock)
     print(json.dumps({"startup": report}, ensure_ascii=False))

@@ -81,6 +81,20 @@ export interface SectorBoundaryOverlay {
   radius?: number
 }
 
+export interface SectorMaskOverlay {
+  type: 'sectorMask'
+  /** pyFAI chi angles (degrees) bounding the SELECTED wedge [start, end]:
+   *  the sweep from start to end in increasing chi stays clear; everything
+   *  else is shaded gray. / 选中扇区的 pyFAI chi 角（度）[起, 止]：从起到止
+   *  递增扫过的区域保持透明，其余区域罩灰色蒙版。 */
+  angles: [number, number]
+  centerX: number
+  centerY: number
+  /** Mask fill color (CSS). Defaults to a translucent gray.
+   *  蒙版填充色（CSS）。默认半透明灰。 */
+  color?: string
+}
+
 export interface ImageMaskOverlay {
   type: 'imageMask'
   /** PNG URL (blob: or data:) of a same-resolution overlay, alpha-encoded. / 与底图同分辨率的叠加 PNG（blob: 或 data:），由 alpha 通道控制透明度。 */
@@ -104,7 +118,7 @@ export interface LineSegmentOverlay {
   lineWidth?: number
 }
 
-export type Overlay = BeamCenterOverlay | SectorBoundaryOverlay | ImageMaskOverlay | LineSegmentOverlay | OriginMarkerOverlay
+export type Overlay = BeamCenterOverlay | SectorBoundaryOverlay | SectorMaskOverlay | ImageMaskOverlay | LineSegmentOverlay | OriginMarkerOverlay
 
 export interface OriginMarkerOverlay {
   type: 'originMarker'
@@ -537,6 +551,47 @@ function drawOverlays() {
   }
 
   for (const overlay of props.overlays) {
+    // The gray azimuth mask is drawn first among vector overlays so the sector
+    // boundary rays and beam-center crosshair stay visible on top of it.
+    // 灰色方位角蒙版在矢量叠加中最先绘制，扇区边界线与光束中心十字保持在其之上。
+    if (overlay.type === 'sectorMask') {
+      const cx = overlay.centerX * scaleX
+      const cy = overlay.centerY * scaleY
+      // Radius covering the whole canvas from the center (anisotropy-safe).
+      // 从中心足以覆盖整个画布的半径（各向异性安全）。
+      const rx = Math.max(cx, canvas.width - cx, 1)
+      const ry = Math.max(cy, canvas.height - cy, 1)
+      const rCover = Math.hypot(rx, ry)
+
+      let startDeg = overlay.angles[0]
+      let sweep = overlay.angles[1] - startDeg
+      if (sweep <= 0) sweep += 360
+      if (sweep >= 360) continue // whole plane selected → nothing to shade / 全选则无需蒙版
+
+      // Fill the whole canvas with translucent gray, then knock out the
+      // selected wedge via evenodd (rect + wedge as one compound path).
+      // The wedge path MUST start at the CENTER (moveTo center → arc →
+      // closePath): starting it at the arc start would produce a circular
+      // SEGMENT (chord closure) that leaves a gray triangle over the beam
+      // center. Chi angles map directly to canvas arc angles (y-down ⇒
+      // positive chi sweeps clockwise on screen, matching the boundary rays).
+      // 用 evenodd（矩形 + 楔形复合路径）填充全画布灰色、抠掉选中扇区。
+      // 楔形路径必须从中心开始（moveTo 中心 → 弧 → closePath）：若从弧起点
+      // 开始，闭合的是弦而非两条半径，会在光束中心残留一块灰色三角。
+      // chi 角直接映射画布弧角（y 向下 ⇒ 正 chi 屏幕顺时针，与边界线一致）。
+      const startRad = (startDeg * Math.PI) / 180
+      const endRad = startRad + (sweep * Math.PI) / 180
+      ctx.save()
+      ctx.fillStyle = overlay.color ?? 'rgba(128, 128, 128, 0.45)'
+      ctx.beginPath()
+      ctx.rect(0, 0, canvas.width, canvas.height)
+      ctx.moveTo(cx, cy)
+      ctx.ellipse(cx, cy, rCover, rCover, 0, startRad, endRad, false)
+      ctx.closePath()
+      ctx.fill('evenodd')
+      ctx.restore()
+    }
+
     if (overlay.type === 'beamCenter') {
       const cx = overlay.x * scaleX
       const cy = overlay.y * scaleY

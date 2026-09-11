@@ -44,6 +44,21 @@ _NONPONI_DATA_KEYS = {"detector_shape", "detector_label", "orientation"}
 # round-trips the label. The parser reads it back into `detector_label`.
 _DETECTOR_LABEL_RE = re.compile(r"^#\s*Detector\s+label\s*:\s*(.+)$", re.IGNORECASE)
 
+# Trailing SI unit on numeric poni values (pyFAI ≥2024): "0.1823 m", "0.001 rad".
+# poni 数值尾部 SI 单位（pyFAI ≥2024）："0.1823 m"、"0.001 rad"。
+_UNIT_SUFFIX_RE = re.compile(r"^\s*([+-]?[0-9]*\.?[0-9]+(?:[eE][+-]?[0-9]+)?)\s*[A-Za-zµμ°%/*0-9^-]*\s*$")
+
+
+def _strip_unit(text: str) -> str:
+    """Return the numeric prefix of a value like '0.1823 m' (identity if none).
+
+    剥离类似 '0.1823 m' 值的尾部单位，返回数字前缀（无单位则原样返回）。
+    """
+    m = _UNIT_SUFFIX_RE.match(text or "")
+    if m:
+        return m.group(1)
+    return text
+
 # PyFAI registry lookup is lazy-imported to avoid hard dependency at module
 # import time (keeps tests / parse-only paths importable without pyFAI).
 _detector_registry_cache: Optional[set] = None
@@ -189,6 +204,15 @@ def parse_poni_file(file_path: str) -> Optional[Dict[str, Any]]:
     Parse a pyFAI .poni file and extract geometry parameters.
     解析 pyFAI .poni 文件并提取几何参数。
 
+    Encoding: pyFAI writes .poni in the locale's text encoding on Windows, so
+    files calibrated on a Chinese-locale machine contain GBK bytes in the
+    comment lines (e.g. the `# Image: fabio:///D:/.../元数据/...` path). Try
+    UTF-8 first, then the preferred locale encoding and common CJK codecs,
+    finally latin-1 (never fails; only comments could be garbled).
+    编码：pyFAI 在 Windows 上按本地编码写 .poni，中文环境标定出的文件注释里
+    含 GBK 字节（如 `# Image: .../元数据/...` 路径）。先试 UTF-8，再试本地
+    首选编码与常见 CJK 编码，最后 latin-1（永不失败，至多注释乱码）。
+
     Parameters
     ----------
     file_path : str
@@ -215,10 +239,28 @@ def parse_poni_file(file_path: str) -> Optional[Dict[str, Any]]:
         logger.error(f"PONI file not found: {file_path}")
         return None
 
+    import locale as _locale
+
     try:
         # Read file content / 读取文件内容
-        with open(file_path, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
+        lines: Optional[list] = None
+        last_exc: Optional[Exception] = None
+        encodings: list = ["utf-8", "utf-8-sig"]
+        preferred = _locale.getpreferredencoding(False)
+        if preferred:
+            encodings.append(preferred)
+        encodings.extend(["gbk", "gb18030", "latin-1"])
+        for enc in dict.fromkeys(encodings):  # dedupe, keep order / 去重保序
+            try:
+                with open(file_path, 'r', encoding=enc) as f:
+                    lines = f.readlines()
+                break
+            except (UnicodeDecodeError, LookupError) as exc:
+                last_exc = exc
+                continue
+        if lines is None:
+            raise last_exc or UnicodeDecodeError("poni", b"", 0, 1, "undecodable")
+
 
         # Parse key-value pairs / 解析键值对
         result: Dict[str, Any] = {}
@@ -249,21 +291,25 @@ def parse_poni_file(file_path: str) -> Optional[Dict[str, Any]]:
                 elif value.startswith("'") and value.endswith("'"):
                     value = value[1:-1]
 
-                # Try to parse as a float; for tuple-style values (e.g.
-                # `PixelSize: 1.72e-04, 1.72e-04`) keep the first element.
-                # 优先尝试作为数字解析；元组风格的值（如 PixelSize）保留第一个元素。
+                # Try to parse as a float; pyFAI ≥2024 may append SI units
+                # ("0.1823 m", "1.54e-10 m", "0.001 rad") — strip a trailing
+                # unit token. Tuple-style values (PixelSize) keep both elements.
+                # 优先按数字解析；pyFAI ≥2024 可能带 SI 单位后缀（"0.1823 m"
+                # 等）——剥离尾部单位。元组风格值（PixelSize）保留各元素。
                 try:
                     value = float(value)
                 except ValueError:
-                    # Handle pyFAI's "x, y" tuple form / 处理 pyFAI 的 "x, y" 元组
                     if ',' in value:
                         parts = [p.strip() for p in value.split(',')]
                         try:
-                            value = [float(p) for p in parts]
+                            value = [float(_strip_unit(p)) for p in parts]
                         except ValueError:
                             pass
                     else:
-                        pass
+                        try:
+                            value = float(_strip_unit(value))
+                        except ValueError:
+                            pass
 
                 result[key] = value
 
@@ -331,6 +377,35 @@ def _normalize_poni_data(raw: Dict[str, Any]) -> Dict[str, Any]:
                         normalized['pixel_size'] = float(pixel1)
             except Exception:  # noqa: BLE001 — registry lookup is best-effort
                 pass
+
+    # Generic `Detector:` files (pyFAI-native and X-FAIS-exported alike) keep
+    # pixel size / shape / orientation inside the `Detector_config` JSON blob.
+    # Parse it so a reverse-import can restore the full geometry.
+    # 通用 `Detector:` 文件（pyFAI 原生与 X-FAIS 导出）把像素尺寸/形状/方向
+    # 存放在 `Detector_config` JSON 中——解析它以便反向导入完整几何。
+    config_raw = raw.get('Detector_config') or raw.get('detector_config')
+    if isinstance(config_raw, str) and config_raw.strip():
+        try:
+            cfg = json.loads(config_raw)
+        except ValueError:
+            cfg = None
+        if isinstance(cfg, dict):
+            if 'pixel_size' not in normalized:
+                p1 = cfg.get('pixel1')
+                p2 = cfg.get('pixel2')
+                if isinstance(p1, (int, float)) and float(p1) > 0:
+                    # Keep pixel2 separately when it differs (square assumed otherwise).
+                    # 像素不等时单独保留 pixel2，否则按正方形处理。
+                    normalized['pixel_size'] = float(p1)
+                    if isinstance(p2, (int, float)) and 0 < float(p2) and float(p2) != float(p1):
+                        normalized['pixel2_size'] = float(p2)
+            shape = cfg.get('max_shape') or cfg.get('shape')
+            if (isinstance(shape, (list, tuple)) and len(shape) == 2
+                    and all(isinstance(v, (int, float)) for v in shape)):
+                normalized['detector_shape'] = [int(shape[0]), int(shape[1])]
+            orient = cfg.get('orientation')
+            if isinstance(orient, (int, float)) and int(orient) in (0, 1, 2, 3, 4):
+                normalized['orientation'] = int(orient)
 
     # PONI1 (beam center X / 光束中心X)
     for key in ['Poni1', 'poni1', 'Poni_1', 'beam_center_x']:

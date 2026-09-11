@@ -354,7 +354,12 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
     }
     case 'mask_maker': {
       const action = asString(params.action)
-      // load_preview action: same as viewer_config image loading
+      // load_preview action: same as viewer_config image loading.
+      // `settings` (colormap / log / clim) MUST be forwarded — the backend
+      // re-renders the preview with them; dropping it left manual contrast
+      // with no effect. / load_preview 与 viewer_config 的图像加载一致。
+      // `settings`（色图/对数/clim）必须透传——后端据此重渲染预览；
+      // 丢失该字段会导致手动对比度完全无效。
       if (action === 'load_preview' || action === 'load') {
         const filePath = asString(params.filePath)
         return {
@@ -367,6 +372,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           h5_dataset_path: asString(params.dataset),
           channel: typeof params.channel === 'number' || typeof params.channel === 'string' ? params.channel : undefined,
           h5_channel: typeof params.channel === 'number' || typeof params.channel === 'string' ? params.channel : undefined,
+          settings: asRecord(params.settings),
         }
       }
       // All other mask operations: pass through as-is (draw_shape, apply_threshold, export_mask, load_mask)
@@ -509,6 +515,63 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
       }
       return base
     }
+    case 'lamellar_analysis': {
+      const inputMode = asString(params.inputMode) ?? 'curves'
+      const bgRaw = asRecord(params.background)
+      const braggRaw = asRecord(params.bragg)
+      const corrRaw = asRecord(params.correlation)
+      const base: Record<string, unknown> = {
+        input_mode: inputMode,
+        q_unit: asString(params.qUnit) ?? 'nm^-1',
+        methods: Array.isArray(params.methods)
+          ? params.methods.filter((m): m is string => typeof m === 'string')
+          : ['bragg', 'correlation'],
+        background: {
+          mode: asString(bgRaw.mode) ?? 'auto',
+          constant: asOptionalNumber(bgRaw.constant),
+        },
+        minority_phase: asString(params.minorityPhase) ?? 'crystalline',
+        bragg: {
+          smooth_window: asOptionalNumber(braggRaw.smoothWindow),
+          q_min: asOptionalNumber(braggRaw.qMin),
+          q_max: asOptionalNumber(braggRaw.qMax),
+        },
+        correlation: {
+          r_max_nm: asOptionalNumber(corrRaw.rMaxNm),
+        },
+      }
+      if (inputMode === 'image') {
+        const fileList = Array.isArray(params.files) && params.files.length > 0
+          ? params.files.filter((f): f is string => typeof f === 'string')
+          : (asString(params.filePath) ? [params.filePath] : [])
+        Object.assign(base, {
+          files: fileList,
+          geometry,
+          valid_min: asNumber(activeMask.valueRangeMin, 0),
+          valid_max: asNumber(activeMask.valueRangeMax, 1e10),
+          custom_mask_path: asString(activeMask.customMaskPath),
+          h5_dataset_path: h5DatasetPath,
+          h5_channel: h5Channel,
+          frame_index: frameIndex,
+          options: {
+            npt: asNumber(params.npt, 1000),
+            radial_unit: normalizeUnit(params.radialUnit) ?? 'q_nm^-1',
+            radial_min: asOptionalNumber(params.radialMin),
+            radial_max: asOptionalNumber(params.radialMax),
+            drop_empty_bins: asBoolean(params.dropEmptyBins, true),
+            polarization_factor: polarizationFactor,
+            dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
+            custom_mask_path: asString(activeMask.customMaskPath),
+          },
+        })
+      } else {
+        base.q = Array.isArray(params.q)
+          ? params.q.filter((v): v is number => typeof v === 'number') : []
+        base.intensity = Array.isArray(params.intensity)
+          ? params.intensity.filter((v): v is number => typeof v === 'number') : []
+      }
+      return base
+    }
     default:
       return params
   }
@@ -626,19 +689,51 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
     case 'orientation_analysis': {
       const numArray = (v: unknown): number[] =>
         Array.isArray(v) ? v.filter((x): x is number => typeof x === 'number') : []
-      const results = Array.isArray(result.results) ? result.results : []
+      const mapSingle = (src: Record<string, unknown>) => ({
+        chi: numArray(src.chi),
+        intensity: numArray(src.intensity),
+        foldedIntensity: numArray(src.folded_intensity),
+        correctedIntensity: numArray(src.corrected_intensity),
+        background: numArray(src.background),
+        foldInfo: asRecord(src.fold_info),
+        backgroundInfo: asRecord(src.background_info),
+        results: Array.isArray(src.results) ? src.results.map((entry) => asRecord(entry)) : [],
+        crystallinityHint: asRecord(src.crystallinity_hint),
+        warnings: Array.isArray(src.warnings)
+          ? src.warnings.filter((w): w is string => typeof w === 'string') : [],
+        quality: asRecord(src.quality),
+        sourceLabel: asString(src.source_label),
+      })
+      // Batch mode: same conditions, one analysis per file + per-file failures.
+      // 批量模式：同条件逐文件分析 + 逐文件失败列表。
+      if (Array.isArray(result.items)) {
+        return {
+          kind: 'result',
+          data: {
+            batch: true,
+            items: result.items.map((entry) => mapSingle(asRecord(entry))),
+            failed: Array.isArray(result.failed) ? result.failed : [],
+          }
+        }
+      }
+      return {
+        kind: 'result',
+        data: mapSingle(result)
+      }
+    }
+    case 'lamellar_analysis': {
+      const numArray = (v: unknown): number[] =>
+        Array.isArray(v) ? v.filter((x): x is number => typeof x === 'number') : []
       return {
         kind: 'result',
         data: {
-          chi: numArray(result.chi),
+          q: numArray(result.q_nm),
           intensity: numArray(result.intensity),
-          foldedIntensity: numArray(result.folded_intensity),
           correctedIntensity: numArray(result.corrected_intensity),
-          background: numArray(result.background),
-          foldInfo: asRecord(result.fold_info),
-          backgroundInfo: asRecord(result.background_info),
-          results: results.map((entry) => asRecord(entry)),
-          crystallinityHint: asRecord(result.crystallinity_hint),
+          background: asRecord(result.background),
+          gammaR: numArray(result.gamma_r),
+          gamma: numArray(result.gamma),
+          results: Array.isArray(result.results) ? result.results.map((entry) => asRecord(entry)) : [],
           warnings: Array.isArray(result.warnings)
             ? result.warnings.filter((w): w is string => typeof w === 'string') : [],
           quality: asRecord(result.quality),

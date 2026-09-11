@@ -42,7 +42,12 @@ const UNUSED_PACKAGES = [
   // NOTE: pytest (+ _pytest, iniconfig, pluggy) is intentionally KEPT — it is
   // listed in requirements.in, so the runtime health check (which validates
   // every entry of requirements.lock.txt) expects it to be importable.
-  'pip', 'coverage', 'build', 'git', 'gitdb',
+  // NOTE: 'pip' is intentionally KEPT (since v0.2.5) — the PyFAI calibration
+  // page's one-click dependency install (`pyfai:installDeps`) runs
+  // `python -m pip install pyfai PySide6` inside this runtime. Cost ~10.5 MB;
+  // if that is ever too much, drop pip here again and rely on the ensurepip
+  // fallback in main.ts's installDeps handler.
+  'coverage', 'build', 'git', 'gitdb',
 ]
 
 function dirSizeBytes(dir) {

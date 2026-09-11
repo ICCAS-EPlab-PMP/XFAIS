@@ -97,14 +97,20 @@ const desktopApiWithPyfai = {
   ...desktopApi,
   pyfai: {
     check: (): Promise<{
-      embedded: { available: boolean; version: string | null; calib2Path: string | null }
-      system: { available: boolean; version: string | null; calib2Path: string | null }
+      embedded: { available: boolean; version: string | null; calib2Path: string | null; hasQtBinding: boolean }
+      system: { available: boolean; version: string | null; calib2Path: string | null; hasQtBinding: boolean }
       overall: 'available' | 'embedded_only' | 'system_only' | 'not_found'
     }> => ipcRenderer.invoke(IPC_CHANNELS.pyfaiCheck) as Promise<any>,
-    launch: (): Promise<{ success: boolean }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.pyfaiLaunch) as Promise<{ success: boolean }>,
+    launch: (): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.pyfaiLaunch) as Promise<{ success: boolean; error?: string }>,
     install: (): Promise<{ success: boolean; command?: string; error?: string }> =>
-      ipcRenderer.invoke(IPC_CHANNELS.pyfaiInstall) as Promise<{ success: boolean; command?: string; error?: string }>
+      ipcRenderer.invoke(IPC_CHANNELS.pyfaiInstall) as Promise<{ success: boolean; command?: string; error?: string }>,
+    // One-click pip install of pyFAI + PySide6 into the embedded runtime.
+    // 一键将 pyFAI + PySide6 安装到内嵌运行时。
+    installDeps: (): Promise<{ success: boolean; output?: string; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.pyfaiInstallDeps) as Promise<{ success: boolean; output?: string; error?: string }>,
+    exportBat: (): Promise<{ success: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.pyfaiExportBat) as Promise<{ success: boolean; error?: string }>
   }
 }
 

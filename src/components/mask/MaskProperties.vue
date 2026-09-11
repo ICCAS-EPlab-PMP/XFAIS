@@ -36,40 +36,8 @@
       <p v-else class="empty-hint">—</p>
     </div>
 
-    <!-- Contrast adjustment (legacy CSS-filter; kept for backward compat) -->
-    <div class="props-group">
-      <h4 class="group-title">{{ t('maskMaker.properties.contrast') }}</h4>
-      <div class="contrast-form">
-        <div class="contrast-row">
-          <input
-            type="range"
-            class="contrast-slider"
-            :min="0.2"
-            :max="5"
-            :step="0.05"
-            :value="contrast"
-            :disabled="!imageLoaded"
-            @input="onContrastInput(($event.target as HTMLInputElement).value)"
-          />
-          <span class="contrast-value">{{ contrast.toFixed(2) }}×</span>
-        </div>
-        <div class="contrast-presets">
-          <button
-            v-for="preset in contrastPresets"
-            :key="preset.value"
-            class="preset-btn"
-            :class="{ active: Math.abs(contrast - preset.value) < 0.01 }"
-            :disabled="!imageLoaded"
-            @click="onContrastInput(String(preset.value))"
-          >
-            {{ preset.label }}
-          </button>
-        </div>
-      </div>
-    </div>
-
-    <!-- Display settings (colormap / log / clim) — mirrors the viewer. -->
-    <!-- 显示设置（色图/对数/clim）—— 与图像查看器一致。 -->
+    <!-- Contrast via absolute clim values (same as other views). -->
+    <!-- 对比度：绝对 clim 值调节 —— 与其他功能（查看器等）一致。 -->
     <div v-if="imageLoaded" class="props-group">
       <h4 class="group-title">{{ t('maskMaker.display.title') }}</h4>
       <div class="display-form">
@@ -212,7 +180,6 @@ defineProps<{
   imageInfo: MaskImageInfo | null
   maskStats: MaskStats | null
   imageLoaded: boolean
-  contrast: number
   // Display settings (v-model .prop-style passthrough; parent owns the state).
   colormap: string
   useLog: boolean
@@ -228,7 +195,6 @@ const emit = defineEmits<{
     threshold_min?: number
     threshold_max?: number
   }]
-  'update:contrast': [value: number]
   'update:colormap': [value: string]
   'update:useLog': [value: boolean]
   'update:climMode': [value: 'auto' | 'manual']
@@ -238,7 +204,9 @@ const emit = defineEmits<{
 
 const localThreshold = reactive({
   min: 0,
-  max: 65535,
+  // int32 upper bound — detector data may exceed uint16 range.
+  // int32 上限 —— 探测器数据可能超过 uint16 范围。
+  max: 2147483647,
 })
 
 const colormapOptions = [
@@ -246,18 +214,6 @@ const colormapOptions = [
   'smooth_WAXS_fit2D',
   ...Object.keys(COLORMAP_PRESETS),
 ]
-
-const contrastPresets = [
-  { value: 0.5, label: '0.5×' },
-  { value: 1, label: '1×' },
-  { value: 2, label: '2×' },
-  { value: 3, label: '3×' },
-  { value: 5, label: '5×' },
-]
-
-function onContrastInput(val: string): void {
-  emit('update:contrast', parseFloat(val))
-}
 
 function formatNumber(value: number): string {
   if (!Number.isFinite(value)) return '—'
@@ -387,87 +343,6 @@ function formatNumber(value: number): string {
 }
 
 .action-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-/* Contrast controls */
-.contrast-form {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.contrast-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.contrast-slider {
-  flex: 1;
-  -webkit-appearance: none;
-  appearance: none;
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(0, 0, 0, 0.12);
-  outline: none;
-}
-
-.contrast-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--primary);
-  cursor: pointer;
-  border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.2);
-}
-
-.contrast-slider:disabled::-webkit-slider-thumb {
-  opacity: 0.4;
-}
-
-.contrast-value {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--text-primary);
-  min-width: 40px;
-  text-align: right;
-}
-
-.contrast-presets {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.preset-btn {
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: rgba(255, 255, 255, 0.7);
-  color: var(--text-primary);
-  font-size: 0.7rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.preset-btn:hover:not(:disabled) {
-  background: var(--primary-bg);
-  border-color: var(--primary);
-}
-
-.preset-btn.active {
-  background: var(--primary);
-  color: var(--text-inverse);
-  border-color: var(--primary);
-}
-
-.preset-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }

@@ -1,5 +1,5 @@
 export const APP_NAME = 'X-FAIS'
-export const APP_VERSION = '0.2.4'
+export const APP_VERSION = '0.2.5'
 export const IPC_CHANNELS = {
   appMeta: 'app:meta',
   pythonStatus: 'python:status',
@@ -21,5 +21,7 @@ export const IPC_CHANNELS = {
   // pyFAI 工具 / pyFAI tools
   pyfaiCheck: 'pyfai:check',
   pyfaiLaunch: 'pyfai:launch',
-  pyfaiInstall: 'pyfai:install'
+  pyfaiInstall: 'pyfai:install',
+  pyfaiInstallDeps: 'pyfai:installDeps',
+  pyfaiExportBat: 'pyfai:exportBat'
 } as const

@@ -113,6 +113,7 @@ interface Window {
       check: () => Promise<PyfaiCheckResult>
       launch: () => Promise<{ success: boolean; error?: string }>
       install: () => Promise<{ success: boolean; command?: string; error?: string }>
+      installDeps: () => Promise<{ success: boolean; output?: string; error?: string }>
       exportBat: () => Promise<{ success: boolean; error?: string }>
     }
   }

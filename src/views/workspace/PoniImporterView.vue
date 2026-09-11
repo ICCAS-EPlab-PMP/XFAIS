@@ -42,6 +42,29 @@
         <div class="pi-card">
           <h3 class="pi-card-title">{{ t('poniImporter.sectionsCore') }}</h3>
 
+          <!-- Reverse import: read geometry back from an existing .poni / 反向导入：从已有 .poni 读回几何参数 -->
+          <div class="pi-import-poni">
+            <div class="pi-import-btn-row">
+              <button
+                type="button"
+                class="pi-btn pi-btn-secondary"
+                :disabled="importingPoni"
+                @click="handleImportPoni"
+              >
+                {{ importingPoni ? t('poniImporter.importPoni.loading') : t('poniImporter.importPoni.btn') }}
+              </button>
+              <button
+                type="button"
+                class="pi-btn"
+                :disabled="importingPoni"
+                @click="exportParamsTxt"
+              >
+                {{ t('poniImporter.importPoni.exportTxt') }}
+              </button>
+            </div>
+            <p class="pi-field-hint">{{ t('poniImporter.importPoni.hint') }}</p>
+          </div>
+
           <div class="pi-field">
             <label class="pi-label">{{ t('poniImporter.detectorDistance') }} (mm)</label>
             <input v-model.number="createForm.distance" type="number" class="pi-input" step="1" min="0.1" />
@@ -696,6 +719,185 @@ watch(selectedPreset, (presetName) => {
   if (initial) {
     createForm.detector_name = initial.detector_name
     createForm.pixel_size = pixelSizeUnit.value === 'um' ? initial.pixel_size * 1000 : initial.pixel_size
+  }
+}
+
+// === Reverse import: read geometry back from an existing .poni file ===
+// === 反向导入：从已有 .poni 文件读回几何参数 ===
+
+const importingPoni = ref(false)
+// Source .poni of the last reverse import (for the TXT report header + raw SI
+// values). / 最近一次反向导入的 .poni 来源（用于 TXT 报告头部与原始 SI 值）。
+const importedPoniPath = ref<string | null>(null)
+const importedPoniData = ref<Record<string, unknown> | null>(null)
+
+/** Pick a .poni, parse it via the backend, and fill the form with its geometry. */
+async function handleImportPoni(): Promise<void> {
+  const result = await transport.selectFiles({
+    filters: [{ name: 'PONI', extensions: ['poni'] }],
+    multiSelections: false,
+  })
+  const poniPath = Array.isArray(result) ? result[0] : result
+  if (!poniPath) return
+
+  importingPoni.value = true
+  try {
+    const raw = await submitAndWait('poni_importer', { action: 'parse', filePath: poniPath })
+    const data = raw as { status?: string; poni_data?: Record<string, unknown>; message?: string }
+    if (data?.status !== 'ok' || !data.poni_data) {
+      throw new Error(data?.message ?? t('poniImporter.importPoni.parseFail'))
+    }
+    applyParsedPoni(data.poni_data)
+    importedPoniPath.value = poniPath
+    importedPoniData.value = data.poni_data
+    toast.push({
+      title: t('poniImporter.title'),
+      message: `${poniPath.split(/[/\\]/).pop()}: ${t('poniImporter.importPoni.success')}`,
+      tone: 'success',
+    })
+  } catch (err) {
+    toast.push({
+      title: t('poniImporter.title'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    importingPoni.value = false
+  }
+}
+
+/** Export the current geometry parameters (form values + raw parsed .poni SI
+ *  values when available) as a plain-text report. / 将当前几何参数（表单值 +
+ *  反读 .poni 的原始 SI 值）导出为纯文本报告。 */
+function exportParamsTxt(): void {
+  const pixelSizeM = getPixelSizeMeters()
+  const pixelUm = pixelSizeM * 1e6
+  // Beam center in meters (current unit-aware values) / 当前单位下的光束中心（米）
+  const beamXM = beamCenterToMeters(createForm.beamCenterX, beamCenterUnit.value, pixelSizeM)
+  const beamYM = beamCenterToMeters(createForm.beamCenterY, beamCenterUnit.value, pixelSizeM)
+  const orientationNames: Record<number, string> = {
+    3: t('poniImporter.pixelOriginTopLeft'),
+    1: t('poniImporter.pixelOriginBottomRight'),
+    2: t('poniImporter.pixelOriginTopRight'),
+    4: t('poniImporter.pixelOriginBottomLeft'),
+  }
+  const lines: string[] = [
+    'X-FAIS PONI 参数报告 / PONI Parameter Report',
+    `生成时间 / Generated: ${new Date().toLocaleString()}`,
+    importedPoniPath.value ? `来源文件 / Source: ${importedPoniPath.value}` : '来源 / Source: 手动输入 (manual)',
+    '',
+    '== 几何参数 / Geometry ==',
+    `  探测器距离 / Distance: ${createForm.distance} mm`,
+    `  波长 / Wavelength: ${createForm.wavelength} Å  (能量 / Energy: ${createForm.energy} keV)`,
+    `  像素尺寸 / Pixel size: ${createForm.pixel_size} ${pixelSizeUnit.value} (${pixelUm.toFixed(4)} µm)`,
+    `  光束中心 X (poni2) / Beam center X: ${createForm.beamCenterX} ${beamCenterUnit.value}` +
+      (pixelSizeM > 0 ? `  = ${(beamXM * 1000).toFixed(6)} mm` : ''),
+    `  光束中心 Y (poni1) / Beam center Y: ${createForm.beamCenterY} ${beamCenterUnit.value}` +
+      (pixelSizeM > 0 ? `  = ${(beamYM * 1000).toFixed(6)} mm` : ''),
+    `  旋转 / Rotations: rot1=${createForm.rot1}°, rot2=${createForm.rot2}°, rot3=${createForm.rot3}°`,
+    `  像素原点 / Pixel origin: ${createForm.orientation} (${orientationNames[createForm.orientation] ?? '—'})`,
+    '',
+    '== 探测器 / Detector ==',
+    `  类型: ${isCustomDetector.value ? t('poniImporter.detectorCustom') : (createForm.detector_name || '—')}`,
+  ]
+  if (isCustomDetector.value) {
+    lines.push(`  自定义名称 / Label: ${createForm.detector_label || '—'}`)
+    if (createForm.shape_rows && createForm.shape_cols) {
+      lines.push(`  阵列尺寸 / Shape: ${createForm.shape_rows} × ${createForm.shape_cols} px`)
+    }
+  }
+  const raw = importedPoniData.value
+  if (raw) {
+    const si = (key: string, label: string): string => {
+      const v = raw[key]
+      return typeof v === 'number' ? `${label}: ${v}` : ''
+    }
+    const rawLines = [
+      si('distance', 'Distance'),
+      si('wavelength', 'Wavelength'),
+      si('pixel_size', 'PixelSize'),
+      si('poni1', 'Poni1'),
+      si('poni2', 'Poni2'),
+      si('rot1', 'Rot1'),
+      si('rot2', 'Rot2'),
+      si('rot3', 'Rot3'),
+    ].filter(Boolean)
+    if (rawLines.length) {
+      lines.push('', '== 原始 .poni 数值（SI 单位）/ Raw .poni values (SI) ==', ...rawLines.map(l => `  ${l}`))
+    }
+    if (typeof raw.detector_name === 'string') {
+      lines.push(`  Detector: ${raw.detector_name}`)
+    }
+  }
+  const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'poni-parameters.txt'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** Fill the create form from parsed poni_data (SI units → form units). */
+function applyParsedPoni(d: Record<string, unknown>): void {
+  // Detector first: a registry match selects the preset (its watcher fills
+  // detector_name); anything else falls back to Custom + label/shape.
+  // 先处理探测器：注册表命中则选预设（监听器会填充 detector_name）；
+  // 否则回退 Custom + 标签/形状。
+  const detName = typeof d.detector_name === 'string' ? d.detector_name.trim() : ''
+  const detLabel = typeof d.detector_label === 'string' ? d.detector_label.trim() : ''
+  const shape = Array.isArray(d.detector_shape) ? d.detector_shape as number[] : null
+  const preset = detectorPresets.value.find(p => p.detector_name.toLowerCase() === detName.toLowerCase())
+  if (preset) {
+    selectedPreset.value = preset.name
+  } else {
+    selectedPreset.value = 'Custom'
+    createForm.detector_label = detLabel || (detName && detName !== 'Detector' ? detName : '')
+    if (shape && shape.length === 2 && shape[0] > 0 && shape[1] > 0) {
+      createForm.shape_rows = Math.trunc(shape[0])
+      createForm.shape_cols = Math.trunc(shape[1])
+    } else {
+      createForm.shape_rows = null
+      createForm.shape_cols = null
+    }
+  }
+
+  // Distance m → mm / 波长 m → Å（并同步能量）
+  if (typeof d.distance === 'number' && d.distance > 0) {
+    createForm.distance = +(d.distance * 1000).toFixed(6)
+  }
+  if (typeof d.wavelength === 'number' && d.wavelength > 0) {
+    createForm.wavelength = +(d.wavelength * 1e10).toFixed(6)
+    createForm.energy = +(HC_KEV_A / createForm.wavelength).toFixed(6)
+  }
+
+  // Pixel size m → µm（统一切到 µm 单位；文件值优先于预设默认值）
+  pixelSizeUnit.value = 'um'
+  if (typeof d.pixel_size === 'number' && d.pixel_size > 0) {
+    createForm.pixel_size = +(d.pixel_size * 1e6).toFixed(6)
+  }
+
+  // Rotations rad → deg / 方向 orientation
+  const RAD2DEG = 180 / Math.PI
+  createForm.rot1 = typeof d.rot1 === 'number' ? +(d.rot1 * RAD2DEG).toFixed(6) : 0
+  createForm.rot2 = typeof d.rot2 === 'number' ? +(d.rot2 * RAD2DEG).toFixed(6) : 0
+  createForm.rot3 = typeof d.rot3 === 'number' ? +(d.rot3 * RAD2DEG).toFixed(6) : 0
+  if (typeof d.orientation === 'number' && [0, 1, 2, 3, 4].includes(d.orientation)) {
+    createForm.orientation = d.orientation
+  }
+
+  // Beam center m → px（poni1→Y, poni2→X）；无像素尺寸时保留米制单位
+  const pixelM = getPixelSizeMeters()
+  if (typeof d.poni1 === 'number' && typeof d.poni2 === 'number') {
+    if (pixelM > 0) {
+      beamCenterUnit.value = 'px'
+      createForm.beamCenterY = +(d.poni1 / pixelM).toFixed(3)
+      createForm.beamCenterX = +(d.poni2 / pixelM).toFixed(3)
+    } else {
+      beamCenterUnit.value = 'm'
+      createForm.beamCenterY = d.poni1
+      createForm.beamCenterX = d.poni2
+    }
   }
 }
 
@@ -1509,6 +1711,27 @@ onUnmounted(() => {
   font-size: 0.875rem;
   font-weight: 500;
   cursor: pointer;
+}
+
+.pi-import-poni {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-hover);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg, rgba(37, 99, 235, 0.05));
+}
+
+.pi-import-btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pi-btn-secondary {
+  border-color: var(--primary);
+  color: var(--primary);
 }
 
 .pi-btn:hover:not(:disabled) {

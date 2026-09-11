@@ -28,14 +28,38 @@
         <template v-if="inputMode === 'image'">
           <div class="or-card">
             <h3 class="or-card-title">{{ t('orientationAnalysis.selectFile') }}</h3>
-            <FileDialogButton
-              v-model="filePath"
-              mode="openFile"
-              :label="t('orientationAnalysis.selectFile')"
-              :filters="dataFileFilters"
-            />
+            <!-- Multi-file batch selection (same experimental conditions) -->
+            <!-- 多文件批量选择（同一实验条件） -->
+            <div class="or-btn-row">
+              <button type="button" class="or-btn" @click="handleAddFiles">
+                {{ t('orientationAnalysis.files.add') }}
+              </button>
+              <button v-if="files.length" type="button" class="or-btn or-btn-sm" @click="clearFiles">
+                {{ t('orientationAnalysis.files.clear') }}
+              </button>
+            </div>
+            <p v-if="files.length" class="or-hint">
+              {{ t('orientationAnalysis.files.count', { n: files.length }) }}
+            </p>
+            <p v-if="files.length > 1" class="or-hint or-hint-warn">
+              {{ t('orientationAnalysis.files.singleFirstHint') }}
+            </p>
+            <ul v-if="files.length" class="or-file-list">
+              <li v-for="(f, idx) in files" :key="f" class="or-file-item" :class="{ 'or-file-item--active': idx === selectedFileIndex }">
+                <label class="or-radio-label" :title="f">
+                  <input
+                    v-model="selectedFileIndex"
+                    type="radio"
+                    :value="idx"
+                    name="or-preview-file"
+                  />
+                  <span class="or-file-name">{{ fileName(f) }}</span>
+                </label>
+                <button type="button" class="or-btn-icon" :title="t('orientationAnalysis.files.remove')" @click="removeFile(idx)">&times;</button>
+              </li>
+            </ul>
             <H5Selector
-              v-if="filePath"
+              v-if="activeFilePath && h5Datasets.length"
               v-model="h5Selection"
               :datasets="h5Datasets"
               class="or-h5"
@@ -70,6 +94,7 @@
                 <input v-model.number="radialMax" type="number" class="or-input" step="any" />
               </div>
             </div>
+            <p class="or-hint">{{ t('orientationAnalysis.selectionHint') }}</p>
             <div class="or-field-row">
               <div class="or-field">
                 <label class="or-label">{{ t('orientationAnalysis.npt') }}</label>
@@ -242,17 +267,44 @@
         </div>
       </aside>
 
-      <!-- ===== Main: run + results / 主区：运行 + 结果 ===== -->
+      <!-- ===== Main: preview + run + results / 主区：预览 + 运行 + 结果 ===== -->
       <main class="or-main">
+        <!-- Image preview with beam center + radial selection / 图像预览（中心 + 选区） -->
+        <div v-if="inputMode === 'image' && activeFilePath" class="or-card">
+          <h3 class="or-card-title">{{ t('orientationAnalysis.files.previewTitle') }}</h3>
+          <p class="or-hint">
+            {{ t('orientationAnalysis.files.previewFile') }}: {{ fileName(activeFilePath) }}
+            <template v-if="beamCenterLabel"> · {{ t('orientationAnalysis.files.beamCenter') }}: {{ beamCenterLabel }}</template>
+          </p>
+          <div v-if="previewLoading" class="or-preview-loading">{{ t('orientationAnalysis.files.loading') }}</div>
+          <ImagePreview
+            v-else-if="previewSrc"
+            :image-b64="previewSrc"
+            :overlays="previewOverlays"
+            :show-colorbar="true"
+          />
+          <p v-else class="or-hint">{{ t('orientationAnalysis.files.noPreview') }}</p>
+        </div>
+
         <div class="or-run-row">
           <button
             type="button"
             class="or-btn or-btn-primary"
             :disabled="!canRun || isRunning"
             :data-testid="testIds.orientationRunBtn"
-            @click="handleRun"
+            @click="handleRun()"
           >
-            {{ isRunning ? t('orientationAnalysis.running') : t('orientationAnalysis.run') }}
+            {{ isRunning ? t('orientationAnalysis.running') : runButtonLabel }}
+          </button>
+          <button
+            v-if="inputMode === 'image' && files.length > 1 && activeFilePath"
+            type="button"
+            class="or-btn"
+            :disabled="isRunning"
+            :title="t('orientationAnalysis.files.runSingleHint')"
+            @click="handleRunSingle"
+          >
+            {{ t('orientationAnalysis.files.runSingle') }}
           </button>
           <button v-if="isRunning" type="button" class="or-btn" @click="handleCancel">
             {{ t('orientationAnalysis.cancel') }}
@@ -264,7 +316,7 @@
             :data-testid="testIds.orientationExport"
             @click="exportCsv"
           >
-            {{ t('orientationAnalysis.exportCsv') }}
+            {{ exportButtonLabel }}
           </button>
         </div>
 
@@ -274,74 +326,137 @@
           <strong>{{ t('orientationAnalysis.errorTitle') }}:</strong> {{ errorMessage }}
         </div>
 
-        <!-- Warnings / 警告 -->
-        <div v-if="resultData?.warnings?.length" class="or-warnings">
-          <h3 class="or-card-title">{{ t('orientationAnalysis.warnings') }}</h3>
-          <ul>
-            <li v-for="(w, idx) in resultData.warnings" :key="idx">{{ w }}</li>
-          </ul>
-        </div>
+        <!-- Batch summary / 批量汇总 -->
+        <template v-if="batchItems">
+          <div class="or-card">
+            <h3 class="or-card-title">
+              {{ t('orientationAnalysis.batch.title') }}
+              <span class="or-batch-meta">
+                {{ t('orientationAnalysis.batch.okCount', { n: batchItems.length }) }}
+                <template v-if="failedFiles.length">
+                  · {{ t('orientationAnalysis.batch.failCount', { m: failedFiles.length }) }}
+                </template>
+              </span>
+            </h3>
+            <p class="or-hint">{{ t('orientationAnalysis.batch.hint') }}</p>
+            <div class="or-table-wrap">
+              <table class="or-table">
+                <thead>
+                  <tr>
+                    <th>{{ t('orientationAnalysis.batch.file') }}</th>
+                    <th v-if="methods.includes('hermans')">f (Hermans)</th>
+                    <th v-if="methods.includes('hermans')">⟨cos²φ⟩</th>
+                    <th v-if="methods.includes('fwhm')">f (FWHM)</th>
+                    <th v-if="methods.includes('fwhm')">FWHM (°)</th>
+                    <th>{{ t('orientationAnalysis.batch.warningsCol') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(item, idx) in batchItems"
+                    :key="idx"
+                    :class="{ 'or-row--active': idx === selectedResultIndex }"
+                    @click="selectedResultIndex = idx"
+                  >
+                    <td class="or-file-name" :title="item.sourceLabel ?? ''">{{ fileName(item.sourceLabel ?? '') }}</td>
+                    <td v-if="methods.includes('hermans')">{{ fmt(metric(item, 'hermans', 'f')) }}</td>
+                    <td v-if="methods.includes('hermans')">{{ fmt(metric(item, 'hermans', 'cos2_phi')) }}</td>
+                    <td v-if="methods.includes('fwhm')">{{ fmt(metric(item, 'fwhm', 'f')) }}</td>
+                    <td v-if="methods.includes('fwhm')">{{ fmt(metric(item, 'fwhm', 'fwhm_deg')) }}°</td>
+                    <td>{{ item.warnings?.length ?? 0 }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-if="failedFiles.length" class="or-failed">
+              <strong>{{ t('orientationAnalysis.batch.failed') }}:</strong>
+              <ul>
+                <li v-for="(f, idx) in failedFiles" :key="idx">
+                  <code>{{ f.file }}</code> — {{ f.reason }}
+                </li>
+              </ul>
+            </div>
+          </div>
+        </template>
 
-        <!-- Chart / 曲线图 -->
-        <div v-if="chartTraces.length > 0" class="or-chart" :data-testid="testIds.orientationChart">
-          <h2 class="or-section-title">{{ t('orientationAnalysis.chartTitle') }}</h2>
-          <LineChart
-            :traces="chartTraces"
-            :x-label="t('orientationAnalysis.chiAxis')"
-            :y-label="t('orientationAnalysis.intensityAxis')"
-            :title="t('orientationAnalysis.chartTitle')"
-          />
-        </div>
+        <!-- Selected-detail view (single result or chosen batch row) -->
+        <template v-if="detailData">
+          <div v-if="detailLabel" class="or-detail-label">{{ detailLabel }}</div>
 
-        <!-- Results cards / 结果卡片 -->
-        <div v-if="resultData?.results?.length" class="or-results">
-          <h2 class="or-section-title">{{ t('orientationAnalysis.resultsTitle') }}</h2>
-          <div class="or-result-grid">
-            <div v-for="(r, idx) in resultData.results" :key="idx" class="or-result-card">
-              <h3 class="or-result-method">{{ r.method }}</h3>
-              <div class="or-result-row">
-                <span class="or-result-key">f</span>
-                <span class="or-result-val">{{ formatNum(r.f) }}</span>
-              </div>
-              <div v-if="r.cos2_phi !== undefined" class="or-result-row">
-                <span class="or-result-key">⟨cos²φ⟩</span>
-                <span class="or-result-val">{{ formatNum(r.cos2_phi) }}</span>
-              </div>
-              <div v-if="r.fwhm_deg !== undefined" class="or-result-row">
-                <span class="or-result-key">FWHM</span>
-                <span class="or-result-val">{{ formatNum(r.fwhm_deg) }}°</span>
-              </div>
-              <div v-if="r.pi_pct !== undefined" class="or-result-row">
-                <span class="or-result-key">Π%</span>
-                <span class="or-result-val">{{ formatNum(r.pi_pct) }}%</span>
-              </div>
-              <div v-if="r.residual !== undefined" class="or-result-row">
-                <span class="or-result-key">{{ t('orientationAnalysis.residual') }}</span>
-                <span class="or-result-val">{{ formatNum(r.residual) }}</span>
-              </div>
-              <div v-if="r.condition_number !== undefined && r.condition_number !== null" class="or-result-row">
-                <span class="or-result-key">cond</span>
-                <span class="or-result-val">{{ formatNum(r.condition_number) }}</span>
+          <div v-if="detailData.warnings?.length" class="or-warnings">
+            <h3 class="or-card-title">{{ t('orientationAnalysis.warnings') }}</h3>
+            <ul>
+              <li v-for="(w, idx) in detailData.warnings" :key="idx">{{ w }}</li>
+            </ul>
+          </div>
+
+          <!-- Chart / 曲线图 -->
+          <div v-if="chartTraces.length > 0" class="or-chart" :data-testid="testIds.orientationChart">
+            <h2 class="or-section-title">{{ t('orientationAnalysis.chartTitle') }}</h2>
+            <LineChart
+              :traces="chartTraces"
+              :x-label="t('orientationAnalysis.chiAxis')"
+              :y-label="t('orientationAnalysis.intensityAxis')"
+              :title="t('orientationAnalysis.chartTitle')"
+            />
+          </div>
+
+          <!-- Results cards / 结果卡片 -->
+          <div v-if="detailData.results?.length" class="or-results">
+            <h2 class="or-section-title">{{ t('orientationAnalysis.resultsTitle') }}</h2>
+            <div class="or-result-grid">
+              <div v-for="(r, idx) in detailData.results" :key="idx" class="or-result-card">
+                <h3 class="or-result-method">{{ r.method }}</h3>
+                <div class="or-result-row">
+                  <span class="or-result-key">f</span>
+                  <span class="or-result-val">{{ formatNum(r.f) }}</span>
+                </div>
+                <div v-if="r.cos2_phi !== undefined" class="or-result-row">
+                  <span class="or-result-key">⟨cos²φ⟩</span>
+                  <span class="or-result-val">{{ formatNum(r.cos2_phi) }}</span>
+                </div>
+                <div v-if="r.fwhm_deg !== undefined" class="or-result-row">
+                  <span class="or-result-key">FWHM</span>
+                  <span class="or-result-val">{{ formatNum(r.fwhm_deg) }}°</span>
+                </div>
+                <div v-if="r.pi_pct !== undefined" class="or-result-row">
+                  <span class="or-result-key">Π%</span>
+                  <span class="or-result-val">{{ formatNum(r.pi_pct) }}%</span>
+                </div>
+                <div v-if="r.residual !== undefined" class="or-result-row">
+                  <span class="or-result-key">{{ t('orientationAnalysis.residual') }}</span>
+                  <span class="or-result-val">{{ formatNum(r.residual) }}</span>
+                </div>
+                <div v-if="r.condition_number !== undefined && r.condition_number !== null" class="or-result-row">
+                  <span class="or-result-key">cond</span>
+                  <span class="or-result-val">{{ formatNum(r.condition_number) }}</span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        <!-- Crystallinity hint / 结晶度提示 -->
-        <div v-if="resultData?.crystallinityHint && Object.keys(resultData.crystallinityHint).length" class="or-conf">
-          <h3 class="or-card-title">{{ t('orientationAnalysis.confidence') }}</h3>
-          <p class="or-hint">{{ resultData.crystallinityHint.note }}</p>
-          <p v-if="resultData.crystallinityHint.correction_factor_guess" class="or-hint">
-            {{ t('orientationAnalysis.correctionFactor') }}: ×{{ resultData.crystallinityHint.correction_factor_guess }}
-          </p>
-        </div>
+          <!-- Crystallinity hint / 结晶度提示 -->
+          <div v-if="detailData.crystallinityHint && Object.keys(detailData.crystallinityHint).length" class="or-conf">
+            <h3 class="or-card-title">{{ t('orientationAnalysis.confidence') }}</h3>
+            <p class="or-hint">{{ detailData.crystallinityHint.note }}</p>
+            <p v-if="detailData.crystallinityHint.correction_factor_guess" class="or-hint">
+              {{ t('orientationAnalysis.correctionFactor') }}: ×{{ detailData.crystallinityHint.correction_factor_guess }}
+            </p>
+          </div>
+        </template>
       </main>
     </div>
   </section>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onUnmounted } from 'vue'
+/**
+ * OrientationAnalysisView.vue — 聚合物取向度分析
+ * v0.2.5: multi-file batch under identical conditions + image preview showing
+ * the beam center and the exact radial-selection ring (backend azimuth_mask).
+ * v0.2.5：同一实验条件下的多文件批量分析 + 图像预览（光束中心 + 径向选区圆环蒙版）。
+ */
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
@@ -356,6 +471,8 @@ import FileDialogButton from '@/components/business/FileDialogButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import LineChart from '@/components/charts/LineChart.vue'
 import type { LineTrace } from '@/components/charts/LineChart.vue'
+import ImagePreview from '@/components/charts/ImagePreview.vue'
+import type { Overlay } from '@/components/charts/ImagePreview.vue'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -365,7 +482,10 @@ const transport = useTransport()
 const inputMode = ref<'image' | 'curves'>('image')
 
 // --- Image-mode state / 图像模式状态 ---
-const filePath = ref<string | null>(null)
+const files = ref<string[]>([])
+const selectedFileIndex = ref(0)
+const activeFilePath = computed(() => files.value[selectedFileIndex.value] ?? null)
+
 const h5Datasets = ref<H5DatasetInfo[]>([])
 const h5Selection = ref<H5Selection>({ dataset: '', channel: 0, frame: 0 })
 const geometry = ref<GeometryParams>({
@@ -373,7 +493,7 @@ const geometry = ref<GeometryParams>({
   wavelength: 1.5418, centerX: 512, centerY: 512,
 })
 const maskConfig = ref<MaskConfig>({
-  valueRangeMin: 0, valueRangeMax: 1e10,
+  valueRangeMin: 0, valueRangeMax: 2147483647,
   deadPixelThreshold: 0, customMaskPath: null,
 })
 const radialUnit = ref('q_A^-1')
@@ -398,7 +518,7 @@ const curvesFilePath = ref<string | null>(null)
 const parsedChi = ref<number[]>([])
 const parsedIntensity = ref<number[]>([])
 
-// --- Preprocessing / 预处理（默认全部关闭，按需在折叠区开启）---
+// --- Preprocessing / 预处理 ---
 const scatteringGeometry = ref<'transmission' | 'reflection'>('transmission')
 const symmetry = ref<'auto' | 'friedel' | 'meridional_mirror' | 'equatorial_mirror' | 'none'>('none')
 const missing = ref<'interp' | 'drop' | 'mirror'>('interp')
@@ -409,8 +529,6 @@ const bgAutoEstimate = ref(true)
 const methods = ref<string[]>(['hermans', 'fwhm'])
 const chiZero = ref<'meridian' | 'equator'>('meridian')
 const equatorialToChain = ref(true)
-// Meridian / reference-axis angle in χ (set when the fiber axis is not at χ=0).
-// 子午线/参考轴在 χ 中的角度（纤维轴不在 χ=0 时设置）。
 const meridianChiDeg = ref<number | null>(null)
 
 // --- Wilchinsky / Wilchinsky 晶胞 + 反射 ---
@@ -437,12 +555,30 @@ const progress = ref(0)
 const progressMessage = ref<string | null>(null)
 const errorMessage = ref<string | null>(null)
 const chartTraces = ref<LineTrace[]>([])
+// Single-result payload, or {batch:true, items, failed} in batch mode.
+// 单文件结果，或批量模式下的 {batch:true, items, failed}。
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const resultData = ref<any>(null)
+const selectedResultIndex = ref(0)
+
+// --- Image preview state (beam center + selection ring) / 图像预览状态 ---
+const previewSrc = ref<string | null>(null)
+const previewLoading = ref(false)
+const previewSize = ref<{ width: number; height: number } | null>(null)
+const beamCenter = ref<{ x: number; y: number } | null>(null)
+const selectionMaskSrc = ref<string | null>(null)
+const selectionMaskSize = ref<{ width: number; height: number } | null>(null)
 
 let cleanupProgress: (() => void) | null = null
 let cleanupResult: (() => void) | null = null
 let cleanupError: (() => void) | null = null
+let cleanupPreviewBinary: (() => void) | null = null
+let cleanupPreviewResult: (() => void) | null = null
+let cleanupPreviewError: (() => void) | null = null
+let cleanupMaskBinary: (() => void) | null = null
+let cleanupMaskResult: (() => void) | null = null
+let cleanupMaskError: (() => void) | null = null
+let maskDebounceTimer: ReturnType<typeof setTimeout> | undefined
 
 function cleanupAll(): void {
   cleanupProgress?.()
@@ -451,18 +587,147 @@ function cleanupAll(): void {
   cleanupProgress = cleanupResult = cleanupError = null
 }
 
+function cleanupPreviewListeners(): void {
+  cleanupPreviewBinary?.()
+  cleanupPreviewResult?.()
+  cleanupPreviewError?.()
+  cleanupPreviewBinary = cleanupPreviewResult = cleanupPreviewError = null
+}
+
+function cleanupMaskListeners(): void {
+  cleanupMaskBinary?.()
+  cleanupMaskResult?.()
+  cleanupMaskError?.()
+  cleanupMaskBinary = cleanupMaskResult = cleanupMaskError = null
+}
+
 const canRun = computed(() => {
   if (isRunning.value) return false
   if (methods.value.length === 0) return false
-  if (inputMode.value === 'image') return !!filePath.value
+  if (inputMode.value === 'image') return files.value.length > 0
   return parsedChi.value.length >= 2
 })
+
+const runButtonLabel = computed(() =>
+  inputMode.value === 'image' && files.value.length > 1
+    ? t('orientationAnalysis.batch.runBtn', { n: files.value.length })
+    : t('orientationAnalysis.run'),
+)
+
+const exportButtonLabel = computed(() =>
+  batchItems.value
+    ? t('orientationAnalysis.batch.exportSummary')
+    : t('orientationAnalysis.exportCsv'),
+)
+
+const batchItems = computed<Record<string, any>[] | null>(() => {
+  const d = resultData.value
+  return d?.batch && Array.isArray(d.items) ? d.items : null
+})
+
+const failedFiles = computed<{ file: string; reason: string }[]>(() => {
+  const d = resultData.value
+  return Array.isArray(d?.failed) ? d.failed : []
+})
+
+/** Detail payload: the single result, or the selected batch row. */
+const detailData = computed(() => {
+  if (batchItems.value) {
+    return batchItems.value[selectedResultIndex.value] ?? null
+  }
+  return resultData.value ?? null
+})
+
+const detailLabel = computed(() => {
+  if (!batchItems.value || !detailData.value) return ''
+  return detailData.value.sourceLabel ?? ''
+})
+
+const beamCenterLabel = computed(() => {
+  if (!beamCenter.value) return ''
+  return `(${beamCenter.value.x.toFixed(1)}, ${beamCenter.value.y.toFixed(1)}) px`
+})
+
+/** Preview overlays: selection ring mask + beam-center crosshair. */
+const previewOverlays = computed<Overlay[]>(() => {
+  const overlays: Overlay[] = []
+  const size = selectionMaskSize.value ?? previewSize.value
+  if (selectionMaskSrc.value && size) {
+    overlays.push({
+      type: 'imageMask',
+      src: selectionMaskSrc.value,
+      width: size.width,
+      height: size.height,
+    })
+  }
+  if (beamCenter.value) {
+    overlays.push({ type: 'beamCenter', x: beamCenter.value.x, y: beamCenter.value.y })
+  }
+  return overlays
+})
+
+function fileName(path: string): string {
+  if (!path) return ''
+  const sep = path.includes('/') ? '/' : '\\'
+  return path.split(sep).pop() ?? path
+}
 
 function toggleMethod(m: string): void {
   const i = methods.value.indexOf(m)
   if (i >= 0) methods.value.splice(i, 1)
   else methods.value.push(m)
 }
+
+/** Extract a metric from an analysis item's per-method results. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function metric(item: Record<string, any>, method: string, key: string): number | null {
+  const entry = (item.results ?? []).find((r: Record<string, unknown>) => r.method === method)
+  const v = entry?.[key]
+  return typeof v === 'number' ? v : null
+}
+
+function fmt(v: number | null): string {
+  if (v === null || !Number.isFinite(v)) return '—'
+  return Math.abs(v) >= 100 || Math.abs(v) < 0.001 ? v.toExponential(3) : v.toFixed(4)
+}
+
+// ── File list management / 文件列表管理 ──
+
+async function handleAddFiles(): Promise<void> {
+  try {
+    const result = await transport.selectFiles({
+      filters: dataFileFilters,
+      multiSelections: true,
+    })
+    if (!result) return
+    const picked = Array.isArray(result) ? result : [result]
+    const existing = new Set(files.value)
+    const added = picked.filter(p => p && !existing.has(p))
+    if (!added.length) return
+    files.value = [...files.value, ...added]
+    selectedFileIndex.value = files.value.length - added.length
+  } catch (err) {
+    toast.push({ title: t('orientationAnalysis.errorTitle'), message: String(err), tone: 'error' })
+  }
+}
+
+function removeFile(idx: number): void {
+  files.value.splice(idx, 1)
+  if (selectedFileIndex.value >= files.value.length) {
+    selectedFileIndex.value = Math.max(0, files.value.length - 1)
+  }
+}
+
+function clearFiles(): void {
+  files.value = []
+  selectedFileIndex.value = 0
+  revokePreview()
+  selectionMaskSrc.value = null
+  selectionMaskSize.value = null
+  beamCenter.value = null
+}
+
+// ── Curves parsing / 曲线解析 ──
 
 function parseCurves(): void {
   const chi: number[] = []
@@ -471,7 +736,6 @@ function parseCurves(): void {
   for (const line of lines) {
     const parts = line.trim().split(/[\s,;\t]+/).filter(Boolean)
     if (parts.length < 2) continue
-    // skip header lines / 跳过表头
     const x = parseFloat(parts[0])
     const y = parseFloat(parts[1])
     if (Number.isFinite(x) && Number.isFinite(y)) {
@@ -486,16 +750,9 @@ function parseCurves(): void {
   }
 }
 
-// FileDialogButton only returns a path; for curves we still need to read it.
-// We delegate the actual read to the backend in image mode; for curves the
-// user pastes data or we attempt a text read via the transport layer later.
-// For now, loading a curves file fills the textarea via a minimal fetch.
-// FileDialogButton 只返回路径；曲线模式仍需读取内容。这里用最小化的方式填充文本框。
 async function loadCurvesFile(path: string | null): Promise<void> {
   if (!path) return
   try {
-    // Read via the desktop bridge if available; otherwise prompt the user to paste.
-    // 若桌面桥可用则通过其读取；否则提示用户粘贴。
     const desktop = (window as unknown as { desktop?: { readTextFile?: (p: string) => Promise<string> } }).desktop
     if (desktop?.readTextFile) {
       curvesText.value = await desktop.readTextFile(path)
@@ -505,6 +762,188 @@ async function loadCurvesFile(path: string | null): Promise<void> {
     toast.push({ title: t('orientationAnalysis.errorTitle'), message: String(err), tone: 'error' })
   }
 }
+
+// ── Image preview + selection mask / 图像预览 + 选区蒙版 ──
+
+function buildGeometryPayload(): Record<string, unknown> {
+  return {
+    poniPath: geometry.value.poniPath ?? undefined,
+    pixel1: geometry.value.pixel1,
+    pixel2: geometry.value.pixel2,
+    distance: geometry.value.distance,
+    wavelength: geometry.value.wavelength,
+    centerX: geometry.value.centerX,
+    centerY: geometry.value.centerY,
+  }
+}
+
+function submitAndWait(route: string, params: Record<string, unknown>): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    transport.submitTask(route, params).then(response => {
+      transport.onTaskResult(response.taskId, (p) => resolve(p.data))
+      transport.onTaskError(response.taskId, (p) => reject(new Error(p.error)))
+    }).catch(reject)
+  })
+}
+
+function revokePreview(): void {
+  if (previewSrc.value?.startsWith('blob:')) {
+    URL.revokeObjectURL(previewSrc.value)
+  }
+  previewSrc.value = null
+}
+
+async function resolveBeamCenter(): Promise<void> {
+  try {
+    const result = await submitAndWait('viewer_config', {
+      action: 'resolve_geometry_center',
+      geometry: buildGeometryPayload(),
+    })
+    const center = result as { centerX?: number; centerY?: number }
+    if (typeof center.centerX === 'number' && typeof center.centerY === 'number') {
+      beamCenter.value = { x: center.centerX, y: center.centerY }
+      return
+    }
+  } catch {
+    // Fall back to the form values below. / 失败时回退到表单值。
+  }
+  beamCenter.value = { x: geometry.value.centerX, y: geometry.value.centerY }
+}
+
+async function loadPreview(path: string): Promise<void> {
+  previewLoading.value = true
+  revokePreview()
+  previewSize.value = null
+  cleanupPreviewListeners()
+  try {
+    await resolveBeamCenter()
+    const isH5 = h5Datasets.value.length > 0
+    const response = await transport.submitTask('viewer_config', {
+      action: 'open_file',
+      filePath: path,
+      frame: h5Selection.value.frame,
+      ...(isH5 ? {
+        dataset: h5Selection.value.dataset || undefined,
+        channel: h5Selection.value.channel,
+      } : {}),
+      settings: {
+        cmap: 'smooth_WAXS_foxtrot',
+        use_log: false,
+        clim_mode: 'auto',
+        clim: [null, null],
+        preview_scale: 1.0,
+      },
+    })
+
+    cleanupPreviewBinary = transport.onTaskBinaryData(response.taskId, (payload) => {
+      if (!payload.data) return
+      revokePreview()
+      const blob = new Blob([payload.data], { type: payload.mime || 'image/png' })
+      previewSrc.value = URL.createObjectURL(blob)
+      if (payload.width && payload.height) {
+        previewSize.value = { width: payload.width, height: payload.height }
+      }
+    })
+
+    cleanupPreviewResult = transport.onTaskResult(response.taskId, (payload) => {
+      previewLoading.value = false
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = payload.data as any
+      if (!previewSize.value) {
+        const w = data?.metadata?.width ?? data?.width
+        const h = data?.metadata?.height ?? data?.height
+        if (w && h) previewSize.value = { width: w, height: h }
+      }
+      const h5 = data?.metadata?.h5Datasets
+      if (Array.isArray(h5) && h5.length && !h5Datasets.value.length) {
+        h5Datasets.value = h5
+      }
+    })
+
+    cleanupPreviewError = transport.onTaskError(response.taskId, () => {
+      previewLoading.value = false
+    })
+  } catch {
+    previewLoading.value = false
+  }
+}
+
+/** Backend azimuth_mask: per-pixel gray ring of the current radial range. */
+async function loadSelectionMask(): Promise<void> {
+  if (!activeFilePath.value || !previewSize.value) return
+  const rMin = Number(radialMin.value)
+  const rMax = Number(radialMax.value)
+  if (!(Number.isFinite(rMin) && Number.isFinite(rMax) && rMin < rMax)) return
+
+  cleanupMaskListeners()
+  try {
+    const response = await transport.submitTask('viewer_config', {
+      action: 'azimuth_mask',
+      filePath: activeFilePath.value,
+      geometry: buildGeometryPayload(),
+      radial_unit: radialUnit.value,
+      radial_min: rMin,
+      radial_max: rMax,
+    })
+
+    cleanupMaskBinary = transport.onTaskBinaryData(response.taskId, (payload) => {
+      if (!payload.data) return
+      if (selectionMaskSrc.value?.startsWith('blob:')) {
+        URL.revokeObjectURL(selectionMaskSrc.value)
+      }
+      const blob = new Blob([payload.data], { type: payload.mime || 'image/png' })
+      selectionMaskSrc.value = URL.createObjectURL(blob)
+      const size = previewSize.value
+      if (size) {
+        selectionMaskSize.value = { width: size.width, height: size.height }
+      }
+    })
+
+    cleanupMaskResult = transport.onTaskResult(response.taskId, (payload) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const data = payload.data as any
+      if (data?.status === 'error') {
+        selectionMaskSrc.value = null
+      }
+    })
+
+    cleanupMaskError = transport.onTaskError(response.taskId, () => {
+      selectionMaskSrc.value = null
+    })
+  } catch {
+    selectionMaskSrc.value = null
+  }
+}
+
+function scheduleSelectionMask(): void {
+  if (maskDebounceTimer) clearTimeout(maskDebounceTimer)
+  maskDebounceTimer = setTimeout(() => {
+    maskDebounceTimer = undefined
+    void resolveBeamCenter()
+    void loadSelectionMask()
+  }, 300)
+}
+
+// Reload preview when the active file changes (image mode only).
+watch(activeFilePath, (path) => {
+  if (inputMode.value !== 'image' || !path) return
+  h5Datasets.value = []
+  h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+  selectionMaskSrc.value = null
+  void loadPreview(path).then(() => scheduleSelectionMask())
+})
+
+// Refresh center + ring when geometry / radial range / unit changes (debounced).
+watch(
+  [geometry, radialMin, radialMax, radialUnit],
+  () => {
+    if (inputMode.value !== 'image' || !activeFilePath.value) return
+    scheduleSelectionMask()
+  },
+  { deep: true },
+)
+
+// ── Task submission / 任务提交 ──
 
 function buildParams(): Record<string, unknown> {
   const p: Record<string, unknown> = {
@@ -525,7 +964,7 @@ function buildParams(): Record<string, unknown> {
     }
   }
   if (inputMode.value === 'image') {
-    p.files = filePath.value ? [filePath.value] : []
+    p.files = [...files.value]
     p.geometry = { ...geometry.value }
     p.mask = { ...maskConfig.value }
     p.radialUnit = radialUnit.value
@@ -558,7 +997,7 @@ function buildChartTraces(data: Record<string, any>): void {
   chartTraces.value = traces
 }
 
-async function handleRun(): Promise<void> {
+async function handleRun(overrideFiles?: string[]): Promise<void> {
   if (!canRun.value || isRunning.value) return
   isRunning.value = true
   progress.value = 0
@@ -566,9 +1005,14 @@ async function handleRun(): Promise<void> {
   errorMessage.value = null
   resultData.value = null
   chartTraces.value = []
+  selectedResultIndex.value = 0
 
   try {
-    const response = await transport.submitTask('orientation_analysis', buildParams())
+    const params = buildParams()
+    if (overrideFiles) {
+      params.files = [...overrideFiles]
+    }
+    const response = await transport.submitTask('orientation_analysis', params)
     taskId.value = response.taskId
 
     cleanupProgress = transport.onTaskProgress(response.taskId, (payload) => {
@@ -579,7 +1023,8 @@ async function handleRun(): Promise<void> {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const data = payload.data as Record<string, any>
       resultData.value = data
-      buildChartTraces(data)
+      // Charts show the single result, or the first batch item until a row is picked.
+      buildChartTraces(data?.batch ? (data.items?.[0] ?? {}) : (data ?? {}))
       isRunning.value = false
       taskId.value = null
       cleanupAll()
@@ -597,6 +1042,22 @@ async function handleRun(): Promise<void> {
   }
 }
 
+// Row selection in batch mode drives the detail chart/cards.
+watch(selectedResultIndex, () => {
+  if (batchItems.value) {
+    buildChartTraces(detailData.value ?? {})
+  }
+})
+
+/** Run the analysis on ONLY the currently selected (previewed) file — the
+ *  recommended workflow is to validate parameters on one frame first, then
+ *  batch the whole list. / 仅对当前选中（预览中）的文件运行分析——推荐流程：
+ *  先用单张验证参数效果，再批量处理整个列表。 */
+function handleRunSingle(): void {
+  if (!activeFilePath.value) return
+  void handleRun([activeFilePath.value])
+}
+
 function handleCancel(): void {
   if (taskId.value) transport.cancelTask(taskId.value)
 }
@@ -606,8 +1067,45 @@ function formatNum(v: unknown): string {
   return Math.abs(v) >= 100 || Math.abs(v) < 0.001 ? v.toExponential(3) : v.toFixed(4)
 }
 
+function downloadBlob(content: string, filename: string, mime = 'text/csv'): void {
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 function exportCsv(): void {
   if (!resultData.value) return
+
+  if (batchItems.value) {
+    // Batch summary CSV / 批量汇总 CSV
+    const cols: string[] = ['file']
+    if (methods.value.includes('hermans')) cols.push('hermans_f', 'hermans_cos2_phi')
+    if (methods.value.includes('fwhm')) cols.push('fwhm_f', 'fwhm_deg')
+    cols.push('warnings')
+    const lines = [cols.join(',')]
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    for (const item of batchItems.value as Record<string, any>[]) {
+      const row: string[] = [JSON.stringify(item.sourceLabel ?? '')]
+      if (methods.value.includes('hermans')) {
+        row.push(String(metric(item, 'hermans', 'f') ?? ''), String(metric(item, 'hermans', 'cos2_phi') ?? ''))
+      }
+      if (methods.value.includes('fwhm')) {
+        row.push(String(metric(item, 'fwhm', 'f') ?? ''), String(metric(item, 'fwhm', 'fwhm_deg') ?? ''))
+      }
+      row.push(JSON.stringify((item.warnings ?? []).join(' | ')))
+      lines.push(row.join(','))
+    }
+    for (const f of failedFiles.value) {
+      lines.push([JSON.stringify(f.file), '#FAILED', JSON.stringify(f.reason)].join(','))
+    }
+    downloadBlob(lines.join('\n'), 'orientation_batch_summary.csv')
+    return
+  }
+
   const chi = resultData.value.chi as number[] ?? []
   const lines: string[] = ['chi,intensity,corrected_intensity,background']
   for (let i = 0; i < chi.length; i++) {
@@ -623,17 +1121,16 @@ function exportCsv(): void {
   for (const r of (resultData.value.results ?? []) as Array<Record<string, unknown>>) {
     lines.push(`# ${r.method}: f=${r.f}, cos2_phi=${r.cos2_phi ?? ''}, fwhm_deg=${r.fwhm_deg ?? ''}`)
   }
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = 'orientation_analysis.csv'
-  a.click()
-  URL.revokeObjectURL(url)
+  downloadBlob(lines.join('\n'), 'orientation_analysis.csv')
 }
 
 onUnmounted(() => {
   cleanupAll()
+  cleanupPreviewListeners()
+  cleanupMaskListeners()
+  if (maskDebounceTimer) clearTimeout(maskDebounceTimer)
+  revokePreview()
+  if (selectionMaskSrc.value?.startsWith('blob:')) URL.revokeObjectURL(selectionMaskSrc.value)
 })
 </script>
 
@@ -667,6 +1164,7 @@ onUnmounted(() => {
 }
 .or-details > summary { cursor: pointer; font-weight: 600; }
 .or-card-title { margin: 0; font-size: 0.95rem; font-weight: 600; }
+.or-batch-meta { margin-left: 8px; font-size: 0.8rem; font-weight: 400; color: var(--color-text-muted, #6b7280); }
 .or-subtitle-sm { margin: 8px 0 4px; font-size: 0.85rem; font-weight: 600; color: var(--color-text-muted, #6b7280); }
 .or-field { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .or-field-row { display: flex; gap: 8px; }
@@ -686,6 +1184,7 @@ onUnmounted(() => {
 .or-radio-label, .or-toggle-label { display: flex; align-items: center; gap: 6px; font-size: 0.88rem; cursor: pointer; }
 .or-hint { margin: 0; font-size: 0.78rem; color: var(--color-text-muted, #6b7280); }
 .or-hint-ok { color: #16a34a; }
+.or-hint-warn { color: #b45309; }
 .or-h5 { margin-top: 8px; }
 .or-btn {
   padding: 7px 14px;
@@ -708,6 +1207,39 @@ onUnmounted(() => {
   color: var(--color-text-muted, #6b7280);
   padding: 0 4px;
 }
+.or-file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.or-file-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 6px;
+  border-radius: 4px;
+}
+.or-file-item--active { background: rgba(37, 99, 235, 0.08); }
+.or-file-name {
+  font-family: monospace;
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 260px;
+}
+.or-preview-loading {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--color-text-muted, #6b7280);
+  font-size: 0.88rem;
+}
 .or-refl-row { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
 .or-run-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .or-error {
@@ -727,6 +1259,37 @@ onUnmounted(() => {
 }
 .or-warnings ul { margin: 6px 0 0; padding-left: 18px; }
 .or-warnings li { margin-bottom: 3px; }
+.or-detail-label {
+  font-family: monospace;
+  font-size: 0.8rem;
+  color: var(--color-text-muted, #6b7280);
+  word-break: break-all;
+}
+.or-table-wrap { overflow-x: auto; }
+.or-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+.or-table th, .or-table td {
+  border-bottom: 1px solid var(--color-border, #e5e7eb);
+  padding: 6px 8px;
+  text-align: left;
+}
+.or-table th { font-weight: 600; color: var(--color-text-muted, #6b7280); white-space: nowrap; }
+.or-table td { font-variant-numeric: tabular-nums; }
+.or-table tbody tr { cursor: pointer; }
+.or-table tbody tr:hover { background: rgba(37, 99, 235, 0.05); }
+.or-row--active { background: rgba(37, 99, 235, 0.1); }
+.or-failed {
+  margin-top: 10px;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 0.8rem;
+}
+.or-failed ul { margin: 4px 0 0; padding-left: 16px; }
 .or-chart { background: var(--color-surface, #fff); border: 1px solid var(--color-border, #e5e7eb); border-radius: 8px; padding: 14px; }
 .or-section-title { margin: 0 0 10px; font-size: 1.05rem; }
 .or-result-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
