@@ -11,6 +11,7 @@
             type="button"
             class="ed-mode-btn"
             :class="{ active: exportMode === 'single' }"
+            :disabled="isNonMergeable"
             @click="exportMode = 'single'"
           >{{ t('business.export.mergeSingle') }}</button>
           <button
@@ -62,7 +63,7 @@ import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
 
-export type ExportFormat = 'txt' | 'hdf5' | 'tiff' | 'csv' | 'xy' | 'edf' | 'npy'
+export type ExportFormat = 'txt' | 'hdf5' | 'tiff' | 'csv' | 'xy' | 'edf' | 'npy' | 'png'
 export type ExportMode = 'single' | 'separate'
 
 const props = withDefaults(defineProps<{
@@ -81,7 +82,17 @@ const { t } = useI18n()
 const transport = useTransport()
 
 const selectedFormat = ref<ExportFormat>(props.formats[0])
-const exportMode = ref<ExportMode>('single')
+
+// Formats that produce one file per result and cannot be merged into a single
+// file. For these, "separate" mode is the only meaningful batch option -
+// "single" would silently export only the first result (the reported bug).
+// 每个结果生成一个文件、无法合并到单文件的格式。对这些格式，"分别导出"是
+// 唯一有意义的批量选项——"单文件"模式只会静默导出第一条（即报告的 bug）。
+const NON_MERGEABLE_FORMATS: readonly ExportFormat[] = ['png', 'tiff', 'edf', 'npy']
+const isNonMergeable = computed(() => NON_MERGEABLE_FORMATS.includes(selectedFormat.value))
+const exportMode = ref<ExportMode>(
+  NON_MERGEABLE_FORMATS.includes(props.formats[0]) ? 'separate' : 'single'
+)
 
 const FORMAT_EXTENSIONS: Record<ExportFormat, string[]> = {
   txt: ['txt'],
@@ -91,6 +102,7 @@ const FORMAT_EXTENSIONS: Record<ExportFormat, string[]> = {
   xy: ['xy'],
   edf: ['edf'],
   npy: ['npy'],
+  png: ['png'],
 }
 
 const currentFilters = computed(() => {
@@ -135,6 +147,12 @@ async function handleExport(): Promise<void> {
 function onFormatChange(event: Event): void {
   const val = (event.target as unknown as HTMLSelectElement).value
   selectedFormat.value = val as ExportFormat
+  // Auto-switch to separate mode for non-mergeable formats so all results
+  // are exported, not just the first one.
+  // 不可合并格式自动切换到分别导出，确保导出全部结果而非仅第一条。
+  if (NON_MERGEABLE_FORMATS.includes(selectedFormat.value)) {
+    exportMode.value = 'separate'
+  }
 }
 </script>
 
@@ -199,6 +217,11 @@ function onFormatChange(event: Event): void {
 
 .ed-mode-btn:not(.active):hover {
   border-color: var(--border-focus);
+}
+
+.ed-mode-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .ed-select {

@@ -45,6 +45,10 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   list_space_groups: '/api/list_space_groups',
   bg_subtract: '/api/bg_subtract',
   image_math: '/api/image_math',
+  poni_importer: '/api/poni_importer',
+  image_stitch: '/api/image_stitch',
+  orientation_analysis: '/api/orientation_analysis',
+  lamellar_analysis: '/api/lamellar_analysis',
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -637,6 +641,39 @@ export class WebTransport implements ITransport {
     })
   }
 
+  async installPyfaiDeps(): Promise<{ success: boolean; output?: string; error?: string }> {
+    await this.wsReady
+
+    const taskId = generateUUID()
+    this.activeTasks.set(taskId, { command: 'install_pyfai' })
+
+    return new Promise<{ success: boolean; output?: string; error?: string }>((resolve) => {
+      const unsubResult = this.onTaskResult(taskId, (payload) => {
+        unsubResult()
+        unsubError()
+        const data = payload.data as { status?: string; output?: string; message?: string }
+        if (data?.status === 'error') {
+          resolve({ success: false, error: data.message ?? 'pip install failed' })
+        } else {
+          resolve({ success: true, output: data?.output })
+        }
+      })
+
+      const unsubError = this.onTaskError(taskId, (payload) => {
+        unsubResult()
+        unsubError()
+        resolve({ success: false, error: payload.error })
+      })
+
+      this.ws.send(JSON.stringify({
+        type: 'task_submit',
+        task_id: taskId,
+        route: '/api/install_pyfai',
+        payload: {},
+      }))
+    })
+  }
+
   async exportBatPyfai(): Promise<{ success: boolean; error?: string }> {
     await this.wsReady
 
@@ -647,7 +684,23 @@ export class WebTransport implements ITransport {
       const unsubResult = this.onTaskResult(taskId, (payload) => {
         unsubResult()
         unsubError()
-        resolve(payload.data as { success: boolean; error?: string })
+        const data = payload.data as { status?: string; content?: string; filename?: string; message?: string }
+        if (data?.status === 'error') {
+          resolve({ success: false, error: data.message ?? 'Export failed' })
+          return
+        }
+        // The backend returns the script text; offer it as a browser download.
+        // 后端返回脚本文本；由浏览器触发下载。
+        if (typeof data?.content === 'string') {
+          const blob = new Blob([data.content], { type: 'text/plain' })
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = data.filename ?? 'pyFAI-calib2-launcher.bat'
+          a.click()
+          URL.revokeObjectURL(url)
+        }
+        resolve({ success: true })
       })
 
       const unsubError = this.onTaskError(taskId, (payload) => {

@@ -93,7 +93,7 @@ const traces = computed<PlotData[]>(() =>
       x: tr.x,
       y: tr.y,
       name: tr.name ?? '',
-      type: 'scattergl',
+      type: 'scatter',
       mode: lineMode.value,
     }
     // Only attach the style container for the active mode — never set the other to
@@ -108,6 +108,15 @@ const traces = computed<PlotData[]>(() =>
 
 const chartLayout = computed<Partial<PlotLayout>>(() => ({
   title: props.title ? { text: props.title } : undefined,
+  margin: { t: 48, autoexpand: true },
+  hoverdistance: 20,
+  hoverlabel: {
+    bgcolor: '#1e293b',
+    bordercolor: '#475569',
+    font: { color: '#f1f5f9', size: 12 },
+    align: 'left',
+    namelength: -1,
+  },
   xaxis: {
     title: { text: axisTitle(props.xLabel, props.xUnit) },
   },
@@ -126,6 +135,13 @@ const chartConfig = {
 <style scoped>
 .line-chart-wrap {
   position: relative;
+  overflow: visible;
+}
+.line-chart-wrap :deep(.plotly) {
+  overflow: visible !important;
+}
+.line-chart-wrap :deep(.js-plotly-plot .plotly .hoverlayer) {
+  overflow: visible !important;
 }
 
 /* Floating line/points toggle pinned top-left so it never clashes with Plotly's top-right modebar. */

@@ -98,6 +98,10 @@ export class ElectronTransport implements ITransport {
     return window.desktop.pyfai.install()
   }
 
+  installPyfaiDeps(): Promise<{ success: boolean; output?: string; error?: string }> {
+    return window.desktop.pyfai.installDeps()
+  }
+
   exportBatPyfai(): Promise<{ success: boolean; error?: string }> {
     return window.desktop.pyfai.exportBat()
   }

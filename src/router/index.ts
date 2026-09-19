@@ -143,6 +143,36 @@ const router = createRouter({
       },
     },
     {
+      path: '/workspace/image-stitch',
+      name: 'image-stitch',
+      component: () => import('@/views/workspace/ImageStitchView.vue'),
+      meta: {
+        titleKey: 'imageStitch.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'imageStitch.description',
+      },
+    },
+    {
+      path: '/workspace/orientation-analysis',
+      name: 'orientation-analysis',
+      component: () => import('@/views/workspace/OrientationAnalysisView.vue'),
+      meta: {
+        titleKey: 'orientationAnalysis.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'orientationAnalysis.subtitle',
+      },
+    },
+    {
+      path: '/workspace/lamellar-analysis',
+      name: 'lamellar-analysis',
+      component: () => import('@/views/workspace/LamellarAnalysisView.vue'),
+      meta: {
+        titleKey: 'lamellar.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'lamellar.subtitle',
+      },
+    },
+    {
       path: '/workspace/poni-importer',
       name: 'poni-importer',
       component: () => import('@/views/workspace/PoniImporterView.vue'),

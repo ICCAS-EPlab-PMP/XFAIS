@@ -214,7 +214,17 @@ export class PythonServiceManager {
         Path: augmentedPath,
         PYTHONIOENCODING: 'utf-8',
         PYTHONUNBUFFERED: '1',
-        PYTHONUTF8: '1'
+        PYTHONUTF8: '1',
+        // Parent PID for the python-side watchdog. The service exits itself
+        // when the Electron parent dies, so a crash / force-kill of the app
+        // can never leave a zombie python.exe behind (which would deadlock
+        // the next installer run with "app cannot be closed"). Value is the
+        // numeric OS pid from process.pid — never user input.
+        // python 侧看门狗使用的父进程 PID：Electron 父进程死亡时服务自行
+        // 退出，即使应用被强杀/崩溃也不会残留 python.exe 僵尸进程（否则会
+        // 让下次安装报“无法关闭”）。取值为 process.pid 的系统数字 PID，
+        // 绝非用户输入。
+        XFAIS_PARENT_PID: String(process.pid)
       }
 
       stream.write(`[debug] spawning python: exe=${paths.pythonExecutable} shell=false noAsar=true\n`)
@@ -339,9 +349,19 @@ export class PythonServiceManager {
 
     if (this.port !== null) {
       try {
-        await fetch(`http://127.0.0.1:${this.port}/shutdown`, { method: 'POST' })
+        // Bounded shutdown request: an unbounded fetch here could hang for
+        // undici's 5-minute header timeout when the Python side is busy or
+        // half-dead — leaving a windowless X-FAIS.exe zombie that blocks the
+        // next installer run ("app cannot be closed").
+        // 关闭请求设超时：无超时的 fetch 在 Python 忙碌/半死时可挂起长达
+        // undici 的 5 分钟头超时——留下无窗口的 X-FAIS.exe 僵尸进程，
+        // 卡住下次安装（"无法关闭应用"）。
+        await fetch(`http://127.0.0.1:${this.port}/shutdown`, {
+          method: 'POST',
+          signal: AbortSignal.timeout(3000),
+        })
       } catch {
-        // Fall back to process termination below.
+        // Fall back to process termination below. / 超时/失败则走下方进程终止。
       }
     }
 

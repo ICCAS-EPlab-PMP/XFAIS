@@ -6,41 +6,150 @@
       <p class="pi-subtitle">{{ t('poniImporter.subtitle') }}</p>
     </header>
 
-    <!-- ===== CREATE MODE / 创建模式 ===== -->
     <div class="pi-layout">
-      <!-- Sidebar: create form / 侧边栏：创建表单 -->
+      <!-- ===== SIDEBAR: create form / 侧边栏：创建表单 ===== -->
       <aside class="pi-sidebar">
+        <!-- ── 导入参考图像（自动探测器匹配） / Import reference image ── -->
         <div class="pi-card">
-          <h3 class="pi-card-title">{{ t('poniImporter.createTitle') }}</h3>
-          <p class="pi-card-hint">{{ t('poniImporter.createSubtitle') }}</p>
+          <h3 class="pi-card-title">{{ t('poniImporter.importImageTitle') }}</h3>
+          <p class="pi-card-hint">{{ t('poniImporter.importImageSubtitle') }}</p>
 
-          <!-- Geometry parameters / 几何参数 -->
+          <button
+            type="button"
+            class="pi-btn pi-btn-primary"
+            :disabled="imageLoading"
+            @click="handleChooseImage"
+          >
+            {{ imageLoading ? t('poniImporter.importImageLoading') : t('poniImporter.importImageBtn') }}
+          </button>
+
+          <p v-if="currentImageName" class="pi-file-info">
+            <span class="pi-file-info-label">{{ t('poniImporter.importImageFileLabel') }}:</span>
+            <code class="pi-file-info-value">{{ currentImageName }}</code>
+          </p>
+          <p v-else class="pi-field-hint">{{ t('poniImporter.importImageNoImage') }}</p>
+
+          <!-- H5 dataset / channel selector / H5 数据集与通道选择 -->
+          <H5Selector
+            v-if="h5Datasets.length > 0"
+            v-model="h5Selection"
+            :datasets="h5Datasets"
+            @change="onH5SelectionChange"
+          />
+        </div>
+
+        <!-- ── 核心参数（始终展开）/ Core parameters ── -->
+        <div class="pi-card">
+          <h3 class="pi-card-title">{{ t('poniImporter.sectionsCore') }}</h3>
+
+          <!-- Reverse import: read geometry back from an existing .poni / 反向导入：从已有 .poni 读回几何参数 -->
+          <div class="pi-import-poni">
+            <div class="pi-import-btn-row">
+              <button
+                type="button"
+                class="pi-btn pi-btn-secondary"
+                :disabled="importingPoni"
+                @click="handleImportPoni"
+              >
+                {{ importingPoni ? t('poniImporter.importPoni.loading') : t('poniImporter.importPoni.btn') }}
+              </button>
+              <button
+                type="button"
+                class="pi-btn"
+                :disabled="importingPoni"
+                @click="exportParamsTxt"
+              >
+                {{ t('poniImporter.importPoni.exportTxt') }}
+              </button>
+            </div>
+            <p class="pi-field-hint">{{ t('poniImporter.importPoni.hint') }}</p>
+          </div>
+
           <div class="pi-field">
             <label class="pi-label">{{ t('poniImporter.detectorDistance') }} (mm)</label>
             <input v-model.number="createForm.distance" type="number" class="pi-input" step="1" min="0.1" />
           </div>
 
-          <!-- Wavelength with unit toggle / 波长（含单位切换） -->
+          <!-- Beam center X with unit toggle + origin hint / 光斑中心 X（单位切换 + 起始点提示） -->
           <div class="pi-field">
             <div class="pi-label-row">
-              <span class="pi-label">{{ t('poniImporter.wavelength') }}</span>
+              <label class="pi-label">
+                {{ t('poniImporter.beamCenterX') }}
+                <span
+                  class="pi-info-tip"
+                  :title="t('poniImporter.beamCenterOriginHint')"
+                  @click="showOriginHint = !showOriginHint"
+                >ⓘ</span>
+              </label>
               <div class="pi-unit-toggle">
                 <button
                   type="button"
-                  :class="['pi-unit-btn', { 'pi-unit-btn--active': wavelengthUnit === 'angstrom' }]"
-                  @click="onWavelengthUnitToggle('angstrom')"
-                >Å</button>
+                  :class="['pi-unit-btn', { 'pi-unit-btn--active': beamCenterUnit === 'px' }]"
+                  @click="onBeamCenterUnitToggle('px')"
+                >px</button>
                 <button
                   type="button"
-                  :class="['pi-unit-btn', { 'pi-unit-btn--active': wavelengthUnit === 'keV' }]"
-                  @click="onWavelengthUnitToggle('keV')"
-                >keV</button>
+                  :class="['pi-unit-btn', { 'pi-unit-btn--active': beamCenterUnit === 'um' }]"
+                  @click="onBeamCenterUnitToggle('um')"
+                >µm</button>
+                <button
+                  type="button"
+                  :class="['pi-unit-btn', { 'pi-unit-btn--active': beamCenterUnit === 'm' }]"
+                  @click="onBeamCenterUnitToggle('m')"
+                >m</button>
               </div>
             </div>
-            <input v-model.number="createForm.wavelength" type="number" class="pi-input" step="any" min="0" />
+            <input v-model.number="createForm.beamCenterX" type="number" class="pi-input" step="any" min="0" />
           </div>
 
-          <!-- Pixel size with unit toggle / 像素尺寸（含单位切换） -->
+          <div class="pi-field">
+            <div class="pi-label-row">
+              <label class="pi-label">{{ t('poniImporter.beamCenterY') }}</label>
+            </div>
+            <input v-model.number="createForm.beamCenterY" type="number" class="pi-input" step="any" min="0" />
+          </div>
+
+          <!-- Origin hint (collapsible) / 起始点说明（可展开） -->
+          <p v-if="showOriginHint" class="pi-origin-hint">
+            {{ t('poniImporter.beamCenterOriginHint') }}
+            <a
+              class="pi-origin-link"
+              href="https://www.silx.org/doc/pyFAI/latest/geometry.html"
+              target="_blank"
+              rel="noopener noreferrer"
+            >{{ t('poniImporter.beamCenterOriginLearnMore') }}</a>
+          </p>
+        </div>
+
+        <!-- ── 展开区：波长与能量 / Expanded: Wavelength & Energy ── -->
+        <div class="pi-card">
+          <h3 class="pi-card-title">{{ t('poniImporter.sectionsWavelengthUnits') }}</h3>
+          <p class="pi-field-hint">{{ t('poniImporter.wavelengthHint') }}</p>
+
+          <div class="pi-field">
+            <label class="pi-label">{{ t('poniImporter.wavelength') }} (Å)</label>
+            <input
+              :value="createForm.wavelength"
+              @input="onWavelengthInput(($event.target as HTMLInputElement).value)"
+              type="number"
+              class="pi-input"
+              step="any"
+              min="0"
+            />
+          </div>
+
+          <div class="pi-field">
+            <label class="pi-label">{{ t('poniImporter.energy') }} (keV)</label>
+            <input
+              :value="createForm.energy"
+              @input="onEnergyInput(($event.target as HTMLInputElement).value)"
+              type="number"
+              class="pi-input"
+              step="any"
+              min="0"
+            />
+          </div>
+
           <div class="pi-field">
             <div class="pi-label-row">
               <span class="pi-label">{{ t('poniImporter.pixelSize') }}</span>
@@ -60,105 +169,197 @@
             <input v-model.number="createForm.pixel_size" type="number" class="pi-input" :step="pixelSizeUnit === 'um' ? 1 : 0.001" :min="pixelSizeUnit === 'um' ? 1 : 0.001" />
           </div>
 
-          <!-- Beam center with unit toggle / 光斑中心（含单位切换） -->
+          <!-- Pixel origin orientation / 像素原点方向 -->
           <div class="pi-field">
-            <div class="pi-label-row">
-              <span class="pi-label">{{ t('poniImporter.beamCenterX') }} / {{ t('poniImporter.beamCenterY') }}</span>
-              <div class="pi-unit-toggle">
-                <button
-                  type="button"
-                  :class="['pi-unit-btn', { 'pi-unit-btn--active': beamCenterUnit === 'px' }]"
-                  @click="onBeamCenterUnitToggle('px')"
-                >px</button>
-                <button
-                  type="button"
-                  :class="['pi-unit-btn', { 'pi-unit-btn--active': beamCenterUnit === 'um' }]"
-                  @click="onBeamCenterUnitToggle('um')"
-                >µm</button>
-                <button
-                  type="button"
-                  :class="['pi-unit-btn', { 'pi-unit-btn--active': beamCenterUnit === 'm' }]"
-                  @click="onBeamCenterUnitToggle('m')"
-                >m</button>
-              </div>
-            </div>
-          </div>
-          <div class="pi-field">
-            <label class="pi-label">{{ t('poniImporter.beamCenterX') }}</label>
-            <input v-model.number="createForm.beamCenterX" type="number" class="pi-input" step="any" min="0" />
-          </div>
-          <div class="pi-field">
-            <label class="pi-label">{{ t('poniImporter.beamCenterY') }}</label>
-            <input v-model.number="createForm.beamCenterY" type="number" class="pi-input" step="any" min="0" />
-          </div>
-
-          <!-- Rotation parameters (degrees) / 旋转参数（度） -->
-          <div class="pi-field">
-            <label class="pi-label">{{ t('poniImporter.rot1') }} (°)</label>
-            <input v-model.number="createForm.rot1" type="number" class="pi-input" step="any" />
-          </div>
-          <div class="pi-field">
-            <label class="pi-label">{{ t('poniImporter.rot2') }} (°)</label>
-            <input v-model.number="createForm.rot2" type="number" class="pi-input" step="any" />
-          </div>
-          <div class="pi-field">
-            <label class="pi-label">{{ t('poniImporter.rot3') }} (°)</label>
-            <input v-model.number="createForm.rot3" type="number" class="pi-input" step="any" />
-          </div>
-
-          <!-- Detector preset (one-click import) / 探测器预设（一键导入） -->
-          <div class="pi-field">
-            <label class="pi-label">{{ t('poniImporter.detectorPreset') }}</label>
-            <select v-model="selectedPreset" class="pi-select">
-              <option value="Custom">{{ t('poniImporter.detectorCustom') }}</option>
-              <option v-for="p in detectorPresets" :key="p.name" :value="p.name">{{ p.name }}</option>
+            <label class="pi-label">{{ t('poniImporter.pixelOrigin') }}</label>
+            <select v-model.number="createForm.orientation" class="pi-select">
+              <option :value="3">{{ t('poniImporter.pixelOriginTopLeft') }}</option>
+              <option :value="1">{{ t('poniImporter.pixelOriginBottomRight') }}</option>
+              <option :value="2">{{ t('poniImporter.pixelOriginTopRight') }}</option>
+              <option :value="4">{{ t('poniImporter.pixelOriginBottomLeft') }}</option>
             </select>
-            <p class="pi-field-hint">{{ isCustomDetector ? t('poniImporter.detectorCustomHint') : t('poniImporter.detectorPresetHint') }}</p>
+            <p class="pi-field-hint">{{ t('poniImporter.pixelOriginHint') }}</p>
           </div>
+        </div>
 
-          <!-- Preset mode: resolved pyFAI name (read-only) / 预设模式：解析出的 pyFAI 名（只读） -->
-          <div v-if="!isCustomDetector" class="pi-field">
-            <label class="pi-label">{{ t('poniImporter.detectorName') }}</label>
-            <input
-              :value="createForm.detector_name"
-              type="text"
-              class="pi-input"
-              readonly
-            />
+        <!-- ── 折叠区：高级参数（旋转 + 探测器）/ Collapsible: Advanced ── -->
+        <div class="pi-collapsible">
+          <div class="pi-section-toggle" @click="advancedExpanded = !advancedExpanded">
+            <span class="pi-toggle-icon">{{ advancedExpanded ? '▾' : '▸' }}</span>
+            <span>{{ t('poniImporter.sectionsAdvanced') }}</span>
           </div>
+          <div v-show="advancedExpanded" class="pi-collapsible-body">
+            <p v-if="autoMatchedFromImage" class="pi-auto-hint">{{ t('poniImporter.autoMatchManualHint') }}</p>
 
-          <!-- Custom mode: friendly label + array shape / 自定义模式：友好名称 + 阵列尺寸 -->
-          <template v-else>
+            <!-- Rotation parameters (degrees) / 旋转参数（度） -->
             <div class="pi-field">
-              <label class="pi-label">{{ t('poniImporter.detectorCustomLabel') }}</label>
-              <input
-                v-model="createForm.detector_label"
-                type="text"
-                class="pi-input"
-                :placeholder="t('poniImporter.detectorCustomPlaceholder')"
-              />
+              <label class="pi-label">{{ t('poniImporter.rot1') }} (°)</label>
+              <input v-model.number="createForm.rot1" type="number" class="pi-input" step="any" />
             </div>
             <div class="pi-field">
-              <label class="pi-label">{{ t('poniImporter.detectorShape') }}</label>
-              <div class="pi-shape-row">
-                <input v-model.number="createForm.shape_rows" type="number" class="pi-input" min="1" step="1" placeholder="rows" />
-                <span class="pi-shape-x">×</span>
-                <input v-model.number="createForm.shape_cols" type="number" class="pi-input" min="1" step="1" placeholder="cols" />
+              <label class="pi-label">{{ t('poniImporter.rot2') }} (°)</label>
+              <input v-model.number="createForm.rot2" type="number" class="pi-input" step="any" />
+            </div>
+            <div class="pi-field">
+              <label class="pi-label">{{ t('poniImporter.rot3') }} (°)</label>
+              <input v-model.number="createForm.rot3" type="number" class="pi-input" step="any" />
+            </div>
+
+            <!-- Detector preset / 探测器预设 -->
+            <div class="pi-field">
+              <label class="pi-label">{{ t('poniImporter.detectorPreset') }}</label>
+              <select v-model="selectedPreset" class="pi-select">
+                <option value="Custom">{{ t('poniImporter.detectorCustom') }}</option>
+                <option v-for="p in detectorPresets" :key="p.name" :value="p.name">{{ p.name }}</option>
+              </select>
+              <p class="pi-field-hint">{{ isCustomDetector ? t('poniImporter.detectorCustomHint') : t('poniImporter.detectorPresetHint') }}</p>
+            </div>
+
+            <!-- Preset mode: resolved pyFAI name (read-only) / 预设模式 -->
+            <div v-if="!isCustomDetector" class="pi-field">
+              <label class="pi-label">{{ t('poniImporter.detectorName') }}</label>
+              <input :value="createForm.detector_name" type="text" class="pi-input" readonly />
+            </div>
+
+            <!-- Custom mode: friendly label + array shape / 自定义模式 -->
+            <template v-else>
+              <div class="pi-field">
+                <label class="pi-label">{{ t('poniImporter.detectorCustomLabel') }}</label>
+                <input
+                  v-model="createForm.detector_label"
+                  type="text"
+                  class="pi-input"
+                  :placeholder="t('poniImporter.detectorCustomPlaceholder')"
+                />
               </div>
-              <p class="pi-field-hint">{{ t('poniImporter.detectorShapeHint') }}</p>
-            </div>
-          </template>
+              <div class="pi-field">
+                <label class="pi-label">{{ t('poniImporter.detectorShape') }}</label>
+                <div class="pi-shape-row">
+                  <input v-model.number="createForm.shape_rows" type="number" class="pi-input" min="1" step="1" placeholder="rows" />
+                  <span class="pi-shape-x">×</span>
+                  <input v-model.number="createForm.shape_cols" type="number" class="pi-input" min="1" step="1" placeholder="cols" />
+                </div>
+                <p class="pi-field-hint">{{ t('poniImporter.detectorShapeHint') }}</p>
+              </div>
+            </template>
+          </div>
         </div>
       </aside>
 
-      <!-- Main area: real-time preview / 主区域：实时预览 -->
+      <!-- ===== MAIN AREA / 主区域 ===== -->
       <main class="pi-main">
-        <div v-if="state === 'error'" class="pi-error">
-          <p>{{ t('poniImporter.errorPrefix') }} {{ errorMessage }}</p>
+        <!-- ── 图像预览（光斑中心）+ 对比度 / Image preview (beam center) + contrast ── -->
+        <div class="pi-card">
+          <div class="pi-preview-header">
+            <h3 class="pi-card-title">{{ t('poniImporter.previewTitle') }}</h3>
+            <div class="pi-preview-legend">
+              <span class="pi-legend-item"><span class="pi-legend-dot pi-legend-dot--yellow"></span>{{ t('poniImporter.previewBeamCenterLabel') }}</span>
+              <span class="pi-legend-item"><span class="pi-legend-corner"></span>{{ t('poniImporter.previewOriginLabel') }}</span>
+            </div>
+          </div>
+
+          <div v-if="imageLoading" class="pi-preview-loading">{{ t('poniImporter.importImageLoading') }}</div>
+          <div v-else-if="previewB64" class="pi-preview-area">
+            <div class="pi-preview-image">
+              <ImagePreview
+                :image-b64="previewB64"
+                :overlays="previewOverlays"
+                :show-colorbar="true"
+                :colorbar-gradient="colorbarGradient"
+                :colorbar-min-label="colorbarMinLabel"
+                :colorbar-max-label="colorbarMaxLabel"
+                :data-width="previewImageSize?.origWidth"
+                :data-height="previewImageSize?.origHeight"
+                :placeholder="t('poniImporter.importImageNoImage')"
+              />
+            </div>
+          </div>
+          <div v-else class="pi-preview-empty">{{ t('poniImporter.importImageNoImage') }}</div>
+
+          <!-- Display settings (colormap / log / contrast) / 显示设置 -->
+          <div v-if="previewB64" class="pi-contrast-section">
+            <h4 class="pi-contrast-title">{{ t('poniImporter.contrastTitle') }}</h4>
+            <div class="pi-contrast-row">
+              <div class="pi-field pi-field--inline">
+                <label class="pi-label">{{ t('poniImporter.contrastColormap') }}</label>
+                <select v-model="colormap" class="pi-select">
+                  <option v-for="cm in colormapOptions" :key="cm" :value="cm">{{ cm }}</option>
+                </select>
+              </div>
+              <label class="pi-toggle-label">
+                <input v-model="useLog" type="checkbox" />
+                <span>{{ t('poniImporter.contrastLogScale') }}</span>
+              </label>
+            </div>
+            <div class="pi-contrast-row">
+              <span class="pi-label">{{ t('poniImporter.contrastMode') }}</span>
+              <label class="pi-radio-label">
+                <input v-model="climMode" type="radio" value="auto" />
+                <span>{{ t('poniImporter.contrastAuto') }}</span>
+              </label>
+              <label class="pi-radio-label">
+                <input v-model="climMode" type="radio" value="manual" />
+                <span>{{ t('poniImporter.contrastManual') }}</span>
+              </label>
+            </div>
+            <div v-if="climMode === 'manual'" class="pi-contrast-sliders">
+              <div class="pi-clim-field">
+                <label class="pi-label-sm">{{ t('poniImporter.contrastMin') }}</label>
+                <input
+                  type="range"
+                  class="pi-slider"
+                  :min="climSliderMin"
+                  :max="climSliderMax"
+                  :step="climStep"
+                  :value="climMin"
+                  @input="updateClimMin(Number(($event.target as HTMLInputElement).value))"
+                />
+                <input
+                  :value="climMin"
+                  type="number"
+                  class="pi-input pi-input--sm"
+                  step="any"
+                  @input="updateClimMin(Number(($event.target as HTMLInputElement).value))"
+                />
+              </div>
+              <div class="pi-clim-field">
+                <label class="pi-label-sm">{{ t('poniImporter.contrastMax') }}</label>
+                <input
+                  type="range"
+                  class="pi-slider"
+                  :min="climSliderMin"
+                  :max="climSliderMax"
+                  :step="climStep"
+                  :value="climMax"
+                  @input="updateClimMax(Number(($event.target as HTMLInputElement).value))"
+                />
+                <input
+                  :value="climMax"
+                  type="number"
+                  class="pi-input pi-input--sm"
+                  step="any"
+                  @input="updateClimMax(Number(($event.target as HTMLInputElement).value))"
+                />
+              </div>
+            </div>
+          </div>
+
+          <!-- Preview stats (shape / beam center) / 预览统计 -->
+          <div v-if="previewB64 && (previewShape || resolvedBeamCenterDisplay)" class="pi-preview-stats">
+            <span v-if="previewShape" class="pi-stat">
+              <span class="pi-stat-label">{{ t('poniImporter.previewStatsShape') }}:</span>
+              <code class="pi-stat-value">{{ previewShape[0] }} × {{ previewShape[1] }}</code>
+            </span>
+            <span v-if="resolvedBeamCenterDisplay" class="pi-stat">
+              <span class="pi-stat-label">{{ t('poniImporter.previewStatsBeamCenter') }}:</span>
+              <code class="pi-stat-value">{{ resolvedBeamCenterDisplay }}</code>
+            </span>
+          </div>
         </div>
 
-        <div class="pi-content">
-          <h3 class="pi-content-title">{{ t('poniImporter.createSuccessTitle') }}</h3>
+        <!-- ── PONI 实时预览 + 导出 / PONI preview + export ── -->
+        <div class="pi-card">
+          <h3 class="pi-card-title">{{ t('poniImporter.createSuccessTitle') }}</h3>
 
           <div v-if="!poniData" class="pi-empty-hint">
             <p>请填写必要参数</p>
@@ -186,11 +387,11 @@
                 </div>
                 <div class="pi-param-item">
                   <span class="pi-param-label">{{ t('poniParams.beamCenterX') }}:</span>
-                  <span class="pi-param-value">{{ formatBeamCenter(poniData.poni1) }}</span>
+                  <span class="pi-param-value">{{ formatBeamCenter(poniData.poni2) }}</span>
                 </div>
                 <div class="pi-param-item">
                   <span class="pi-param-label">{{ t('poniParams.beamCenterY') }}:</span>
-                  <span class="pi-param-value">{{ formatBeamCenter(poniData.poni2) }}</span>
+                  <span class="pi-param-value">{{ formatBeamCenter(poniData.poni1) }}</span>
                 </div>
               </div>
             </div>
@@ -229,7 +430,7 @@
                 <option value="json">JSON</option>
               </select>
             </div>
-            <button type="button" class="pi-btn" :disabled="!poniData" @click="doExport">
+            <button type="button" class="pi-btn pi-btn-primary" :disabled="!poniData" @click="doExport">
               {{ t('poniImporter.exportBtn') }}
             </button>
           </div>
@@ -241,13 +442,19 @@
 
 <script setup lang="ts">
 /**
- * PoniImporterView.vue — PONI文件转化页面
- * PONI file conversion page: create and export pyFAI .poni calibration files with real-time preview
+ * PoniImporterView.vue — PONI文件转化页面 (v0.2.4)
+ * PONI file conversion page: import a reference image to auto-match the detector,
+ * preview the beam center on the image with adjustable contrast, then export.
  */
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
+import ImagePreview from '@/components/charts/ImagePreview.vue'
+import type { Overlay } from '@/components/charts/ImagePreview.vue'
+import H5Selector from '@/components/business/H5Selector.vue'
+import type { H5DatasetInfo, H5Selection } from '@/components/business/H5Selector.vue'
 
 // === Type definitions / 类型定义 ===
 
@@ -262,11 +469,53 @@ interface PoniData {
   rot3?: number         // Rotation 3 (radians)
   detector_name?: string // Detector name (pyFAI-registered name preferred)
   detector_config?: string // Detector config (JSON, no surrounding quotes)
-  [key: string]: any    // Additional fields
+  detector_label?: string // Custom detector friendly name (comment only)
+  detector_shape?: [number, number] // Custom detector max_shape
+  orientation?: number // pyFAI detector orientation (0-4)
+  [key: string]: any
 }
 
 type PageState = 'idle' | 'loading' | 'error' | 'success'
 type ExportFormat = 'json' | 'poni'
+type PixelSizeUnit = 'um' | 'mm'
+type BeamCenterUnit = 'px' | 'um' | 'm'
+
+interface ProbeImageResult {
+  status: string
+  isH5: boolean
+  shape?: [number, number]
+  height?: number
+  width?: number
+  n_frames?: number
+  datasets?: Array<{ path: string; ndim: number; shape: number[]; height?: number; width?: number; nFrames?: number; nChannels?: number }>
+  default_path?: string
+  message?: string
+}
+
+interface MatchDetectorResult {
+  status: string
+  matched: {
+    name: string
+    label: string
+    pixel1_m: number
+    pixel2_m: number
+    max_shape: [number, number]
+  } | null
+  message?: string
+}
+
+interface PreviewMetadata {
+  stats?: { min: number; max: number; adjustedMax: number; std: number }
+  contrast?: { autoMin: number; autoMax: number; logMin: number; logMax: number }
+  metadata?: {
+    width?: number
+    height?: number
+    h5Datasets?: H5DatasetInfo[]
+    selectedDataset?: string
+    selectedChannel?: number
+    nChannels?: number
+  }
+}
 
 // === Composables / 组合函数 ===
 
@@ -280,16 +529,17 @@ const state = ref<PageState>('idle')
 const errorMessage = ref('')
 const exportFormat = ref<ExportFormat>('poni')
 
-// Create form state (user-friendly units) / 创建表单状态（用户友好单位）
 const createForm = reactive({
   distance: 100,        // mm
-  wavelength: 1.5418,   // Å (or keV depending on wavelengthUnit)
+  wavelength: 1.5418,   // Å
+  energy: 8.048,        // keV (Cu Kα, auto-synced with wavelength)
   pixel_size: 172,      // µm (or mm depending on pixelSizeUnit)
   beamCenterX: 512,     // px, µm, or m depending on beamCenterUnit
   beamCenterY: 512,
   rot1: 0,              // degrees
   rot2: 0,
   rot3: 0,
+  orientation: 3,       // pyFAI detector orientation: 3=top-left (default), 1=bottom-right, 2=top-right, 4=bottom-left
   detector_name: '',     // pyFAI name (preset mode, auto-filled)
   detector_label: '',    // friendly name (custom mode only)
   shape_rows: null as number | null,  // custom detector rows  → max_shape[0]
@@ -297,32 +547,27 @@ const createForm = reactive({
 })
 
 // Unit toggles / 单位切换
-type WavelengthUnit = 'angstrom' | 'keV'
-type PixelSizeUnit = 'um' | 'mm'
-type BeamCenterUnit = 'px' | 'um' | 'm'
-const wavelengthUnit = ref<WavelengthUnit>('angstrom')
 const pixelSizeUnit = ref<PixelSizeUnit>('um')
 const beamCenterUnit = ref<BeamCenterUnit>('px')
 
-// Wavelength conversion: E(keV) = 12.39842 / λ(Å) / 波长转换
 const HC_KEV_A = 12.39842 // h*c in keV·Å
 
-function convertWavelengthValue(oldUnit: WavelengthUnit, newUnit: WavelengthUnit, value: number): number {
-  if (oldUnit === newUnit) return value
-  // Convert to Å first / 先转换为 Å
-  const angstrom = oldUnit === 'angstrom' ? value : HC_KEV_A / value
-  // Convert from Å to target / 从 Å 转换为目标单位
-  return newUnit === 'angstrom' ? angstrom : HC_KEV_A / angstrom
+/** When the user edits the wavelength (Å), auto-calculate energy (keV). */
+function onWavelengthInput(raw: string): void {
+  const num = parseFloat(raw)
+  if (isNaN(num) || num <= 0) return
+  createForm.wavelength = num
+  createForm.energy = parseFloat((HC_KEV_A / num).toFixed(6))
 }
 
-function onWavelengthUnitToggle(newUnit: WavelengthUnit): void {
-  const oldUnit = wavelengthUnit.value
-  if (oldUnit === newUnit) return
-  createForm.wavelength = convertWavelengthValue(oldUnit, newUnit, createForm.wavelength)
-  wavelengthUnit.value = newUnit
+/** When the user edits the energy (keV), auto-calculate wavelength (Å). */
+function onEnergyInput(raw: string): void {
+  const num = parseFloat(raw)
+  if (isNaN(num) || num <= 0) return
+  createForm.energy = num
+  createForm.wavelength = parseFloat((HC_KEV_A / num).toFixed(6))
 }
 
-// Pixel size conversion / 像素尺寸转换
 function onPixelSizeUnitToggle(newUnit: PixelSizeUnit): void {
   const oldUnit = pixelSizeUnit.value
   if (oldUnit === newUnit) return
@@ -334,12 +579,10 @@ function onPixelSizeUnitToggle(newUnit: PixelSizeUnit): void {
   pixelSizeUnit.value = newUnit
 }
 
-// Helper: get current pixel size in meters / 辅助：获取当前像素尺寸（米）
 function getPixelSizeMeters(): number {
   return pixelSizeUnit.value === 'um' ? createForm.pixel_size * 1e-6 : createForm.pixel_size * 1e-3
 }
 
-// Beam center conversion via meters intermediate / 光斑中心通过米中间值转换
 function beamCenterToMeters(value: number, unit: BeamCenterUnit, pixelSizeM: number): number {
   if (unit === 'px') return value * pixelSizeM
   if (unit === 'um') return value * 1e-6
@@ -356,7 +599,6 @@ function onBeamCenterUnitToggle(newUnit: BeamCenterUnit): void {
   const oldUnit = beamCenterUnit.value
   if (oldUnit === newUnit) return
   const pixelSizeM = getPixelSizeMeters()
-  // Convert old value → meters → new unit
   const beamXM = beamCenterToMeters(createForm.beamCenterX, oldUnit, pixelSizeM)
   const beamYM = beamCenterToMeters(createForm.beamCenterY, oldUnit, pixelSizeM)
   createForm.beamCenterX = metersToBeamCenter(beamXM, newUnit, pixelSizeM)
@@ -367,7 +609,6 @@ function onBeamCenterUnitToggle(newUnit: BeamCenterUnit): void {
 // === Real-time computed PONI data / 实时计算 PONI 数据 ===
 
 const poniData = computed<PoniData | null>(() => {
-  // Validate all required fields
   if (!Number.isFinite(createForm.distance) || createForm.distance <= 0) return null
   if (!Number.isFinite(createForm.wavelength) || createForm.wavelength <= 0) return null
   if (!Number.isFinite(createForm.pixel_size) || createForm.pixel_size <= 0) return null
@@ -376,13 +617,7 @@ const poniData = computed<PoniData | null>(() => {
 
   const pixelSizeM = getPixelSizeMeters()
   const distanceM = createForm.distance * 1e-3  // mm → m
-
-  let wavelengthM: number
-  if (wavelengthUnit.value === 'angstrom') {
-    wavelengthM = createForm.wavelength * 1e-10
-  } else {
-    wavelengthM = (HC_KEV_A / createForm.wavelength) * 1e-10
-  }
+  const wavelengthM = createForm.wavelength * 1e-10  // Å → m (always in Å now)
 
   const beamXM = beamCenterToMeters(createForm.beamCenterX, beamCenterUnit.value, pixelSizeM)
   const beamYM = beamCenterToMeters(createForm.beamCenterY, beamCenterUnit.value, pixelSizeM)
@@ -397,11 +632,9 @@ const poniData = computed<PoniData | null>(() => {
     rot1: createForm.rot1 * DEG2RAD,
     rot2: createForm.rot2 * DEG2RAD,
     rot3: createForm.rot3 * DEG2RAD,
+    orientation: createForm.orientation,
   }
   if (isCustomDetector.value) {
-    // Custom detector: pyFAI uses its generic `Detector` class, so we send
-    // the friendly name as `detector_label` (written back as a comment by
-    // the backend) and an optional array size as `detector_shape` → max_shape.
     const label = (createForm.detector_label || '').trim()
     if (label) data.detector_label = label
     const r = createForm.shape_rows
@@ -423,7 +656,7 @@ interface DetectorPreset {
   pixel_size: number  // in mm
 }
 
-const detectorPresets: DetectorPreset[] = [
+const detectorPresets = ref<DetectorPreset[]>([
   // Dectris Pilatus series (172 µm = 0.172 mm)
   { name: 'Pilatus 100K', detector_name: 'Pilatus100k', pixel_size: 0.172 },
   { name: 'Pilatus 200K', detector_name: 'Pilatus200k', pixel_size: 0.172 },
@@ -453,17 +686,12 @@ const detectorPresets: DetectorPreset[] = [
   { name: 'Mar345', detector_name: 'Mar345', pixel_size: 0.150 },
   { name: 'Rayonix MX225', detector_name: 'RayonixMX225', pixel_size: 0.0737 },
   { name: 'Rayonix MX300', detector_name: 'RayonixMX300', pixel_size: 0.148 },
-]
+])
 
 const selectedPreset = ref<string>('Pilatus 1M')
 
-// Custom detector mode: unlocked when the user picks the "Custom" option.
-// pyFAI cannot store an arbitrary detector name, so a custom detector is
-// written as the generic `Detector` class + a pixel-size config (backend),
-// with the user's friendly name preserved only as a comment label.
 const isCustomDetector = computed(() => selectedPreset.value === 'Custom')
 
-// Human-readable detector summary for the preview panel / 预览面板的探测器摘要
 const detectorDisplay = computed(() => {
   if (isCustomDetector.value) {
     const label = (createForm.detector_label || '').trim() || t('poniImporter.detectorCustom')
@@ -478,49 +706,590 @@ const detectorDisplay = computed(() => {
 // Watch preset selection and auto-fill form / 监听预设选择并自动填充表单
 watch(selectedPreset, (presetName) => {
   if (!presetName) return
-  const preset = detectorPresets.find(p => p.name === presetName)
+  const preset = detectorPresets.value.find(p => p.name === presetName)
   if (preset) {
     createForm.detector_name = preset.detector_name
-    // Preset pixel_size is in mm; convert to current pixel size unit
     createForm.pixel_size = pixelSizeUnit.value === 'um' ? preset.pixel_size * 1000 : preset.pixel_size
   }
 })
 
 // Initialize form fields from the default preset on mount.
-// 在挂载时用默认预设初始化表单字段。
 {
-  const initial = detectorPresets.find(p => p.name === selectedPreset.value)
+  const initial = detectorPresets.value.find(p => p.name === selectedPreset.value)
   if (initial) {
     createForm.detector_name = initial.detector_name
     createForm.pixel_size = pixelSizeUnit.value === 'um' ? initial.pixel_size * 1000 : initial.pixel_size
   }
 }
 
+// === Reverse import: read geometry back from an existing .poni file ===
+// === 反向导入：从已有 .poni 文件读回几何参数 ===
+
+const importingPoni = ref(false)
+// Source .poni of the last reverse import (for the TXT report header + raw SI
+// values). / 最近一次反向导入的 .poni 来源（用于 TXT 报告头部与原始 SI 值）。
+const importedPoniPath = ref<string | null>(null)
+const importedPoniData = ref<Record<string, unknown> | null>(null)
+
+/** Pick a .poni, parse it via the backend, and fill the form with its geometry. */
+async function handleImportPoni(): Promise<void> {
+  const result = await transport.selectFiles({
+    filters: [{ name: 'PONI', extensions: ['poni'] }],
+    multiSelections: false,
+  })
+  const poniPath = Array.isArray(result) ? result[0] : result
+  if (!poniPath) return
+
+  importingPoni.value = true
+  try {
+    const raw = await submitAndWait('poni_importer', { action: 'parse', filePath: poniPath })
+    const data = raw as { status?: string; poni_data?: Record<string, unknown>; message?: string }
+    if (data?.status !== 'ok' || !data.poni_data) {
+      throw new Error(data?.message ?? t('poniImporter.importPoni.parseFail'))
+    }
+    applyParsedPoni(data.poni_data)
+    importedPoniPath.value = poniPath
+    importedPoniData.value = data.poni_data
+    toast.push({
+      title: t('poniImporter.title'),
+      message: `${poniPath.split(/[/\\]/).pop()}: ${t('poniImporter.importPoni.success')}`,
+      tone: 'success',
+    })
+  } catch (err) {
+    toast.push({
+      title: t('poniImporter.title'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    importingPoni.value = false
+  }
+}
+
+/** Export the current geometry parameters (form values + raw parsed .poni SI
+ *  values when available) as a plain-text report. / 将当前几何参数（表单值 +
+ *  反读 .poni 的原始 SI 值）导出为纯文本报告。 */
+function exportParamsTxt(): void {
+  const pixelSizeM = getPixelSizeMeters()
+  const pixelUm = pixelSizeM * 1e6
+  // Beam center in meters (current unit-aware values) / 当前单位下的光束中心（米）
+  const beamXM = beamCenterToMeters(createForm.beamCenterX, beamCenterUnit.value, pixelSizeM)
+  const beamYM = beamCenterToMeters(createForm.beamCenterY, beamCenterUnit.value, pixelSizeM)
+  const orientationNames: Record<number, string> = {
+    3: t('poniImporter.pixelOriginTopLeft'),
+    1: t('poniImporter.pixelOriginBottomRight'),
+    2: t('poniImporter.pixelOriginTopRight'),
+    4: t('poniImporter.pixelOriginBottomLeft'),
+  }
+  const lines: string[] = [
+    'X-FAIS PONI 参数报告 / PONI Parameter Report',
+    `生成时间 / Generated: ${new Date().toLocaleString()}`,
+    importedPoniPath.value ? `来源文件 / Source: ${importedPoniPath.value}` : '来源 / Source: 手动输入 (manual)',
+    '',
+    '== 几何参数 / Geometry ==',
+    `  探测器距离 / Distance: ${createForm.distance} mm`,
+    `  波长 / Wavelength: ${createForm.wavelength} Å  (能量 / Energy: ${createForm.energy} keV)`,
+    `  像素尺寸 / Pixel size: ${createForm.pixel_size} ${pixelSizeUnit.value} (${pixelUm.toFixed(4)} µm)`,
+    `  光束中心 X (poni2) / Beam center X: ${createForm.beamCenterX} ${beamCenterUnit.value}` +
+      (pixelSizeM > 0 ? `  = ${(beamXM * 1000).toFixed(6)} mm` : ''),
+    `  光束中心 Y (poni1) / Beam center Y: ${createForm.beamCenterY} ${beamCenterUnit.value}` +
+      (pixelSizeM > 0 ? `  = ${(beamYM * 1000).toFixed(6)} mm` : ''),
+    `  旋转 / Rotations: rot1=${createForm.rot1}°, rot2=${createForm.rot2}°, rot3=${createForm.rot3}°`,
+    `  像素原点 / Pixel origin: ${createForm.orientation} (${orientationNames[createForm.orientation] ?? '—'})`,
+    '',
+    '== 探测器 / Detector ==',
+    `  类型: ${isCustomDetector.value ? t('poniImporter.detectorCustom') : (createForm.detector_name || '—')}`,
+  ]
+  if (isCustomDetector.value) {
+    lines.push(`  自定义名称 / Label: ${createForm.detector_label || '—'}`)
+    if (createForm.shape_rows && createForm.shape_cols) {
+      lines.push(`  阵列尺寸 / Shape: ${createForm.shape_rows} × ${createForm.shape_cols} px`)
+    }
+  }
+  const raw = importedPoniData.value
+  if (raw) {
+    const si = (key: string, label: string): string => {
+      const v = raw[key]
+      return typeof v === 'number' ? `${label}: ${v}` : ''
+    }
+    const rawLines = [
+      si('distance', 'Distance'),
+      si('wavelength', 'Wavelength'),
+      si('pixel_size', 'PixelSize'),
+      si('poni1', 'Poni1'),
+      si('poni2', 'Poni2'),
+      si('rot1', 'Rot1'),
+      si('rot2', 'Rot2'),
+      si('rot3', 'Rot3'),
+    ].filter(Boolean)
+    if (rawLines.length) {
+      lines.push('', '== 原始 .poni 数值（SI 单位）/ Raw .poni values (SI) ==', ...rawLines.map(l => `  ${l}`))
+    }
+    if (typeof raw.detector_name === 'string') {
+      lines.push(`  Detector: ${raw.detector_name}`)
+    }
+  }
+  const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'poni-parameters.txt'
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
+/** Fill the create form from parsed poni_data (SI units → form units). */
+function applyParsedPoni(d: Record<string, unknown>): void {
+  // Detector first: a registry match selects the preset (its watcher fills
+  // detector_name); anything else falls back to Custom + label/shape.
+  // 先处理探测器：注册表命中则选预设（监听器会填充 detector_name）；
+  // 否则回退 Custom + 标签/形状。
+  const detName = typeof d.detector_name === 'string' ? d.detector_name.trim() : ''
+  const detLabel = typeof d.detector_label === 'string' ? d.detector_label.trim() : ''
+  const shape = Array.isArray(d.detector_shape) ? d.detector_shape as number[] : null
+  const preset = detectorPresets.value.find(p => p.detector_name.toLowerCase() === detName.toLowerCase())
+  if (preset) {
+    selectedPreset.value = preset.name
+  } else {
+    selectedPreset.value = 'Custom'
+    createForm.detector_label = detLabel || (detName && detName !== 'Detector' ? detName : '')
+    if (shape && shape.length === 2 && shape[0] > 0 && shape[1] > 0) {
+      createForm.shape_rows = Math.trunc(shape[0])
+      createForm.shape_cols = Math.trunc(shape[1])
+    } else {
+      createForm.shape_rows = null
+      createForm.shape_cols = null
+    }
+  }
+
+  // Distance m → mm / 波长 m → Å（并同步能量）
+  if (typeof d.distance === 'number' && d.distance > 0) {
+    createForm.distance = +(d.distance * 1000).toFixed(6)
+  }
+  if (typeof d.wavelength === 'number' && d.wavelength > 0) {
+    createForm.wavelength = +(d.wavelength * 1e10).toFixed(6)
+    createForm.energy = +(HC_KEV_A / createForm.wavelength).toFixed(6)
+  }
+
+  // Pixel size m → µm（统一切到 µm 单位；文件值优先于预设默认值）
+  pixelSizeUnit.value = 'um'
+  if (typeof d.pixel_size === 'number' && d.pixel_size > 0) {
+    createForm.pixel_size = +(d.pixel_size * 1e6).toFixed(6)
+  }
+
+  // Rotations rad → deg / 方向 orientation
+  const RAD2DEG = 180 / Math.PI
+  createForm.rot1 = typeof d.rot1 === 'number' ? +(d.rot1 * RAD2DEG).toFixed(6) : 0
+  createForm.rot2 = typeof d.rot2 === 'number' ? +(d.rot2 * RAD2DEG).toFixed(6) : 0
+  createForm.rot3 = typeof d.rot3 === 'number' ? +(d.rot3 * RAD2DEG).toFixed(6) : 0
+  if (typeof d.orientation === 'number' && [0, 1, 2, 3, 4].includes(d.orientation)) {
+    createForm.orientation = d.orientation
+  }
+
+  // Beam center m → px（poni1→Y, poni2→X）；无像素尺寸时保留米制单位
+  const pixelM = getPixelSizeMeters()
+  if (typeof d.poni1 === 'number' && typeof d.poni2 === 'number') {
+    if (pixelM > 0) {
+      beamCenterUnit.value = 'px'
+      createForm.beamCenterY = +(d.poni1 / pixelM).toFixed(3)
+      createForm.beamCenterX = +(d.poni2 / pixelM).toFixed(3)
+    } else {
+      beamCenterUnit.value = 'm'
+      createForm.beamCenterY = d.poni1
+      createForm.beamCenterX = d.poni2
+    }
+  }
+}
+
+// === Image import + auto detector match / 图像导入 + 自动探测器匹配 ===
+
+const currentImagePath = ref<string | null>(null)
+const currentImageName = ref<string>('')
+const imageLoading = ref(false)
+const autoMatchedFromImage = ref(false)
+const showOriginHint = ref(false)
+
+const imageFilters = [
+  { name: 'Detector Images', extensions: ['edf', 'tif', 'tiff', 'h5', 'hdf5'] },
+]
+
+// H5 dataset state (4D support) / H5 数据集状态（支持 4D）
+const h5Datasets = ref<H5DatasetInfo[]>([])
+const h5Selection = ref<H5Selection>({ dataset: '', channel: 0, frame: 0 })
+
+// Collapsible section state (advanced only collapsed by default).
+// 折叠区状态（仅高级参数默认收起）。
+const advancedExpanded = ref(false)
+
+async function handleChooseImage(): Promise<void> {
+  const result = await transport.selectFiles({ filters: imageFilters, multiSelections: false })
+  if (!result) return
+  const path = Array.isArray(result) ? result[0] : result
+  if (!path) return
+  currentImagePath.value = path
+  currentImageName.value = path.split(/[/\\]/).pop() ?? path
+  h5Datasets.value = []
+  h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+  autoMatchedFromImage.value = false
+  await probeAndMatch(path)
+}
+
+/** Probe image shape → call match_detector → apply result to the form. */
+async function probeAndMatch(path: string): Promise<void> {
+  imageLoading.value = true
+  try {
+    // 1. Probe the image (H5 returns multiple datasets).
+    const probeRaw = await submitAndWait('poni_importer', { action: 'probe_image', filePath: path })
+    const probe = probeRaw as ProbeImageResult
+    if (probe.status !== 'ok') {
+      toast.push({ title: t('poniImporter.errorTitle'), message: probe.message ?? 'probe failed', tone: 'error' })
+      return
+    }
+
+    // Populate H5 selector datasets if applicable.
+    if (probe.isH5 && Array.isArray(probe.datasets)) {
+      h5Datasets.value = probe.datasets.map(d => ({
+        path: d.path,
+        ndim: d.ndim,
+        shape: d.shape,
+        nFrames: d.nFrames,
+        nChannels: d.nChannels,
+      }))
+      if (probe.default_path) {
+        h5Selection.value = { dataset: probe.default_path, channel: 0, frame: 0 }
+      }
+    }
+
+    // 2. Pick the shape to match against. For H5, use the default dataset's
+    //    last-two axes; for EDF/TIFF, use the returned shape directly.
+    let shapeToMatch: [number, number] | null = null
+    if (probe.isH5) {
+      const ds = probe.datasets?.find(d => d.path === probe.default_path) ?? probe.datasets?.[0]
+      if (ds?.height && ds?.width) shapeToMatch = [ds.height, ds.width]
+    } else if (probe.shape) {
+      shapeToMatch = [probe.shape[0], probe.shape[1]]
+    }
+
+    // 3. Load preview BEFORE matching so the user sees the image regardless.
+    await loadPreview(path)
+
+    if (!shapeToMatch) return
+
+    // 4. Match detector by shape.
+    const matchRaw = await submitAndWait('poni_importer', { action: 'match_detector', shape: shapeToMatch })
+    const match = matchRaw as MatchDetectorResult
+    if (match.status !== 'ok') {
+      toast.push({ title: t('poniImporter.errorTitle'), message: match.message ?? 'match failed', tone: 'error' })
+      return
+    }
+    applyDetectorMatch(match.matched, shapeToMatch)
+  } catch (err) {
+    toast.push({
+      title: t('poniImporter.errorTitle'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  } finally {
+    imageLoading.value = false
+  }
+}
+
+/** Apply a detector match result to the form, or fall back to custom mode. */
+function applyDetectorMatch(matched: MatchDetectorResult['matched'], shape: [number, number]): void {
+  // Always populate the custom-detector shape from the image (useful in both branches).
+  createForm.shape_rows = shape[0]
+  createForm.shape_cols = shape[1]
+
+  if (matched) {
+    // Add the matched detector to the preset list (dedup by name) and select it.
+    const friendlyName = matched.label || matched.name
+    if (!detectorPresets.value.some(p => p.name === friendlyName)) {
+      // pixel1_m == pixel2_m for these square-pixel detectors → use pixel1.
+      const pixel_mm = (matched.pixel1_m ?? matched.pixel2_m ?? 0) * 1000
+      detectorPresets.value = [
+        { name: friendlyName, detector_name: matched.name, pixel_size: pixel_mm },
+        ...detectorPresets.value,
+      ]
+    }
+    selectedPreset.value = friendlyName
+    // selectedPreset watcher fills detector_name + pixel_size automatically.
+    autoMatchedFromImage.value = true
+    toast.push({
+      title: t('poniImporter.importImageTitle'),
+      message: t('poniImporter.autoMatchedToast', {
+        name: friendlyName,
+        pixel: ((matched.pixel1_m ?? matched.pixel2_m ?? 0) * 1e6).toFixed(3),
+      }),
+      tone: 'success',
+    })
+  } else {
+    // No match → switch to custom mode with the detected shape filled in.
+    selectedPreset.value = 'Custom'
+    if (!createForm.detector_label) createForm.detector_label = ''
+    autoMatchedFromImage.value = true
+    toast.push({
+      title: t('poniImporter.importImageTitle'),
+      message: t('poniImporter.autoUnmatchedToast'),
+      tone: 'info',
+    })
+  }
+}
+
+function onH5SelectionChange(): void {
+  // When the user picks a different dataset/channel, re-probe just the shape
+  // for that dataset and re-match.
+  if (!currentImagePath.value || h5Datasets.value.length === 0) return
+  const ds = h5Datasets.value.find(d => d.path === h5Selection.value.dataset)
+  if (!ds || ds.shape.length < 2) return
+  const shape: [number, number] = [ds.shape[ds.shape.length - 2], ds.shape[ds.shape.length - 1]]
+  void reloadPreviewAndMatch(currentImagePath.value, shape)
+}
+
+async function reloadPreviewAndMatch(path: string, shape: [number, number]): Promise<void> {
+  imageLoading.value = true
+  try {
+    await loadPreview(path)
+    const matchRaw = await submitAndWait('poni_importer', { action: 'match_detector', shape })
+    const match = matchRaw as MatchDetectorResult
+    if (match.status === 'ok') applyDetectorMatch(match.matched, shape)
+  } finally {
+    imageLoading.value = false
+  }
+}
+
+// === Image preview (viewer_config open_file) / 图像预览 ===
+
+const previewB64 = ref<string | null>(null)
+const previewImageSize = ref<{ width: number; height: number; origWidth: number; origHeight: number } | null>(null)
+const previewShape = ref<[number, number] | null>(null)
+const autoContrast = ref<{ autoMin: number; autoMax: number; logMin: number; logMax: number } | null>(null)
+const previewStats = ref<{ min: number; max: number; adjustedMax: number; std: number } | null>(null)
+
+let cleanupPreviewBinary: (() => void) | null = null
+let cleanupPreviewResult: (() => void) | null = null
+let cleanupPreviewError: (() => void) | null = null
+
+// Display settings / 显示设置
+const colormapOptions = [
+  'smooth_WAXS_foxtrot',
+  'smooth_WAXS_fit2D',
+  ...Object.keys(COLORMAP_PRESETS),
+]
+const colormap = ref('smooth_WAXS_foxtrot')
+const useLog = ref(true)
+const climMode = ref<'auto' | 'manual'>('auto')
+const climMin = ref(0)
+const climMax = ref(1)
+const climInitialized = ref(false)
+
+function buildRenderSettings(): Record<string, unknown> {
+  const resolvedClim = climMode.value === 'manual'
+    ? [climMin.value, climMax.value]
+    : [
+        useLog.value ? autoContrast.value?.logMin ?? 1e-6 : autoContrast.value?.autoMin ?? 0,
+        useLog.value ? autoContrast.value?.logMax ?? 1 : autoContrast.value?.autoMax ?? 1,
+      ]
+  return {
+    colormap: colormap.value,
+    use_log: useLog.value,
+    clim_mode: climMode.value,
+    clim: resolvedClim,
+    preview_scale: 1.0,
+  }
+}
+
+async function loadPreview(filePath: string, isReload = false): Promise<void> {
+  // When reloading (contrast/colormap change), keep the old image visible
+  // until the new one arrives to prevent flicker. Only a brand-new file
+  // load should clear the preview state upfront.
+  // 重渲染（对比度/色图变化）时保留旧图直到新图到达，避免闪烁。
+  // 仅加载全新文件时才清空预览状态。
+  if (!isReload) {
+    if (previewB64.value?.startsWith('blob:')) {
+      URL.revokeObjectURL(previewB64.value)
+    }
+    previewB64.value = null
+    previewImageSize.value = null
+    previewStats.value = null
+    autoContrast.value = null
+  }
+  cleanupPreviewListeners()
+
+  const isH5 = h5Datasets.value.length > 0
+  const response = await transport.submitTask('viewer_config', {
+    action: 'open_file',
+    filePath,
+    frame: h5Selection.value.frame,
+    ...(isH5 ? {
+      dataset: h5Selection.value.dataset || undefined,
+      channel: h5Selection.value.channel,
+    } : {}),
+    settings: buildRenderSettings(),
+  })
+
+  cleanupPreviewBinary = transport.onTaskBinaryData(response.taskId, (payload) => {
+    if (payload.data) {
+      const blob = new Blob([payload.data], { type: payload.mime || 'image/png' })
+      const newUrl = URL.createObjectURL(blob)
+      // Revoke the OLD url only after the new one is ready, so the <img>
+      // never briefly loses its src mid-render.
+      // 先创建新 URL 再撤销旧的，避免 <img> 在渲染中途短暂丢失 src。
+      const oldUrl = previewB64.value
+      previewB64.value = newUrl
+      if (oldUrl?.startsWith('blob:')) URL.revokeObjectURL(oldUrl)
+    }
+  })
+
+  cleanupPreviewResult = transport.onTaskResult(response.taskId, (payload) => {
+    const data = payload.data as PreviewMetadata
+    if (data.stats) previewStats.value = data.stats
+    if (data.contrast) {
+      autoContrast.value = data.contrast
+      if (climMode.value === 'auto') {
+        climMin.value = useLog.value ? data.contrast.logMin : data.contrast.autoMin
+        climMax.value = useLog.value ? data.contrast.logMax : data.contrast.autoMax
+      } else if (!climInitialized.value) {
+        climMin.value = useLog.value ? data.contrast.logMin : data.contrast.autoMin
+        climMax.value = useLog.value ? data.contrast.logMax : data.contrast.autoMax
+        climInitialized.value = true
+      }
+    }
+    const w = data.metadata?.width ?? 0
+    const h = data.metadata?.height ?? 0
+    if (w > 0 && h > 0) {
+      previewImageSize.value = { width: 0, height: 0, origWidth: w, origHeight: h }
+      previewShape.value = [h, w]
+    }
+  })
+
+  cleanupPreviewError = transport.onTaskError(response.taskId, (payload) => {
+    toast.push({ title: t('poniImporter.errorTitle'), message: payload.error, tone: 'error' })
+  })
+}
+
+function cleanupPreviewListeners(): void {
+  cleanupPreviewBinary?.()
+  cleanupPreviewBinary = null
+  cleanupPreviewResult?.()
+  cleanupPreviewResult = null
+  cleanupPreviewError?.()
+  cleanupPreviewError = null
+}
+
+// Contrast slider bounds, mirroring ViewerView. / 对比度滑块范围，镜像 ViewerView。
+const climSliderMin = computed(() => {
+  const auto = (useLog.value ? autoContrast.value?.logMin : autoContrast.value?.autoMin) ?? 0
+  return auto <= 0 ? auto * 2 : auto * 0.1
+})
+const climSliderMax = computed(() => {
+  const auto = (useLog.value ? autoContrast.value?.logMax : autoContrast.value?.autoMax) ?? (previewStats.value?.adjustedMax ?? 1)
+  return auto * 3
+})
+const climStep = computed(() => {
+  const range = climSliderMax.value - climSliderMin.value
+  return range === 0 ? 1 : range / 1000
+})
+
+function updateClimMin(value: number): void {
+  if (!Number.isFinite(value)) return
+  climMin.value = value
+  if (climMin.value > climMax.value) climMax.value = climMin.value
+}
+function updateClimMax(value: number): void {
+  if (!Number.isFinite(value)) return
+  climMax.value = value
+  if (climMax.value < climMin.value) climMin.value = climMax.value
+}
+
+// Re-render when display settings change (debounced to prevent flicker).
+// 显示设置变化时重新渲染（防抖以避免闪烁）。
+let rerenderTimer: ReturnType<typeof setTimeout> | null = null
+
+function scheduleRerender(): void {
+  const path = currentImagePath.value
+  if (!path || !previewB64.value) return
+  if (rerenderTimer) clearTimeout(rerenderTimer)
+  rerenderTimer = setTimeout(() => {
+    rerenderTimer = null
+    void loadPreview(path, true)
+  }, 120)
+}
+
+watch([colormap, useLog, climMode, climMin, climMax], () => {
+  scheduleRerender()
+})
+
+// === Beam center overlay (yellow crosshair) / 光斑中心叠加（黄色十字） ===
+
+const colorbarGradient = computed(() => resolveColorbarGradient(colormap.value))
+const colorbarMinLabel = computed(() => {
+  if (!autoContrast.value) return '0'
+  return useLog.value ? autoContrast.value.logMin.toExponential(3) : autoContrast.value.autoMin.toExponential(3)
+})
+const colorbarMaxLabel = computed(() => {
+  if (!autoContrast.value) return '1'
+  return useLog.value ? autoContrast.value.logMax.toExponential(3) : autoContrast.value.autoMax.toExponential(3)
+})
+
+/** Resolve the beam center to pixel coords using the current pixel size. */
+const resolvedBeamCenterPx = computed<{ x: number; y: number } | null>(() => {
+  if (!Number.isFinite(createForm.beamCenterX) || !Number.isFinite(createForm.beamCenterY)) return null
+  const pixelSizeM = getPixelSizeMeters()
+  if (pixelSizeM <= 0) return null
+  // Convert the form value (in beamCenterUnit) to meters, then to pixels.
+  const xM = beamCenterToMeters(createForm.beamCenterX, beamCenterUnit.value, pixelSizeM)
+  const yM = beamCenterToMeters(createForm.beamCenterY, beamCenterUnit.value, pixelSizeM)
+  return { x: xM / pixelSizeM, y: yM / pixelSizeM }
+})
+
+/** Origin marker position based on orientation. / 根据方向计算原点标记位置。 */
+const originMarkerPx = computed<{ x: number; y: number }>(() => {
+  const w = previewImageSize.value?.origWidth ?? 0
+  const h = previewImageSize.value?.origHeight ?? 0
+  const o = createForm.orientation
+  // orientation 1: bottom-right (rows, cols) → (w, h)
+  // orientation 2: top-right (rows, 0) → (w, 0)
+  // orientation 4: bottom-left (0, cols) → (0, h)
+  // orientation 0, 3 (default): top-left (0, 0)
+  const x = (o === 1 || o === 2) ? w : 0
+  const y = (o === 1 || o === 4) ? h : 0
+  return { x, y }
+})
+
+/** Combined overlays: origin marker + beam center. / 合并叠加：原点标记 + 光斑中心。 */
+const previewOverlays = computed<Overlay[]>(() => {
+  const overlays: Overlay[] = []
+  if (previewImageSize.value) {
+    const om = originMarkerPx.value
+    overlays.push({ type: 'originMarker', x: om.x, y: om.y, color: '#22d3ee' })
+  }
+  const bc = resolvedBeamCenterPx.value
+  if (bc && previewImageSize.value) {
+    overlays.push({ type: 'beamCenter', x: bc.x, y: bc.y, color: '#eab308' })
+  }
+  return overlays
+})
+
+const resolvedBeamCenterDisplay = computed(() => {
+  const bc = resolvedBeamCenterPx.value
+  if (!bc) return ''
+  return `(${bc.x.toFixed(2)}, ${bc.y.toFixed(2)}) px`
+})
+
 // === Helpers / 辅助函数 ===
 
 function formatValue(value: any, unit: string): string {
-  if (value === null || value === undefined) {
-    return '—'
-  }
+  if (value === null || value === undefined) return '—'
   if (typeof value === 'number') {
-    if (unit === 'mm') {
-      return `${(value * 1000).toFixed(4)} ${unit}`
-    }
-    if (unit === 'Å') {
-      return `${(value * 1e10).toFixed(6)} ${unit}`
-    }
-    if (unit === 'µm') {
-      return `${(value * 1e6).toFixed(3)} ${unit}`
-    }
-    if (unit === 'deg') {
-      return `${(value * 180 / Math.PI).toFixed(4)} ${unit}`
-    }
+    if (unit === 'mm') return `${(value * 1000).toFixed(4)} ${unit}`
+    if (unit === 'Å') return `${(value * 1e10).toFixed(6)} ${unit}`
+    if (unit === 'µm') return `${(value * 1e6).toFixed(3)} ${unit}`
+    if (unit === 'deg') return `${(value * 180 / Math.PI).toFixed(4)} ${unit}`
     return `${value} ${unit}`
   }
   return `${value} ${unit}`
 }
 
-/** Format beam center from SI meters to user-selected display unit / 将光束中心从 SI 米转换为用户选择的显示单位 */
 function formatBeamCenter(valueMeters: number): string {
   if (!Number.isFinite(valueMeters)) return '—'
   const ps = poniData.value?.pixel_size
@@ -528,18 +1297,33 @@ function formatBeamCenter(valueMeters: number): string {
     if (ps && ps > 0) return `${(valueMeters / ps).toFixed(2)} px`
     return '—'
   }
-  if (beamCenterUnit.value === 'm') {
-    return `${valueMeters.toFixed(6)} m`
-  }
+  if (beamCenterUnit.value === 'm') return `${valueMeters.toFixed(6)} m`
   return `${(valueMeters * 1e6).toFixed(3)} µm`
+}
+
+function submitAndWait(route: string, params: Record<string, unknown>): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    transport.submitTask(route, params).then(response => {
+      let offResult: (() => void) | null = null
+      let offError: (() => void) | null = null
+      let settled = false
+      const finish = (fn: () => void): void => {
+        if (settled) return
+        settled = true
+        offResult?.()
+        offError?.()
+        fn()
+      }
+      offResult = transport.onTaskResult(response.taskId, p => finish(() => resolve(p.data)))
+      offError = transport.onTaskError(response.taskId, p => finish(() => reject(new Error(p.error))))
+    }).catch(reject)
+  })
 }
 
 // === Export / 导出 ===
 
 async function doExport(): Promise<void> {
   if (!poniData.value) return
-  // Custom mode always resolves to a valid generic detector on the backend;
-  // preset mode still requires the auto-filled pyFAI name as a sanity guard.
   if (!isCustomDetector.value && !poniData.value.detector_name) {
     toast.push({
       title: t('poniImporter.errorTitle'),
@@ -549,13 +1333,7 @@ async function doExport(): Promise<void> {
     return
   }
   try {
-    // Deep-clone to strip Vue reactive proxy metadata before IPC.
-    // Vue's reactive()/ref() wrappers add internal symbol keys (e.g. __v_isReactive,
-    // __v_raw) that Electron's structured-clone cannot handle, causing
-    // "An object could not be cloned" errors on ipcRenderer.invoke.
     const plainPoniData = JSON.parse(JSON.stringify(poniData.value)) as PoniData
-
-    // Determine the output file path via save dialog
     let outputPath: string | undefined
     const fmt = exportFormat.value
     if (fmt === 'poni' || fmt === 'json') {
@@ -564,10 +1342,7 @@ async function doExport(): Promise<void> {
       const filters = fmt === 'poni'
         ? [{ name: 'PONI Files', extensions: ['poni'] }]
         : [{ name: 'JSON Files', extensions: ['json'] }]
-      const savePath = await transport.selectSavePath({
-        defaultPath: defaultName,
-        filters,
-      })
+      const savePath = await transport.selectSavePath({ defaultPath: defaultName, filters })
       if (!savePath) return
       outputPath = savePath
     }
@@ -615,6 +1390,15 @@ async function doExport(): Promise<void> {
     })
   }
 }
+
+onUnmounted(() => {
+  if (rerenderTimer) {
+    clearTimeout(rerenderTimer)
+    rerenderTimer = null
+  }
+  if (previewB64.value?.startsWith('blob:')) URL.revokeObjectURL(previewB64.value)
+  cleanupPreviewListeners()
+})
 </script>
 
 <style scoped>
@@ -685,6 +1469,11 @@ async function doExport(): Promise<void> {
   gap: 4px;
 }
 
+.pi-field--inline {
+  flex: 1;
+  min-width: 160px;
+}
+
 .pi-field-hint {
   margin: 2px 0 0;
   font-size: 0.75rem;
@@ -696,6 +1485,59 @@ async function doExport(): Promise<void> {
   font-size: 0.8125rem;
   color: var(--text-secondary);
   font-weight: 500;
+}
+
+.pi-label-sm {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.pi-info-tip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 4px;
+  border-radius: 50%;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  cursor: help;
+  user-select: none;
+}
+
+.pi-origin-hint {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.pi-origin-link {
+  display: inline-block;
+  margin-top: 4px;
+  color: var(--primary);
+  font-size: 0.75rem;
+  text-decoration: none;
+}
+
+.pi-origin-link:hover {
+  text-decoration: underline;
+}
+
+.pi-auto-hint {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(234, 179, 8, 0.12);
+  color: #a16207;
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 
 .pi-input {
@@ -715,6 +1557,12 @@ async function doExport(): Promise<void> {
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
 }
 
+.pi-input--sm {
+  padding: 4px 8px;
+  font-size: 0.75rem;
+  width: 110px;
+}
+
 .pi-select {
   padding: 8px 10px;
   border-radius: var(--radius-md);
@@ -724,7 +1572,6 @@ async function doExport(): Promise<void> {
   font-size: 0.875rem;
 }
 
-/* Two-input row for the custom detector shape / 自定义探测器尺寸双输入行 */
 .pi-shape-row {
   display: flex;
   align-items: center;
@@ -740,6 +1587,29 @@ async function doExport(): Promise<void> {
 .pi-shape-row .pi-input {
   flex: 1;
   min-width: 0;
+}
+
+.pi-file-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-hover);
+}
+
+.pi-file-info-label {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.pi-file-info-value {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  word-break: break-all;
 }
 
 /* Label row with inline unit toggle / 标签行含内联单位切换 */
@@ -790,26 +1660,45 @@ async function doExport(): Promise<void> {
   color: var(--primary);
 }
 
-.pi-file-info {
-  padding: 10px;
+/* Collapsible sections / 折叠区域 */
+.pi-collapsible {
+  border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg-hover);
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
+  overflow: hidden;
+  background: var(--bg-surface);
 }
 
-.pi-file-info-label {
+.pi-section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  transition: background var(--transition-fast);
+}
+
+.pi-section-toggle:hover {
+  background: var(--bg-surface-alt);
+}
+
+.pi-toggle-icon {
   font-size: 0.75rem;
   color: var(--text-muted);
-  font-weight: 500;
+  width: 14px;
+  text-align: center;
 }
 
-.pi-file-info-value {
-  font-size: 0.8rem;
-  color: var(--text-primary);
-  font-family: var(--font-mono);
-  word-break: break-all;
+.pi-collapsible-body {
+  padding: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
 /* Buttons / 按钮 */
@@ -824,6 +1713,27 @@ async function doExport(): Promise<void> {
   cursor: pointer;
 }
 
+.pi-import-poni {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-hover);
+  border-radius: var(--radius-md);
+  background: var(--primary-bg, rgba(37, 99, 235, 0.05));
+}
+
+.pi-import-btn-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pi-btn-secondary {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
 .pi-btn:hover:not(:disabled) {
   border-color: var(--border-hover);
   box-shadow: var(--shadow-sm);
@@ -835,11 +1745,9 @@ async function doExport(): Promise<void> {
 }
 
 .pi-btn-primary {
-  padding: 12px 24px;
   border: none;
   background: var(--primary);
   color: var(--text-inverse);
-  font-size: 0.9375rem;
   font-weight: 600;
 }
 
@@ -854,13 +1762,6 @@ async function doExport(): Promise<void> {
   gap: 20px;
 }
 
-.pi-empty {
-  padding: 60px 24px;
-  text-align: center;
-  color: var(--text-muted);
-  font-size: 0.9375rem;
-}
-
 .pi-empty-hint {
   padding: 20px 24px;
   text-align: center;
@@ -872,13 +1773,6 @@ async function doExport(): Promise<void> {
   margin: 0;
 }
 
-.pi-loading {
-  padding: 40px 24px;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: 0.9375rem;
-}
-
 .pi-error {
   padding: 20px 24px;
   border-radius: var(--radius-md);
@@ -886,20 +1780,6 @@ async function doExport(): Promise<void> {
   border: 1px solid rgba(239, 68, 68, 0.3);
   color: var(--error);
   font-size: 0.875rem;
-}
-
-.pi-content {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 20px;
-  background: var(--bg-surface);
-}
-
-.pi-content-title {
-  font-size: 1.1rem;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 16px;
 }
 
 .pi-section {
@@ -955,6 +1835,157 @@ async function doExport(): Promise<void> {
   overflow-x: auto;
   font-family: var(--font-mono);
   line-height: 1.5;
+  margin: 0;
+}
+
+/* Preview header + legend / 预览头部 + 图例 */
+.pi-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pi-preview-legend {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pi-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+.pi-legend-dot {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.pi-legend-dot--yellow {
+  background: #eab308;
+  box-shadow: 0 0 0 1.5px #fff;
+}
+
+.pi-legend-corner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-left: 2px solid #22d3ee;
+  border-top: 2px solid #22d3ee;
+}
+
+.pi-preview-loading,
+.pi-preview-empty {
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.9375rem;
+}
+
+.pi-preview-area {
+  position: relative;
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.pi-preview-image {
+  position: relative;
+}
+
+/* (0,0) origin marker is now drawn on the overlay canvas / 原点标记已改为在叠加画布上绘制 */
+
+/* Contrast controls / 对比度控件 */
+.pi-contrast-section {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.pi-contrast-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin: 0 0 4px;
+}
+
+.pi-contrast-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pi-toggle-label,
+.pi-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.pi-toggle-label input[type="checkbox"],
+.pi-radio-label input[type="radio"] {
+  accent-color: var(--primary);
+  width: 14px;
+  height: 14px;
+}
+
+.pi-contrast-sliders {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+.pi-clim-field {
+  display: grid;
+  grid-template-columns: 60px 1fr 110px;
+  align-items: center;
+  gap: 8px;
+}
+
+.pi-slider {
+  width: 100%;
+  accent-color: var(--primary);
+}
+
+.pi-preview-stats {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.pi-stat {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+
+.pi-stat-label {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.pi-stat-value {
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
 }
 
 /* Responsive / 响应式 */

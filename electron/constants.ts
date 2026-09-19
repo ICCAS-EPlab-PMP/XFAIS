@@ -1,5 +1,5 @@
 export const APP_NAME = 'X-FAIS'
-export const APP_VERSION = '0.2.2'
+export const APP_VERSION = '0.2.5'
 export const IPC_CHANNELS = {
   appMeta: 'app:meta',
   pythonStatus: 'python:status',
@@ -10,6 +10,7 @@ export const IPC_CHANNELS = {
   dialogOpenFile: 'dialog:openFile',
   dialogSaveFile: 'dialog:saveFile',
   dialogOpenFolder: 'dialog:openFolder',
+  readTextFile: 'dialog:readTextFile',
   // 任务桥接 / Task bridge (renderer ↔ Python WebSocket)
   taskSubmit: 'task:submit',
   taskCancel: 'task:cancel',
@@ -20,5 +21,7 @@ export const IPC_CHANNELS = {
   // pyFAI 工具 / pyFAI tools
   pyfaiCheck: 'pyfai:check',
   pyfaiLaunch: 'pyfai:launch',
-  pyfaiInstall: 'pyfai:install'
+  pyfaiInstall: 'pyfai:install',
+  pyfaiInstallDeps: 'pyfai:installDeps',
+  pyfaiExportBat: 'pyfai:exportBat'
 } as const

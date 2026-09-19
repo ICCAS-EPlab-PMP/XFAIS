@@ -330,7 +330,7 @@ def test_handle_integrate_cake_returns_displayable_traces(monkeypatch) -> None:
     def _fake_from_manual_params(**_kwargs):
         return DummyIntegrator(), 0.0, 0.0
 
-    def _fake_image_load(_path):
+    def _fake_image_load(_path, _dataset_path=None, _channel=None, _frame_index=0):
         return np.ones((4, 4), dtype=np.float32), np.zeros((4, 4), dtype=bool), {"filename": "cake.edf"}
 
     def _fake_mask_build(data, *_args, **_kwargs):
