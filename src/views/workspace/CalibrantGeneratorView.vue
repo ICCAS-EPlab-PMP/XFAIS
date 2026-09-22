@@ -7,8 +7,15 @@
 
     <div class="cg-layout">
       <aside class="cg-sidebar">
-        <!-- File selection / 文件选择 -->
-        <div class="cg-section">
+        <!-- File selection / 文件选择（支持拖放 / drop target） -->
+        <div
+          class="cg-section"
+          :class="{ 'cg-section--drop': cifDrop.isDragging.value }"
+          @dragenter="cifDrop.onDragEnter"
+          @dragover="cifDrop.onDragOver"
+          @dragleave="cifDrop.onDragLeave"
+          @drop="cifDrop.onDrop"
+        >
           <h2 class="cg-section-title">{{ t('calibrantGenerator.uploadFile') }}</h2>
           <button
             type="button"
@@ -24,6 +31,7 @@
               ×
             </button>
           </div>
+          <p class="cg-hint cg-drop-hint">{{ t('business.fileSelection.dropZoneHint') }}</p>
         </div>
 
         <!-- Intensity threshold / 强度阈值 -->
@@ -171,6 +179,7 @@ import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import PlotlyChart from '@/components/charts/PlotlyChart.vue'
 import type { PlotData, PlotLayout } from 'plotly.js-dist-min'
 import { useTransport } from '@/lib/transport'
+import { useDropZone } from '@/lib/fileDrop'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -205,8 +214,10 @@ const chartData = computed<PlotData[]>(() => {
   const xVals: number[] = []
   const yVals: number[] = []
   sorted.forEach(p => {
-    xVals.push(p.twoTheta, p.twoTheta, null)
-    yVals.push(floorVal, p.intensity, null)
+    // NaN renders as a gap in Plotly lines (stick plot separators).
+    // NaN 在 Plotly 折线中渲染为断点（棒状图分隔）。
+    xVals.push(p.twoTheta, p.twoTheta, Number.NaN)
+    yVals.push(floorVal, p.intensity, Number.NaN)
   })
   const stickTrace: PlotData = {
     x: xVals, y: yVals,
@@ -274,15 +285,8 @@ function clearFile(): void {
   errorMessage.value = ''
 }
 
-async function handleSelectFile(): Promise<void> {
-  const result = await transport.selectFiles({
-    filters: [{ name: 'CIF Files', extensions: ['cif'] }],
-    multiSelections: false,
-  })
-  if (!result) return
-  const filePath = Array.isArray(result) ? result[0] : result
-  if (!filePath) return
-
+/** Reset per-file state and set the new CIF path. */
+function applyCifPath(filePath: string): void {
   cifFilePath.value = filePath
   state.value = 'idle'
   formula.value = ''
@@ -292,6 +296,38 @@ async function handleSelectFile(): Promise<void> {
   patternTwoTheta.value = []
   patternIntensity.value = []
 }
+
+async function handleSelectFile(): Promise<void> {
+  const result = await transport.selectFiles({
+    filters: [{ name: 'CIF Files', extensions: ['cif'] }],
+    multiSelections: false,
+  })
+  if (!result) return
+  const filePath = Array.isArray(result) ? result[0] : result
+  if (!filePath) return
+  applyCifPath(filePath)
+}
+
+// Drag & drop a .cif file onto the upload section.
+const cifDrop = useDropZone({
+  transport,
+  extensions: ['cif'],
+  onDrop(resolution) {
+    if (resolution.filePaths.length > 0) {
+      applyCifPath(resolution.filePaths[0])
+      return
+    }
+    if (resolution.rejectedNames.length > 0) {
+      toast.push({
+        title: t('calibrantGenerator.selectFile'),
+        message: t('business.fileDialog.dropTypeMismatch', {
+          names: resolution.rejectedNames.join(', '),
+        }),
+        tone: 'error',
+      })
+    }
+  },
+})
 
 async function handleGenerate(): Promise<void> {
   if (!cifFilePath.value || state.value === 'running') return
@@ -476,6 +512,17 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Drop-target highlight & hint / 拖放高亮与提示 */
+.cg-section--drop {
+  border-color: var(--primary-light);
+  background: var(--primary-bg);
+}
+
+.cg-drop-hint {
+  margin: 0;
+  font-size: 0.75rem;
 }
 
 .cg-section-title {

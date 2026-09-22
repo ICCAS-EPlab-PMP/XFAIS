@@ -37,8 +37,15 @@
           </label>
         </div>
 
-        <!-- JSON config load/save / JSON 配置导入导出 -->
-        <div class="pg-panel">
+        <!-- JSON config load/save / JSON 配置导入导出（支持拖放 / drop target） -->
+        <div
+          class="pg-panel"
+          :class="{ 'pg-panel--drop': jsonDrop.isDragging.value }"
+          @dragenter="jsonDrop.onDragEnter"
+          @dragover="jsonDrop.onDragOver"
+          @dragleave="jsonDrop.onDragLeave"
+          @drop="jsonDrop.onDrop"
+        >
           <h2 class="pg-panel-title">{{ t('pngGenerate.jsonConfig.title') }}</h2>
           <div class="pg-btn-row">
             <button
@@ -59,6 +66,7 @@
               {{ t('pngGenerate.jsonConfig.save') }}
             </button>
           </div>
+          <p class="pg-drop-hint">{{ t('business.fileSelection.dropZoneHint') }}</p>
           <!-- Hidden file input for JSON import / 隐藏的 JSON 导入文件输入 -->
           <input
             ref="jsonFileInput"
@@ -334,6 +342,7 @@ import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ResultSummary from '@/components/business/ResultSummary.vue'
 import type { ResultSummaryData } from '@/components/business/ResultSummary.vue'
 import { useTransport } from '@/lib/transport'
+import { useDropZone } from '@/lib/fileDrop'
 
 // === Type definitions / 类型定义 ===
 
@@ -711,7 +720,13 @@ function onJsonFileSelected(event: Event): void {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
+  readJsonFile(file)
+  // Reset input so the same file can be re-selected / 重置输入以便可以重复选择同一文件
+  input.value = ''
+}
 
+/** Parse and apply a JSON config from a File (file picker or drag & drop). */
+function readJsonFile(file: File): void {
   const reader = new FileReader()
   reader.onload = (e) => {
     try {
@@ -731,9 +746,17 @@ function onJsonFileSelected(event: Event): void {
     }
   }
   reader.readAsText(file)
-  // Reset input so the same file can be re-selected / 重置输入以便可以重复选择同一文件
-  input.value = ''
 }
+
+// Drag & drop a .json config onto the JSON panel.
+const jsonDrop = useDropZone({
+  transport,
+  extensions: ['json'],
+  onDrop(resolution) {
+    const file = resolution.fileObjects[0]
+    if (file) readJsonFile(file)
+  },
+})
 
 /** Save JSON config to file / 将 JSON 配置保存到文件 */
 async function handleSaveJson(): Promise<void> {
@@ -826,6 +849,18 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Drop-target highlight & hint / 拖放高亮与提示 */
+.pg-panel--drop {
+  border-color: var(--primary-light);
+  background: var(--primary-bg);
+}
+
+.pg-drop-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--text-muted);
 }
 
 .pg-panel-title {

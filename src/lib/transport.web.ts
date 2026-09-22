@@ -22,6 +22,7 @@ import type {
   PyfaiCheckResult,
 } from '../types/ipc'
 import { normalizeTaskParams, adaptTaskResult } from './task-adapter'
+import { runLimited, uploadStore } from './upload'
 
 // ── Command → Route mapping ───────────────────────────────────────────────────
 
@@ -474,15 +475,25 @@ export class WebTransport implements ITransport {
 
         setTimeout(async () => {
           try {
-            const paths: string[] = []
-            for (const f of captured) {
-              const serverPath = await this.uploadFile(f)
-              if (!serverPath) {
-                throw new Error(`Upload returned empty path for: ${f.name}`)
-              }
-              paths.push(serverPath)
+            // Concurrent (bounded) uploads keep multi-file selection fast in
+            // web mode; results keep the selection order. Same-name files are
+            // chained serially to avoid racing the server's conflict-suffix
+            // naming (exists() check → write).
+            const lastByName = new Map<string, Promise<unknown>>()
+            const paths = await runLimited(
+              captured.map((f) => () => {
+                const prev = lastByName.get(f.name) ?? Promise.resolve()
+                const task = prev.then(() => this.uploadFile(f))
+                lastByName.set(f.name, task)
+                return task
+              }),
+              3,
+            )
+            const valid = paths.filter((p) => p !== '')
+            if (valid.length !== captured.length) {
+              throw new Error(`Upload returned empty path for some files`)
             }
-            resolve(paths.length === 1 ? paths[0] : paths)
+            resolve(valid.length === 1 ? valid[0] : valid)
           } catch (error) {
             reject(error instanceof Error ? error : new Error(String(error)))
           }
@@ -733,40 +744,107 @@ export class WebTransport implements ITransport {
     }
   }
 
-  async uploadFile(file: File, timeout = 15_000): Promise<string> {
-    const sessionOk = await this._waitForSession(timeout - 3_000)
+  /**
+   * Upload a file via XMLHttpRequest.
+   *
+   * fetch() was replaced with XHR because fetch cannot report upload progress,
+   * and the previous fixed 15 s AbortController timeout aborted every large
+   * upload on remote/server deployments ("很久没上传成功然后报 abort 错误").
+   * XHR + upload.onprogress gives real progress; a stalled-connection watchdog
+   * (no progress for IDLE_TIMEOUT_MS) replaces the fixed total timeout so slow
+   * but alive transfers are never aborted.
+   */
+  async uploadFile(
+    file: File,
+    onProgress?: (loaded: number, total: number) => void,
+  ): Promise<string> {
+    const sessionOk = await this._waitForSession(12_000)
     if (!sessionOk) {
       throw new Error('无法建立连接：未能获取服务器会话 ID，请检查网络连接或刷新页面重试。')
     }
 
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), timeout)
-
-    try {
+    return new Promise<string>((resolve, reject) => {
       const formData = new FormData()
       formData.append('file', file)
 
-      const response = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'X-Session-Id': this.sessionId },
-        body: formData,
-        signal: controller.signal,
-      })
+      const xhr = new XMLHttpRequest()
+      xhr.open('POST', '/api/upload')
+      xhr.responseType = 'json'
+      xhr.setRequestHeader('X-Session-Id', this.sessionId)
 
-      if (!response.ok) {
-        throw new Error(`Upload failed: ${response.status} ${response.statusText}`)
+      const uploadId = uploadStore.begin(file.name, file.size)
+
+      // Watchdog: abort only when the transfer stalls (no progress events).
+      // While the body is fully sent we still wait for the server ack, with a
+      // longer grace window for the server to finish writing the file.
+      const IDLE_TIMEOUT_MS = 60_000
+      const ACK_TIMEOUT_MS = 300_000
+      let idleTimer: number | undefined
+      let stalled = false
+      const armWatchdog = (ms: number): void => {
+        window.clearTimeout(idleTimer)
+        idleTimer = window.setTimeout(() => {
+          stalled = true
+          xhr.abort()
+        }, ms)
       }
 
-      const data = await response.json() as Record<string, unknown>
-      const files = Array.isArray(data.files) ? data.files : []
-      if (files.length === 0) {
-        throw new Error('Upload returned no files')
+      xhr.upload.onprogress = (event): void => {
+        uploadStore.progress(uploadId, event.loaded, event.total)
+        onProgress?.(event.loaded, event.total)
+        armWatchdog(event.loaded >= event.total ? ACK_TIMEOUT_MS : IDLE_TIMEOUT_MS)
       }
-      const firstFile = files[0] as Record<string, unknown>
-      return typeof firstFile.path === 'string' ? firstFile.path : ''
-    } finally {
-      clearTimeout(timer)
-    }
+
+      const settle = (): void => {
+        window.clearTimeout(idleTimer)
+      }
+
+      xhr.onload = (): void => {
+        settle()
+        const status = xhr.status
+        const body = xhr.response as Record<string, unknown> | null
+        if (status >= 200 && status < 300) {
+          const files = body && Array.isArray(body.files) ? body.files : []
+          const firstFile = files[0] as Record<string, unknown> | undefined
+          const path = firstFile && typeof firstFile.path === 'string' ? firstFile.path : ''
+          if (!path) {
+            uploadStore.fail(uploadId, '服务器未返回上传路径')
+            reject(new Error('Upload returned no files'))
+            return
+          }
+          uploadStore.complete(uploadId)
+          resolve(path)
+          return
+        }
+        const serverError =
+          body && typeof body.error === 'string' ? body.error : xhr.statusText
+        const hint = status === 413
+          ? '（文件可能超过服务器上传大小限制，请调大 Nginx client_max_body_size）'
+          : ''
+        const message = `上传失败（HTTP ${status}）：${serverError}${hint}`
+        uploadStore.fail(uploadId, message)
+        reject(new Error(message))
+      }
+
+      xhr.onerror = (): void => {
+        settle()
+        const message = '网络错误，上传中断：请检查与服务器之间的网络连接后重试。'
+        uploadStore.fail(uploadId, message)
+        reject(new Error(message))
+      }
+
+      xhr.onabort = (): void => {
+        settle()
+        const message = stalled
+          ? `上传超时：连接超过 ${IDLE_TIMEOUT_MS / 1000} 秒没有任何进展，已中止。请检查网络后重试。`
+          : '上传已取消。'
+        uploadStore.fail(uploadId, message)
+        reject(new Error(message))
+      }
+
+      armWatchdog(IDLE_TIMEOUT_MS)
+      xhr.send(formData)
+    })
   }
 
   async downloadFile(serverPath: string, filename: string): Promise<void> {

@@ -1,6 +1,6 @@
 import { inject, type InjectionKey, reactive } from 'vue'
 
-export type ToastTone = 'info' | 'success' | 'error'
+export type ToastTone = 'info' | 'success' | 'error' | 'warning'
 
 export interface ToastItem {
   id: number

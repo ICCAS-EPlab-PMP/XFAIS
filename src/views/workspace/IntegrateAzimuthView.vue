@@ -198,8 +198,15 @@
 
       <!-- ===== Main area / 主区域 ===== -->
       <main class="az-main">
-        <!-- File selection / 文件选择 -->
-        <div class="az-file-section">
+        <!-- File selection / 文件选择（支持拖放 / drop target） -->
+        <div
+          class="az-file-section"
+          :class="{ 'az-file-section--drop': fileDrop.isDragging.value }"
+          @dragenter="fileDrop.onDragEnter"
+          @dragover="fileDrop.onDragOver"
+          @dragleave="fileDrop.onDragLeave"
+          @drop="fileDrop.onDrop"
+        >
           <h2 class="az-section-title">{{ t('integrate1d.dataFiles') }}</h2>
           <div class="az-file-buttons">
             <button
@@ -246,6 +253,9 @@
           </div>
           <div v-else class="az-file-info az-file-info--muted">
             <span>{{ t('business.fileSelection.noFiles') }}</span>
+          </div>
+          <div class="az-file-info az-file-info--muted az-drop-hint">
+            <span>{{ t('business.fileSelection.dropZoneHint') }}</span>
           </div>
         </div>
 
@@ -411,6 +421,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
 import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } from '@/lib/chart-utils'
 import type { ColormapName } from '@/lib/chart-utils'
@@ -790,13 +801,8 @@ async function resolveBeamCenter(): Promise<void> {
 
 // ── File handlers / 文件处理 ──
 
-async function handleChooseFiles(): Promise<void> {
-  const result = await transport.selectFiles({
-    filters: dataFileFilters,
-    multiSelections: true,
-  })
-  if (!result) return
-  const paths = Array.isArray(result) ? result : [result]
+/** Apply a batch of selected file paths honoring the replace/append import mode. */
+async function applySelectedFilePaths(paths: string[]): Promise<void> {
   if (importMode.value === 'append') {
     const existingSet = new Set(files.value)
     const newFiles = paths.filter(p => !existingSet.has(p))
@@ -813,12 +819,32 @@ async function handleChooseFiles(): Promise<void> {
   loadThumbnailPageIfExpanded()
 }
 
+async function handleChooseFiles(): Promise<void> {
+  const result = await transport.selectFiles({
+    filters: dataFileFilters,
+    multiSelections: true,
+  })
+  if (!result) return
+  await applySelectedFilePaths(Array.isArray(result) ? result : [result])
+}
+
 async function handleImportFolder(): Promise<void> {
   const folder = await transport.selectFolder()
   if (!folder) return
   importFolderPath.value = folder
   await rescanFolder()
 }
+
+// Drag & drop onto the file section mirrors the two buttons above.
+const fileDrop = createImportDropZone({
+  transport,
+  extensions: () => extensionsFromFilters(dataFileFilters),
+  onFiles: (paths) => applySelectedFilePaths(paths),
+  onFolder: (folder) => {
+    importFolderPath.value = folder
+    void rescanFolder()
+  },
+})
 
 async function rescanFolder(): Promise<void> {
   if (!importFolderPath.value) return
@@ -1478,6 +1504,16 @@ onUnmounted(() => {
   font-weight: 600;
   margin: 0 0 10px;
   color: var(--text-primary);
+}
+
+/* Drop-target highlight & hint / 拖放高亮与提示 */
+.az-file-section--drop {
+  border-color: var(--primary-light);
+  background: var(--primary-bg);
+}
+
+.az-drop-hint span {
+  font-size: 0.75rem;
 }
 
 /* ── File section (1D-style) / 文件选择区（1D风格） ── */

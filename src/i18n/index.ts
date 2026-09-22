@@ -12,3 +12,7 @@ const i18n = createI18n({
 })
 
 export default i18n
+
+/** Global translate usable outside components (lib helpers, drop-zone toasts). */
+export const globalT = (key: string, named?: Record<string, unknown>): string =>
+  i18n.global.t(key, named ?? {})

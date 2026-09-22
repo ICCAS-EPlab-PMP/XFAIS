@@ -6,7 +6,16 @@
       <span class="fd-placeholder">{{ t('business.fileDialog.noSelection') }}</span>
     </div>
   </div>
-  <div v-else :data-testid="testIds.fileDialogButton" class="file-dialog-button">
+  <div
+    v-else
+    :data-testid="testIds.fileDialogButton"
+    class="file-dialog-button"
+    :class="{ 'file-dialog-button--drop': dropZone.isDragging.value }"
+    @dragenter="dropZone.onDragEnter"
+    @dragover="dropZone.onDragOver"
+    @dragleave="dropZone.onDragLeave"
+    @drop="dropZone.onDrop"
+  >
     <label class="fd-label">{{ label ?? t('business.fileDialog.chooseFile') }}</label>
     <div class="fd-row">
       <button
@@ -25,6 +34,9 @@
       >
         {{ displayName }}
       </span>
+      <span v-else-if="dropZone.isDragging.value" class="fd-placeholder fd-placeholder--drop">
+        {{ t('business.fileDialog.dropHint') }}
+      </span>
       <span v-else class="fd-placeholder">{{ placeholder ?? t('business.fileDialog.noSelection') }}</span>
       <button
         v-if="modelValue"
@@ -42,13 +54,16 @@
 <script setup lang="ts">
 /**
  * FileDialogButton.vue — 文件/文件夹选择按钮，通过 transport 层支持 Electron 和 Web 模式
- * File/folder selection button via transport layer (Electron + Web)
+ * File/folder selection button via transport layer (Electron + Web).
+ * Also acts as a drop target: drag a file/folder onto it to fill in the path.
+ * 同时支持拖放：将文件/文件夹拖到组件上即可填入路径。
  */
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
 import { useToast } from '@/lib/toast'
+import { extensionsFromFilters, shortenNames, useDropZone } from '@/lib/fileDrop'
 
 export type FileDialogMode = 'openFile' | 'saveFile' | 'openFolder'
 
@@ -132,6 +147,62 @@ async function handleOpen(): Promise<void> {
   }
 }
 
+// Drag-and-drop: openFile accepts a dropped file, openFolder a dropped folder.
+// saveFile keeps click-only behavior (drop there would be ambiguous).
+const dropZone = useDropZone({
+  transport,
+  extensions: () => extensionsFromFilters(props.filters),
+  onDrop(resolution) {
+    if (props.mode === 'openFolder') {
+      if (resolution.folderPath) {
+        emit('update:modelValue', resolution.folderPath)
+        if (resolution.folderCount > 1) {
+          toast.push({
+            title: t('business.fileDialog.chooseFolder'),
+            message: t('business.fileSelection.dropIgnoredFolders', { count: resolution.folderCount - 1 }),
+            tone: 'info',
+          })
+        }
+        return
+      }
+      if (resolution.folderCount > 0) {
+        toast.push({
+          title: t('business.fileDialog.chooseFolder'),
+          message: t('business.fileDialog.dropFolderWebUnsupported'),
+          tone: 'error',
+        })
+        return
+      }
+      toast.push({
+        title: t('business.fileDialog.chooseFolder'),
+        message: t('business.fileDialog.dropOnlyFolder'),
+        tone: 'error',
+      })
+      return
+    }
+
+    if (resolution.filePaths.length > 0) {
+      emit('update:modelValue', resolution.filePaths[0])
+      return
+    }
+    if (resolution.rejectedNames.length > 0) {
+      toast.push({
+        title: t('business.fileDialog.chooseFile'),
+        message: t('business.fileDialog.dropTypeMismatch', {
+          names: shortenNames(resolution.rejectedNames),
+        }),
+        tone: 'error',
+      })
+      return
+    }
+    toast.push({
+      title: t('business.fileDialog.chooseFile'),
+      message: t('business.fileDialog.dropOnlyFile'),
+      tone: 'error',
+    })
+  },
+})
+
 function handleClear(): void {
   emit('update:modelValue', null)
 }
@@ -142,6 +213,14 @@ function handleClear(): void {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  border-radius: var(--radius-md);
+  padding: 2px;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.file-dialog-button--drop {
+  background: var(--primary-bg);
+  box-shadow: 0 0 0 2px var(--primary-light);
 }
 
 .fd-label {
@@ -189,6 +268,11 @@ function handleClear(): void {
   font-size: 0.8125rem;
   color: var(--text-muted);
   font-style: italic;
+}
+
+.fd-placeholder--drop {
+  color: var(--primary);
+  font-weight: 600;
 }
 
 .fd-clear {

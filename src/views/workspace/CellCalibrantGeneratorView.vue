@@ -25,9 +25,16 @@
 
     <div class="cg-layout">
       <aside class="cg-sidebar">
-        <!-- ── CIF mode / CIF 文件模式 ── -->
+        <!-- ── CIF mode / CIF 文件模式（支持拖放 / drop target） ── -->
         <template v-if="mode === 'cif'">
-          <div class="cg-section">
+          <div
+            class="cg-section"
+            :class="{ 'cg-section--drop': cifDrop.isDragging.value }"
+            @dragenter="cifDrop.onDragEnter"
+            @dragover="cifDrop.onDragOver"
+            @dragleave="cifDrop.onDragLeave"
+            @drop="cifDrop.onDrop"
+          >
             <h2 class="cg-section-title">{{ t('calibrantGenerator.uploadFile') }}</h2>
             <button
               type="button"
@@ -41,6 +48,7 @@
               <span class="cg-file-name">{{ cifFileName }}</span>
               <button type="button" class="cg-clear-btn" @click="clearCifFile">×</button>
             </div>
+            <p class="cg-hint cg-drop-hint">{{ t('business.fileSelection.dropZoneHint') }}</p>
           </div>
 
           <div class="cg-section">
@@ -360,8 +368,9 @@ import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import PlotlyChart from '@/components/charts/PlotlyChart.vue'
-import type { PlotData as PlotlyData, Layout as PlotlyLayout } from 'plotly.js-dist-min'
+import type { PlotData as PlotlyData, PlotLayout as PlotlyLayout } from 'plotly.js-dist-min'
 import { useTransport } from '@/lib/transport'
+import { useDropZone } from '@/lib/fileDrop'
 
 const { t } = useI18n()
 const toast = useToast()
@@ -493,7 +502,7 @@ const paramGamma = ref(90)
 const allSpaceGroups = ref<SpaceGroup[]>([])
 const sgLoaded = ref(false)
 const spaceGroupsLoading = ref(true)
-const peaks = ref<Array<{ dSpacing: number; hkl: string; multiplicity: number }>>([])
+const peaks = ref<Array<{ dSpacing: number; intensity: number; twoTheta: number; hkl: string; multiplicity: number }>>([])
 const dFileContent = ref('')
 
 // Combobox state / 组合框状态
@@ -519,8 +528,10 @@ const chartData = computed<PlotlyData[]>(() => {
   const xVals: number[] = []
   const yVals: number[] = []
   sorted.forEach(p => {
-    xVals.push(p.twoTheta, p.twoTheta, null)
-    yVals.push(floorVal, p.intensity, null)
+    // NaN renders as a gap in Plotly lines (stick plot separators).
+    // NaN 在 Plotly 折线中渲染为断点（棒状图分隔）。
+    xVals.push(p.twoTheta, p.twoTheta, Number.NaN)
+    yVals.push(floorVal, p.intensity, Number.NaN)
   })
   const stickTrace: PlotlyData = {
     x: xVals, y: yVals,
@@ -696,6 +707,28 @@ async function handleSelectCifFile(): Promise<void> {
   clearCifResults()
 }
 
+// Drag & drop a .cif file onto the upload section.
+const cifDrop = useDropZone({
+  transport,
+  extensions: ['cif'],
+  onDrop(resolution) {
+    if (resolution.filePaths.length > 0) {
+      cifFilePath.value = resolution.filePaths[0]
+      clearCifResults()
+      return
+    }
+    if (resolution.rejectedNames.length > 0) {
+      toast.push({
+        title: t('calibrantGenerator.selectFile'),
+        message: t('business.fileDialog.dropTypeMismatch', {
+          names: resolution.rejectedNames.join(', '),
+        }),
+        tone: 'error',
+      })
+    }
+  },
+})
+
 function clearCifFile(): void {
   cifFilePath.value = null
   clearCifResults()
@@ -815,7 +848,7 @@ async function handleGenerate(): Promise<void> {
     cleanupResult = transport.onTaskResult(response.taskId, (payload) => {
       const data = payload.data as {
         status?: string
-        peaks?: Array<{ dSpacing: number; hkl: string; multiplicity: number }>
+        peaks?: Array<{ dSpacing: number; intensity: number; twoTheta: number; hkl: string; multiplicity: number }>
         dFileContent?: string
         peaksCount?: number
         message?: string
@@ -886,7 +919,7 @@ async function handleManualGenerate(): Promise<void> {
     cleanupResult = transport.onTaskResult(response.taskId, (payload) => {
       const data = payload.data as {
         status?: string
-        peaks?: Array<{ dSpacing: number; hkl: string; multiplicity: number }>
+        peaks?: Array<{ dSpacing: number; intensity: number; twoTheta: number; hkl: string; multiplicity: number }>
         dFileContent?: string
         peaksCount?: number
         message?: string
@@ -1115,6 +1148,17 @@ onUnmounted(() => { cleanupListeners() })
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* Drop-target highlight & hint / 拖放高亮与提示 */
+.cg-section--drop {
+  border-color: var(--primary-light);
+  background: var(--primary-bg);
+}
+
+.cg-drop-hint {
+  margin: 0;
+  font-size: 0.75rem;
 }
 
 .cg-section-title {

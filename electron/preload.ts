@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { IPC_CHANNELS } from './constants'
 import type {
   DialogOpenFileOptions,
@@ -33,6 +33,9 @@ const desktopApi = {
   getAppMeta: (): Promise<DesktopAppMeta> => ipcRenderer.invoke(IPC_CHANNELS.appMeta) as Promise<DesktopAppMeta>,
   readTextFile: (filePath: string): Promise<string> =>
     ipcRenderer.invoke(IPC_CHANNELS.readTextFile, filePath) as Promise<string>,
+  // Resolve the absolute path of a dragged-in File (File.path was removed in Electron 32+).
+  // 解析拖入 File 对象的绝对路径（Electron 32+ 已移除 File.path）。
+  getPathForFile: (file: File): string => webUtils.getPathForFile(file),
   dialog: {
     openFile: (options?: DialogOpenFileOptions): Promise<DialogOpenFileResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.dialogOpenFile, options) as Promise<DialogOpenFileResult>,

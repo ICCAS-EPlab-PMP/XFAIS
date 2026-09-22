@@ -1,6 +1,6 @@
 {
   "name": "x-fais-electron",
-  "version": "0.2.4",
+  "version": "0.2.6",
   "private": true,
   "type": "module",
   "main": "dist-electron/main/index.js",
@@ -116,7 +116,8 @@
     "nsis": {
       "artifactName": "${productName}-${version}-setup-${arch}.${ext}",
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "include": "build/installer.nsh"
     },
     "portable": {
       "artifactName": "${productName}-${version}-portable-${arch}.${ext}"

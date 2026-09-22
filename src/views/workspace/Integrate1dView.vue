@@ -88,8 +88,15 @@
 
         <!-- ===== Main area / 主区域 ===== -->
         <main class="i1d-main">
-          <!-- File selection / 文件选择 -->
-          <div class="i1d-file-section">
+          <!-- File selection / 文件选择（支持拖放 / drop target） -->
+          <div
+            class="i1d-file-section"
+            :class="{ 'i1d-file-section--drop': fileDrop.isDragging.value }"
+            @dragenter="fileDrop.onDragEnter"
+            @dragover="fileDrop.onDragOver"
+            @dragleave="fileDrop.onDragLeave"
+            @drop="fileDrop.onDrop"
+          >
             <h2 class="i1d-section-title">{{ t('integrate1d.dataFiles') }}</h2>
             <div class="i1d-file-buttons">
               <button
@@ -136,6 +143,9 @@
             </div>
             <div v-else class="i1d-file-info i1d-file-info--muted">
               <span>{{ t('business.fileSelection.noFiles') }}</span>
+            </div>
+            <div class="i1d-file-info i1d-file-info--muted i1d-drop-hint">
+              <span>{{ t('business.fileSelection.dropZoneHint') }}</span>
             </div>
           </div>
 
@@ -274,6 +284,7 @@
             :x-unit="xAxisUnit"
             y-unit="a.u."
             :title="t('integrate1d.chartTitle')"
+            y-scale-toggle
           />
         </div>
 
@@ -302,6 +313,7 @@ import { ref, reactive, computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
 import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } from '@/lib/chart-utils'
 import type { ColormapName } from '@/lib/chart-utils'
@@ -685,13 +697,8 @@ function isValidCurve(result: IntegrationResultItem): boolean {
 
 // === File handlers / 文件处理 ===
 
-async function handleChooseFiles(): Promise<void> {
-  const result = await transport.selectFiles({
-    filters: dataFileFilters,
-    multiSelections: true,
-  })
-  if (!result) return
-  const paths = Array.isArray(result) ? result : [result]
+/** Apply a batch of selected file paths honoring the replace/append import mode. */
+async function applySelectedFilePaths(paths: string[]): Promise<void> {
   if (importMode.value === 'append') {
     // Append mode: add new files to existing list, deduplicate
     const existingSet = new Set(files.value)
@@ -710,12 +717,32 @@ async function handleChooseFiles(): Promise<void> {
   loadThumbnailPageIfExpanded()
 }
 
+async function handleChooseFiles(): Promise<void> {
+  const result = await transport.selectFiles({
+    filters: dataFileFilters,
+    multiSelections: true,
+  })
+  if (!result) return
+  await applySelectedFilePaths(Array.isArray(result) ? result : [result])
+}
+
 async function handleImportFolder(): Promise<void> {
   const folder = await transport.selectFolder()
   if (!folder) return
   importFolderPath.value = folder
   await rescanFolder()
 }
+
+// Drag & drop onto the file section mirrors the two buttons above.
+const fileDrop = createImportDropZone({
+  transport,
+  extensions: () => extensionsFromFilters(dataFileFilters),
+  onFiles: (paths) => applySelectedFilePaths(paths),
+  onFolder: (folder) => {
+    importFolderPath.value = folder
+    void rescanFolder()
+  },
+})
 
 async function rescanFolder(): Promise<void> {
   if (!importFolderPath.value) return
@@ -1057,7 +1084,7 @@ async function handleRun(): Promise<void> {
       resultCurves.value = validResults.map((r) => ({
           x: r.radial,
           y: r.intensity,
-          name: r.label || (r as Record<string, unknown>).filename as string || '',
+          name: r.label || (r as unknown as Record<string, unknown>).filename as string || '',
         }))
       resultData.value = validResults
       taskId.value = null
@@ -1282,6 +1309,16 @@ onUnmounted(() => {
   font-weight: 600;
   margin: 0 0 10px;
   color: var(--text-primary);
+}
+
+/* Drop-target highlight & hint / 拖放高亮与提示 */
+.i1d-file-section--drop {
+  border-color: var(--primary-light);
+  background: var(--primary-bg);
+}
+
+.i1d-drop-hint span {
+  font-size: 0.75rem;
 }
 
 /* File section / 文件选择区 */
