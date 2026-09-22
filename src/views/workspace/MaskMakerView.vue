@@ -1,5 +1,12 @@
 <template>
-  <div class="mask-maker-view">
+  <div
+    class="mask-maker-view"
+    :class="{ 'mask-maker-view--drop': fileDrop.isDragging.value }"
+    @dragenter="fileDrop.onDragEnter"
+    @dragover="fileDrop.onDragOver"
+    @dragleave="fileDrop.onDragLeave"
+    @drop="fileDrop.onDrop"
+  >
     <!-- Left: Toolbar -->
     <MaskToolbar
       :image-loaded="imageLoaded"
@@ -67,6 +74,7 @@ import { ref, computed, onBeforeUnmount, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTransport } from '@/lib/transport'
 import { useToast } from '@/lib/toast'
+import { matchesExtensions, useDropZone } from '@/lib/fileDrop'
 import { MaskStore } from '@/lib/mask/mask-store'
 import type {
   MaskTool,
@@ -196,13 +204,7 @@ async function openImage(): Promise<void> {
     const filePath = Array.isArray(result) ? result[0] : result
     if (!filePath) return
 
-    // Reset display caches for a fresh file so the new image's auto-contrast
-    // seeds the manual clim values rather than reusing the previous file's.
-    // 为新文件重置显示缓存，使新图像的自动对比度作为手动 clim 初值。
-    climInitialized.value = false
-    autoContrast.value = null
-
-    await loadImage(filePath)
+    await openImagePath(filePath)
   } catch (err) {
     toast.push({
       title: t('maskMaker.errors.openFailed'),
@@ -210,6 +212,17 @@ async function openImage(): Promise<void> {
       tone: 'error',
     })
   }
+}
+
+/** Open a specific image path (shared by toolbar button and drag & drop). */
+async function openImagePath(filePath: string): Promise<void> {
+  // Reset display caches for a fresh file so the new image's auto-contrast
+  // seeds the manual clim values rather than reusing the previous file's.
+  // 为新文件重置显示缓存，使新图像的自动对比度作为手动 clim 初值。
+  climInitialized.value = false
+  autoContrast.value = null
+
+  await loadImage(filePath)
 }
 
 async function loadImage(filePath: string): Promise<void> {
@@ -482,39 +495,7 @@ async function loadMask(): Promise<void> {
     const filePath = Array.isArray(result) ? result[0] : result
     if (!filePath) return
 
-    const { taskId } = await transport.submitTask('mask_maker', {
-      action: 'load_mask',
-      file_path: filePath,
-    })
-
-    transport.onTaskResult(taskId, (result) => {
-      const data = result.data as MaskLoadResponse
-      if (data.mask_data) {
-        const bytes = base64ToUint8Array(data.mask_data)
-
-        if (store.value) {
-          store.value.loadMask(bytes, [data.shape[0], data.shape[1]])
-        } else {
-          store.value = new MaskStore(data.shape[0], data.shape[1])
-          store.value.loadMask(bytes, [data.shape[0], data.shape[1]])
-        }
-        maskVersion.value++
-
-        toast.push({
-          title: t('maskMaker.messages.maskLoaded'),
-          message: `${data.shape[0]} × ${data.shape[1]}`,
-          tone: 'success',
-        })
-      }
-    })
-
-    transport.onTaskError(taskId, (err) => {
-      toast.push({
-        title: t('maskMaker.errors.loadMaskFailed'),
-        message: err.error,
-        tone: 'error',
-      })
-    })
+    await loadMaskPath(filePath)
   } catch (err) {
     toast.push({
       title: t('maskMaker.errors.loadMaskFailed'),
@@ -523,6 +504,73 @@ async function loadMask(): Promise<void> {
     })
   }
 }
+
+/** Load a mask from a specific path (shared by toolbar button and drag & drop). */
+async function loadMaskPath(filePath: string): Promise<void> {
+  const { taskId } = await transport.submitTask('mask_maker', {
+    action: 'load_mask',
+    file_path: filePath,
+  })
+
+  transport.onTaskResult(taskId, (result) => {
+    const data = result.data as MaskLoadResponse
+    if (data.mask_data) {
+      const bytes = base64ToUint8Array(data.mask_data)
+
+      if (store.value) {
+        store.value.loadMask(bytes, [data.shape[0], data.shape[1]])
+      } else {
+        store.value = new MaskStore(data.shape[0], data.shape[1])
+        store.value.loadMask(bytes, [data.shape[0], data.shape[1]])
+      }
+      maskVersion.value++
+
+      toast.push({
+        title: t('maskMaker.messages.maskLoaded'),
+        message: `${data.shape[0]} × ${data.shape[1]}`,
+        tone: 'success',
+      })
+    }
+  })
+
+  transport.onTaskError(taskId, (err) => {
+    toast.push({
+      title: t('maskMaker.errors.loadMaskFailed'),
+      message: err.error,
+      tone: 'error',
+    })
+  })
+}
+
+// Drag & drop anywhere on the mask maker: mask-only formats (.npy/.npz/.msk)
+// load as a mask; image formats open as the working image.
+const MASK_ONLY_EXTENSIONS = ['npy', 'npz', 'msk']
+
+const fileDrop = useDropZone({
+  transport,
+  extensions: ['edf', 'tif', 'tiff', 'h5', 'hdf5', ...MASK_ONLY_EXTENSIONS],
+  onDrop(resolution) {
+    const path = resolution.filePaths[0]
+    if (!path) return
+    if (matchesExtensions(path, MASK_ONLY_EXTENSIONS)) {
+      loadMaskPath(path).catch((err: unknown) => {
+        toast.push({
+          title: t('maskMaker.errors.loadMaskFailed'),
+          message: err instanceof Error ? err.message : String(err),
+          tone: 'error',
+        })
+      })
+      return
+    }
+      openImagePath(path).catch((err: unknown) => {
+        toast.push({
+          title: t('maskMaker.errors.openFailed'),
+          message: err instanceof Error ? err.message : String(err),
+          tone: 'error',
+        })
+      })
+  },
+})
 
 // ── Export mask ───────────────────────────────────────────────────────────────
 
@@ -587,6 +635,12 @@ function base64ToUint8Array(b64: string): Uint8Array {
   gap: 16px;
   height: calc(100vh - 200px);
   min-height: 500px;
+}
+
+/* Drop-target highlight / 拖放高亮 */
+.mask-maker-view--drop {
+  box-shadow: inset 0 0 0 3px var(--primary-light);
+  border-radius: var(--radius-md);
 }
 
 .mc-center {

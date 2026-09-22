@@ -26,7 +26,12 @@
 
         <!-- Image-mode inputs / 图像模式输入 -->
         <template v-if="inputMode === 'image'">
-          <div class="or-card">
+          <div class="or-card or-card--files" :class="{ 'or-card--drop': fileDrop.isDragging.value }"
+            @dragenter="fileDrop.onDragEnter"
+            @dragover="fileDrop.onDragOver"
+            @dragleave="fileDrop.onDragLeave"
+            @drop="fileDrop.onDrop"
+          >
             <h3 class="or-card-title">{{ t('orientationAnalysis.selectFile') }}</h3>
             <!-- Multi-file batch selection (same experimental conditions) -->
             <!-- 多文件批量选择（同一实验条件） -->
@@ -38,6 +43,7 @@
                 {{ t('orientationAnalysis.files.clear') }}
               </button>
             </div>
+            <p class="or-hint or-hint--drop">{{ t('business.fileSelection.dropZoneHint') }}</p>
             <p v-if="files.length" class="or-hint">
               {{ t('orientationAnalysis.files.count', { n: files.length }) }}
             </p>
@@ -460,6 +466,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
 import GeometryForm from '@/components/business/GeometryForm.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
@@ -693,6 +700,15 @@ function fmt(v: number | null): string {
 
 // ── File list management / 文件列表管理 ──
 
+/** Add file paths to the batch list (deduplicated, last batch becomes the selection). */
+function addFilePaths(picked: string[]): void {
+  const existing = new Set(files.value)
+  const added = picked.filter(p => p && !existing.has(p))
+  if (!added.length) return
+  files.value = [...files.value, ...added]
+  selectedFileIndex.value = files.value.length - added.length
+}
+
 async function handleAddFiles(): Promise<void> {
   try {
     const result = await transport.selectFiles({
@@ -700,16 +716,26 @@ async function handleAddFiles(): Promise<void> {
       multiSelections: true,
     })
     if (!result) return
-    const picked = Array.isArray(result) ? result : [result]
-    const existing = new Set(files.value)
-    const added = picked.filter(p => p && !existing.has(p))
-    if (!added.length) return
-    files.value = [...files.value, ...added]
-    selectedFileIndex.value = files.value.length - added.length
+    addFilePaths(Array.isArray(result) ? result : [result])
   } catch (err) {
     toast.push({ title: t('orientationAnalysis.errorTitle'), message: String(err), tone: 'error' })
   }
 }
+
+// Drag & drop onto the file card mirrors the add-files button. This view has
+// no folder-import flow, so a dropped folder gets an explanatory toast.
+const fileDrop = createImportDropZone({
+  transport,
+  extensions: () => extensionsFromFilters(dataFileFilters),
+  onFiles: (paths) => addFilePaths(paths),
+  onFolder: () => {
+    toast.push({
+      title: t('orientationAnalysis.selectFile'),
+      message: t('business.fileDialog.dropOnlyFile'),
+      tone: 'error',
+    })
+  },
+})
 
 function removeFile(idx: number): void {
   files.value.splice(idx, 1)
@@ -1161,6 +1187,17 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Drop-target highlight & hint / 拖放高亮与提示 */
+.or-card--drop {
+  border-color: var(--primary-light);
+  background: var(--primary-bg);
+}
+
+.or-hint--drop {
+  font-size: 0.75rem;
+  margin: 0;
 }
 .or-details > summary { cursor: pointer; font-weight: 600; }
 .or-card-title { margin: 0; font-size: 0.95rem; font-weight: 600; }

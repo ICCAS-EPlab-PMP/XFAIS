@@ -59,6 +59,10 @@ const store = useToast()
   border-color: rgba(16, 185, 129, 0.24);
 }
 
+.toast-card.tone-warning {
+  border-color: rgba(245, 158, 11, 0.35);
+}
+
 .toast-close {
   align-self: flex-start;
   border: none;

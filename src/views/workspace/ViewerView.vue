@@ -9,8 +9,15 @@
     <div class="vw-layout">
       <!-- Sidebar: controls / 侧边栏：控制面板 -->
       <aside class="vw-sidebar">
-        <!-- File selection / 文件选择 -->
-        <div class="vw-card">
+        <!-- File selection / 文件选择（支持拖放 / drop target） -->
+        <div
+          class="vw-card"
+          :class="{ 'vw-card--drop': fileDrop.isDragging.value }"
+          @dragenter="fileDrop.onDragEnter"
+          @dragover="fileDrop.onDragOver"
+          @dragleave="fileDrop.onDragLeave"
+          @drop="fileDrop.onDrop"
+        >
           <h3 class="vw-card-title">{{ t('viewer.fileSection') }}</h3>
           <div class="vw-file-actions">
             <button
@@ -54,6 +61,9 @@
             </span>
             <span v-else class="vw-file-summary vw-file-summary--muted">
               No files selected
+            </span>
+            <span class="vw-file-summary vw-file-summary--muted vw-drop-hint">
+              {{ t('business.fileSelection.dropZoneHint') }}
             </span>
           </div>
 
@@ -574,6 +584,7 @@ import { ref, computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
 import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
 
@@ -1075,19 +1086,22 @@ function onSyncToggle(value: boolean): void {
   }
 }
 
-async function handleChooseFiles(): Promise<void> {
-  const result = await transport.selectFiles({ filters: fileFilters, multiSelections: true })
-  if (!result) return
+/** Apply a batch of selected file paths honoring the replace/append import mode. */
+function applySelectedFilePaths(paths: string[]): Promise<void> {
   importFolder.value = null
   importRecursive.value = false
-  const paths = Array.isArray(result) ? result : [result]
   if (importMode.value === 'append') {
     const existingSet = new Set(selectedFiles.value)
     const newFiles = paths.filter(p => !existingSet.has(p))
-    await handleFileBatchSelected([...selectedFiles.value, ...newFiles])
-  } else {
-    await handleFileBatchSelected(paths)
+    return handleFileBatchSelected([...selectedFiles.value, ...newFiles])
   }
+  return handleFileBatchSelected(paths)
+}
+
+async function handleChooseFiles(): Promise<void> {
+  const result = await transport.selectFiles({ filters: fileFilters, multiSelections: true })
+  if (!result) return
+  await applySelectedFilePaths(Array.isArray(result) ? result : [result])
 }
 
 async function handleImportFolder(): Promise<void> {
@@ -1096,6 +1110,19 @@ async function handleImportFolder(): Promise<void> {
   importFolder.value = folder
   await rescanImportFolder()
 }
+
+// Drag & drop onto the file-selection card behaves like the buttons above:
+// dropped files go through applySelectedFilePaths, a dropped folder through
+// the import-folder rescan flow.
+const fileDrop = createImportDropZone({
+  transport,
+  extensions: () => extensionsFromFilters(fileFilters),
+  onFiles: (paths) => applySelectedFilePaths(paths),
+  onFolder: (folder) => {
+    importFolder.value = folder
+    void rescanImportFolder()
+  },
+})
 
 async function rescanImportFolder(): Promise<void> {
   if (!importFolder.value) return
@@ -2113,6 +2140,16 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Drop-target highlight / 拖放高亮 */
+.vw-card--drop {
+  border-color: var(--primary-light);
+  background: var(--primary-bg);
+}
+
+.vw-drop-hint {
+  font-size: 0.75rem;
 }
 
 .vw-file-actions {

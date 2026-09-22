@@ -73,6 +73,7 @@
     </main>
 
     <GlobalToastHost />
+    <UploadProgressHost />
   </div>
 </template>
 
@@ -81,6 +82,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import GlobalToastHost from '@/components/GlobalToastHost.vue'
+import UploadProgressHost from '@/components/UploadProgressHost.vue'
 
 import { localeStorageKey } from '@/i18n/messages'
 import { testIds } from '@/lib/testIds'

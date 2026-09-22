@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.2.5'
+      version: 'v0.2.6'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.2.5',
+      kicker: '桌面集成版 v0.2.6',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -153,7 +153,7 @@ export const messages = {
         },
         lamellar: {
           title: 'SAXS 片晶结构分析',
-          description: '由 I(q) 提取长周期与片晶厚度：Bragg 峰法与一维相关函数（γ₁）法，支持图像积分或导入曲线'
+          description: '由 I(q) 提取长周期与片晶厚度：一维相关函数（γ₁）法，逐步展示 q²I(q)、γ₁ 与切线斜率，支持批量处理'
         },
         poniImporter: {
           title: 'PONI 文件转化',
@@ -319,6 +319,9 @@ export const messages = {
     toast: {
       close: '关闭'
     },
+    upload: {
+      complete: '上传完成'
+    },
     integrate1d: {
       title: '1D 径向积分',
       subtitle: '使用 pyFAI 对探测器图像执行批量一维径向平均积分。',
@@ -379,7 +382,9 @@ export const messages = {
         showAxes: '显示坐标轴',
         showColorbar: '显示色标',
         chartLine: '线图',
-        chartPoints: '点图'
+        chartPoints: '点图',
+        yLog: '对数',
+        yLinear: '线性'
       },
       fileTypes: {
         title: '文件类型过滤'
@@ -573,7 +578,12 @@ export const messages = {
         saveFile: '保存文件',
         chooseFolder: '选择文件夹',
         noSelection: '未选择文件',
-        uploadFailed: '上传失败'
+        uploadFailed: '上传失败',
+        dropHint: '松开以填入',
+        dropOnlyFile: '请拖入文件（不支持文件夹）',
+        dropOnlyFolder: '请拖入文件夹',
+        dropTypeMismatch: '不支持的文件类型：{names}',
+        dropFolderWebUnsupported: '网页模式不支持拖入文件夹'
       },
       fileSelection: {
         selectFiles: '选择文件',
@@ -587,7 +597,10 @@ export const messages = {
         replace: '替换',
         append: '追加',
         replaceTooltip: '清除现有文件列表，仅使用新选择的文件',
-        appendTooltip: '将新选择的文件追加到现有文件列表中'
+        appendTooltip: '将新选择的文件追加到现有文件列表中',
+        dropZoneHint: '或将文件 / 文件夹拖拽到此区域',
+        dropFolderImported: '已导入文件夹：{name}',
+        dropIgnoredFolders: '已忽略 {count} 个文件夹（仅导入第一个）'
       },
       h5: {
         title: 'HDF5 选择',
@@ -1173,7 +1186,7 @@ export const messages = {
     },
     lamellar: {
       title: 'SAXS 片晶结构分析',
-      subtitle: '由 I(q) 提取长周期与片晶厚度：Bragg 峰法 + 一维相关函数（γ₁）法。',
+      subtitle: '由 I(q) 提取长周期与片晶厚度：一维相关函数（γ₁）法，逐步展示 q²I(q)、γ₁ 与切线斜率。',
       inputMode: '输入模式',
       modeImage: '图像 + 几何',
       modeCurves: '已有 I(q) 曲线',
@@ -1184,7 +1197,7 @@ export const messages = {
       qUnitLabel: 'q 单位',
       qMin: 'q 下限（可选）',
       qMax: 'q 上限（可选）',
-      qRangeHint: '建议覆盖首个 SAXS 峰并延伸到高 q 尾部（背景估计用）。',
+      qRangeHint: '上下限各自独立可选，按所选单位解释；曲线坐标轴与导出同所选单位。例如配合 mask 时可只填下限；留空使用全部范围。',
       npt: '径向点数 (npt)',
       curvesInput: '曲线数据',
       curvesHint: '粘贴两列数据（q, 强度），用空格/逗号/制表符分隔；首行可为表头。',
@@ -1198,16 +1211,10 @@ export const messages = {
       bgNone: '不扣除',
       bgLevel: '背景水平',
       bgHint: '相关函数法前应扣除平坦背景，否则 γ₁ 会叠加虚假低频分量。',
-      methods: '分析方法',
-      mBragg: 'Bragg 峰法 (L = 2π/q*)',
-      mCorrelation: '一维相关函数 γ₁',
-      peakQMin: '峰搜索 q 下限',
-      peakQMax: '峰搜索 q 上限',
-      peakWindowHint: '可限制峰搜索窗口以排除低 q 直射束伪影；留空使用全部范围。',
       minorityPhase: '少数相（较薄层）',
       minorityCrystalline: '晶相（l_c 较薄）',
       minorityAmorphous: '非晶相（l_a 较薄）',
-      minorityHint: 'γ₁ 首极小给出少数相厚度；按样品实际情况选择哪一相较薄。',
+      minorityHint: 'γ₁ 首极小与切线交点给出少数相厚度；按样品实际情况选择哪一相较薄。',
       run: '开始分析',
       running: '分析中…',
       cancel: '取消',
@@ -1215,16 +1222,70 @@ export const messages = {
       errorTitle: '错误',
       curvesParseFail: '至少需要 8 个有效数据点，请检查格式。',
       warnings: '警告',
-      profileChartTitle: 'SAXS 曲线',
       intensityAxis: '强度',
       gammaChartTitle: '一维相关函数 γ₁(x)',
       rAxis: 'x (nm)',
       gammaAxis: 'γ₁',
       rawCurve: '原始',
       correctedCurve: '校正后',
-      resultsTitle: '结果',
+      // —— v0.2.6：相关函数流水线分步曲线 + 切线斜率 + 批量处理 ——
+      files: {
+        add: '添加文件（可多选）',
+        clear: '清空',
+        count: '已选 {n} 个文件',
+        remove: '移除',
+        singleFirstHint: '先用勾选的文件单跑调参，之后可按首个结果批量处理其余文件。',
+      },
+      batch: {
+        offerTitle: '批量处理',
+        offerHint: '已有首个结果，可按相同参数批量处理其余 {n} 个文件。',
+        offer: '按首个结果批量处理',
+        confirmWarn: '风险提示：批量处理沿用首个文件的参数（背景、q 范围、少数相指派等），部分样品可能偏离（如背景不同、峰位漂移）。偏离超过 15% 的结果将在表中标注。',
+        confirmBtn: '确认批量处理',
+        title: '批量汇总',
+        hint: '点击行查看该文件的分步曲线明细；“偏离”列为相对第一个成功文件的长周期偏差。',
+        okCount: '成功 {n}',
+        failCount: '失败 {m}',
+        file: '文件',
+        deviation: '偏离',
+        warningsCol: '警告',
+        failed: '失败文件',
+        exportSummary: '导出汇总 CSV',
+      },
+      step1Title: '① 原始与扣背景曲线 I(q)',
+      appliedWindow: '实际分析窗口：q ∈ [{q0}, {q1}] {u}（{n} 点，已按上下限裁剪）',
+      step2Title: '② 洛伦兹校正 q²·I(q)（含 Porod 外推）',
+      step3Title: '③ 一维相关函数 γ₁(x) 与切线拟合',
+      step4Title: '④ 切线斜率（线性拟合）',
+      zAxis: 'q²·I',
+      porodExt: 'Porod 外推',
+      porodInfo: 'Porod 尾部拟合斜率 {s}，外推至 q = {q2} nm⁻¹ 以抑制截断涟漪。',
+      porodNone: '高 q 尾部不符合 Porod 幂律，未做外推。',
+      tangentName: '切线拟合',
+      tangentWindowLabel: '切线拟合区间 x (nm)',
+      tangentWindowHint: '区间默认自动预估；可手动输入（留空一边则该边自动），或点「在曲线上选取」后在 γ₁ 图上点两点设定并自动重拟合。',
+      refit: '重新拟合',
+      pickStart: '在曲线上选取',
+      pickCancel: '取消选取',
+      pickFirstHint: '选取模式：请在 γ₁ 图上点击第一点（拟合下界）。',
+      pickSecond: '已记录下界 {x} nm，请点击第二点（上界）。',
+      windowAuto: '自动',
+      windowManual: '手动',
+      fitWinMin: '拟合下界',
+      fitWinMax: '拟合上界',
+      gammaMinLevel: 'γ₁ 首极小水平线',
+      lMarker: 'L（首极大）',
+      slopeLabel: '切线斜率 B',
+      slopeShort: '斜率 B',
+      fitRange: '拟合区间',
+      xAtZero: '切线与 γ=0 交点',
+      xAtGammaMin: '切线与 γ₁,min 交点（少数相厚度）',
+      osLabel: '比内表面积 Oₛ',
       longPeriod: '长周期 L',
-      nRepeats: '相干周期数 N',
+      longPeriod2min: '长周期（2×首极小）',
+      firstMin: '首极小位置',
+      mCorrelation: '一维相关函数 γ₁',
+      resultsTitle: '结构参数',
       lc: '晶区厚度 l_c',
       la: '非晶厚度 l_a',
       phiC: '堆叠结晶度 φ_c',
@@ -1344,7 +1405,7 @@ export const messages = {
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.2.5'
+      version: 'v0.2.6'
     },
     shell: {
       sections: {
@@ -1378,7 +1439,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.2.5',
+      kicker: 'Desktop Edition v0.2.6',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -1493,7 +1554,7 @@ export const messages = {
         },
         lamellar: {
           title: 'SAXS Lamellar Analysis',
-          description: 'Extract the long period and lamellar thickness from I(q) via the Bragg peak and 1-D correlation function (γ₁); integrate an image or import a profile'
+          description: 'Long period & lamellar thickness from I(q) via the 1-D correlation function (γ₁), with per-step curves (q²I, γ₁, tangent slope) and batch processing'
         },
         poniImporter: {
           title: 'Switch to PONI',
@@ -1659,6 +1720,9 @@ export const messages = {
     toast: {
       close: 'Close'
     },
+    upload: {
+      complete: 'Upload complete'
+    },
     integrate1d: {
       title: '1D Radial Integration',
       subtitle: 'Batch 1D azimuthal integration of detector images using pyFAI.',
@@ -1719,7 +1783,9 @@ export const messages = {
         showAxes: 'Show Axes',
         showColorbar: 'Show Colorbar',
         chartLine: 'Line',
-        chartPoints: 'Points'
+        chartPoints: 'Points',
+        yLog: 'Log',
+        yLinear: 'Linear'
       },
       fileTypes: {
         title: 'File Type Filter'
@@ -1913,7 +1979,12 @@ export const messages = {
         saveFile: 'Save File',
         chooseFolder: 'Choose Folder',
         noSelection: 'No file selected',
-        uploadFailed: 'Upload Failed'
+        uploadFailed: 'Upload Failed',
+        dropHint: 'Release to fill in',
+        dropOnlyFile: 'Please drop a file (folders are not supported)',
+        dropOnlyFolder: 'Please drop a folder',
+        dropTypeMismatch: 'Unsupported file type: {names}',
+        dropFolderWebUnsupported: 'Folder drops are not supported in web mode'
       },
       fileSelection: {
         selectFiles: 'Select Files',
@@ -1927,7 +1998,10 @@ export const messages = {
         replace: 'Replace',
         append: 'Append',
         replaceTooltip: 'Clear existing file list and use only newly selected files',
-        appendTooltip: 'Append newly selected files to the existing file list'
+        appendTooltip: 'Append newly selected files to the existing file list',
+        dropZoneHint: 'Or drag & drop files / folders here',
+        dropFolderImported: 'Folder imported: {name}',
+        dropIgnoredFolders: 'Ignored {count} folder(s) (only the first is imported)'
       },
       h5: {
         title: 'HDF5 Selection',
@@ -2513,7 +2587,7 @@ export const messages = {
     },
     lamellar: {
       title: 'SAXS Lamellar Analysis',
-      subtitle: 'Extract the long period and lamellar thickness from I(q): Bragg peak + 1-D correlation function (γ₁).',
+      subtitle: 'Long period & lamellar thickness from I(q): 1-D correlation function (γ₁) with per-step curves — q²I(q), γ₁ and the tangent slope.',
       inputMode: 'Input mode',
       modeImage: 'Image + geometry',
       modeCurves: 'Existing I(q) curve',
@@ -2524,7 +2598,7 @@ export const messages = {
       qUnitLabel: 'q unit',
       qMin: 'q min (optional)',
       qMax: 'q max (optional)',
-      qRangeHint: 'Cover the first SAXS peak and extend into the high-q tail (used for background estimation).',
+      qRangeHint: 'Each bound is optional on its own and interpreted in the selected unit; chart axes and exports follow the same unit. E.g. with a mask you may only need the lower limit; leave empty for the full range.',
       npt: 'Radial points (npt)',
       curvesInput: 'Curve data',
       curvesHint: 'Paste two columns (q, intensity) separated by space/comma/tab; first row may be a header.',
@@ -2538,16 +2612,10 @@ export const messages = {
       bgNone: 'None',
       bgLevel: 'Background level',
       bgHint: 'Subtract a flat background before the correlation function, otherwise γ₁ rides on a spurious low-frequency component.',
-      methods: 'Methods',
-      mBragg: 'Bragg peak (L = 2π/q*)',
-      mCorrelation: '1-D correlation function γ₁',
-      peakQMin: 'Peak-search q min',
-      peakQMax: 'Peak-search q max',
-      peakWindowHint: 'Restrict the peak-search window to exclude low-q beamstop artifacts; leave empty for the full range.',
       minorityPhase: 'Minority phase (thinner layers)',
       minorityCrystalline: 'Crystalline (thin l_c)',
       minorityAmorphous: 'Amorphous (thin l_a)',
-      minorityHint: 'The first γ₁ minimum gives the minority-phase thickness; choose which phase is thinner for your sample.',
+      minorityHint: 'The first γ₁ minimum and the tangent intersection give the minority-phase thickness; choose which phase is thinner for your sample.',
       run: 'Analyze',
       running: 'Analyzing…',
       cancel: 'Cancel',
@@ -2555,16 +2623,70 @@ export const messages = {
       errorTitle: 'Error',
       curvesParseFail: 'At least 8 valid data points are required; please check the format.',
       warnings: 'Warnings',
-      profileChartTitle: 'SAXS profile',
       intensityAxis: 'Intensity',
       gammaChartTitle: '1-D correlation function γ₁(x)',
       rAxis: 'x (nm)',
       gammaAxis: 'γ₁',
       rawCurve: 'Raw',
       correctedCurve: 'Corrected',
-      resultsTitle: 'Results',
+      // —— New (v0.2.6): per-step curves, tangent slope, batch apply ——
+      files: {
+        add: 'Add files (multi-select)',
+        clear: 'Clear',
+        count: '{n} files selected',
+        remove: 'Remove',
+        singleFirstHint: 'Run the checked file first to tune parameters, then batch-apply them to the rest.',
+      },
+      batch: {
+        offerTitle: 'Batch',
+        offerHint: 'First result available — apply the same parameters to the other {n} files.',
+        offer: 'Batch-apply from first result',
+        confirmWarn: 'Risk notice: batch processing reuses the first-file parameters (background, q window, minority-phase assignment…); some samples may deviate (different background, shifted peak). Deviations above 15% are flagged in the table.',
+        confirmBtn: 'Confirm batch run',
+        title: 'Batch summary',
+        hint: 'Click a row to inspect its per-step curves; "Deviation" is the long-period change relative to the first successful file.',
+        okCount: '{n} ok',
+        failCount: '{m} failed',
+        file: 'File',
+        deviation: 'Deviation',
+        warningsCol: 'Warnings',
+        failed: 'Failed',
+        exportSummary: 'Export summary CSV',
+      },
+      step1Title: '① Raw & background-subtracted I(q)',
+      appliedWindow: 'Applied q window: q ∈ [{q0}, {q1}] {u} ({n} points, clipped to the limits)',
+      step2Title: '② Lorentz-corrected q²·I(q) (+ Porod extrapolation)',
+      step3Title: '③ 1-D correlation function γ₁(x) & tangent fit',
+      step4Title: '④ Tangent slope (linear fit)',
+      zAxis: 'q²·I',
+      porodExt: 'Porod extrapolation',
+      porodInfo: 'Porod tail fit slope {s}; extrapolated to q = {q2} nm⁻¹ to damp termination ripples.',
+      porodNone: 'High-q tail is not Porod-like; no extrapolation applied.',
+      tangentName: 'Tangent fit',
+      tangentWindowLabel: 'Tangent fit window x (nm)',
+      tangentWindowHint: 'Auto-estimated by default; type values (an empty side stays auto), or click "Pick on curve" and click two points on the γ₁ chart to set & refit.',
+      refit: 'Re-fit',
+      pickStart: 'Pick on curve',
+      pickCancel: 'Cancel picking',
+      pickFirstHint: 'Picking: click the first point on the γ₁ chart (fit lower bound).',
+      pickSecond: 'Lower bound {x} nm recorded — click the second point (upper bound).',
+      windowAuto: 'auto',
+      windowManual: 'manual',
+      fitWinMin: 'Fit lower',
+      fitWinMax: 'Fit upper',
+      gammaMinLevel: 'γ₁ first-minimum level',
+      lMarker: 'L (first max)',
+      slopeLabel: 'Tangent slope B',
+      slopeShort: 'Slope B',
+      fitRange: 'Fit range',
+      xAtZero: 'Tangent × γ=0',
+      xAtGammaMin: 'Tangent × γ₁,min (minority thickness)',
+      osLabel: 'Specific inner surface Oₛ',
       longPeriod: 'Long period L',
-      nRepeats: 'Coherent repeats N',
+      longPeriod2min: 'Long period (2× first min)',
+      firstMin: 'First minimum at',
+      mCorrelation: '1-D correlation function γ₁',
+      resultsTitle: 'Structural parameters',
       lc: 'Crystalline thickness l_c',
       la: 'Amorphous thickness l_a',
       phiC: 'Stack crystallinity φ_c',

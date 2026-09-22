@@ -181,10 +181,11 @@ export interface ITransport {
 
   /**
    * Upload a file to the server (web mode).
-   * @param file  Browser File object to upload
+   * @param file       Browser File object to upload
+   * @param onProgress Optional progress callback (loaded bytes, total bytes)
    * @returns Server path of the uploaded file
    */
-  uploadFile(file: File): Promise<string>
+  uploadFile(file: File, onProgress?: (loaded: number, total: number) => void): Promise<string>
 
   /**
    * Trigger a browser download for a server file (web mode).

@@ -516,28 +516,29 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
       return base
     }
     case 'lamellar_analysis': {
+      // v0.2.6: correlation-function pipeline only (Bragg method removed);
+      // the q window bounds are each optional on their own.
+      // v0.2.6：仅相关函数流水线（已移除 Bragg 法）；q 上下限各自独立可选。
       const inputMode = asString(params.inputMode) ?? 'curves'
       const bgRaw = asRecord(params.background)
-      const braggRaw = asRecord(params.bragg)
       const corrRaw = asRecord(params.correlation)
+      const tangentRaw = asRecord(params.tangent)
       const base: Record<string, unknown> = {
         input_mode: inputMode,
         q_unit: asString(params.qUnit) ?? 'nm^-1',
-        methods: Array.isArray(params.methods)
-          ? params.methods.filter((m): m is string => typeof m === 'string')
-          : ['bragg', 'correlation'],
         background: {
           mode: asString(bgRaw.mode) ?? 'auto',
           constant: asOptionalNumber(bgRaw.constant),
         },
         minority_phase: asString(params.minorityPhase) ?? 'crystalline',
-        bragg: {
-          smooth_window: asOptionalNumber(braggRaw.smoothWindow),
-          q_min: asOptionalNumber(braggRaw.qMin),
-          q_max: asOptionalNumber(braggRaw.qMax),
-        },
         correlation: {
           r_max_nm: asOptionalNumber(corrRaw.rMaxNm),
+        },
+        // Manual tangent window on γ₁ (each side optional; empty → auto fit).
+        // γ₁ 手动切线窗口（逐边可选；留空自动拟合）。
+        tangent: {
+          fit_min_nm: asOptionalNumber(tangentRaw.fitMinNm),
+          fit_max_nm: asOptionalNumber(tangentRaw.fitMaxNm),
         },
       }
       if (inputMode === 'image') {
@@ -569,6 +570,10 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           ? params.q.filter((v): v is number => typeof v === 'number') : []
         base.intensity = Array.isArray(params.intensity)
           ? params.intensity.filter((v): v is number => typeof v === 'number') : []
+        const qMin = asOptionalNumber(params.radialMin)
+        const qMax = asOptionalNumber(params.radialMax)
+        if (qMin !== undefined) base.q_min = qMin
+        if (qMax !== undefined) base.q_max = qMax
       }
       return base
     }
@@ -722,23 +727,44 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
       }
     }
     case 'lamellar_analysis': {
+      // v0.2.6: per-step curves (q²I, Porod extension, γ₁, tangent) and the
+      // multi-file batch shape {batch, items, failed} pass through.
+      // v0.2.6：逐步曲线（q²I、Porod 外推、γ₁、切线）与多文件批量结构
+      // {batch, items, failed} 均透传。
       const numArray = (v: unknown): number[] =>
         Array.isArray(v) ? v.filter((x): x is number => typeof x === 'number') : []
+      const mapSingle = (rec: Record<string, unknown>) => ({
+        q: numArray(rec.q_nm),
+        intensity: numArray(rec.intensity),
+        correctedIntensity: numArray(rec.corrected_intensity),
+        background: asRecord(rec.background),
+        zQ: numArray(rec.z_q),
+        z: numArray(rec.z),
+        porod: rec.porod === null || rec.porod === undefined ? null : asRecord(rec.porod),
+        zExtQ: numArray(rec.z_ext_q),
+        zExt: numArray(rec.z_ext),
+        gammaR: numArray(rec.gamma_r),
+        gamma: numArray(rec.gamma),
+        tangent: rec.tangent === null || rec.tangent === undefined ? null : asRecord(rec.tangent),
+        results: Array.isArray(rec.results) ? rec.results.map((entry) => asRecord(entry)) : [],
+        warnings: Array.isArray(rec.warnings)
+          ? rec.warnings.filter((w): w is string => typeof w === 'string') : [],
+        quality: asRecord(rec.quality),
+        sourceLabel: asString(rec.source_label),
+      })
+      if (Array.isArray(result.items)) {
+        return {
+          kind: 'result',
+          data: {
+            batch: true,
+            items: result.items.map((entry) => mapSingle(asRecord(entry))),
+            failed: Array.isArray(result.failed) ? result.failed : [],
+          }
+        }
+      }
       return {
         kind: 'result',
-        data: {
-          q: numArray(result.q_nm),
-          intensity: numArray(result.intensity),
-          correctedIntensity: numArray(result.corrected_intensity),
-          background: asRecord(result.background),
-          gammaR: numArray(result.gamma_r),
-          gamma: numArray(result.gamma),
-          results: Array.isArray(result.results) ? result.results.map((entry) => asRecord(entry)) : [],
-          warnings: Array.isArray(result.warnings)
-            ? result.warnings.filter((w): w is string => typeof w === 'string') : [],
-          quality: asRecord(result.quality),
-          sourceLabel: asString(result.source_label),
-        }
+        data: mapSingle(result)
       }
     }
     case 'viewer_config':

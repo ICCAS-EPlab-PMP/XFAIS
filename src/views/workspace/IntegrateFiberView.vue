@@ -348,8 +348,15 @@
 
       <!-- ═══════ Main content area ═══════ -->
       <main class="fiber-main">
-        <!-- File selection / 文件选择 -->
-        <div class="fib-file-section">
+        <!-- File selection / 文件选择（支持拖放 / drop target） -->
+        <div
+          class="fib-file-section"
+          :class="{ 'fib-file-section--drop': fileDrop.isDragging.value }"
+          @dragenter="fileDrop.onDragEnter"
+          @dragover="fileDrop.onDragOver"
+          @dragleave="fileDrop.onDragLeave"
+          @drop="fileDrop.onDrop"
+        >
           <h2 class="fib-section-title">{{ t('integrate1d.dataFiles') }}</h2>
           <div class="fib-file-buttons">
             <button type="button" class="fib-file-btn" @click="handleChooseFiles">
@@ -392,6 +399,9 @@
           </div>
           <div v-else class="fib-file-info-bar fib-file-info-bar--muted">
             <span>{{ t('business.fileSelection.noFiles') }}</span>
+          </div>
+          <div class="fib-file-info-bar fib-file-info-bar--muted fib-drop-hint">
+            <span>{{ t('business.fileSelection.dropZoneHint') }}</span>
           </div>
         </div>
 
@@ -920,6 +930,7 @@ import { ref, reactive, computed, watch, onUnmounted, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
 import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } from '@/lib/chart-utils'
 import type { ColormapName } from '@/lib/chart-utils'
@@ -1707,13 +1718,8 @@ async function resolveBeamCenter(): Promise<void> {
 
 // ── File handlers / 文件处理 ──
 
-async function handleChooseFiles(): Promise<void> {
-  const res = await transport.selectFiles({
-    filters: dataFileFilters,
-    multiSelections: true,
-  })
-  if (!res) return
-  const paths = Array.isArray(res) ? res : [res]
+/** Apply a batch of selected file paths honoring the replace/append import mode. */
+async function applySelectedFilePaths(paths: string[]): Promise<void> {
   if (importMode.value === 'append') {
     const existingSet = new Set(files.value)
     const newFiles = paths.filter(p => !existingSet.has(p))
@@ -1729,12 +1735,32 @@ async function handleChooseFiles(): Promise<void> {
   loadThumbnailPageIfExpanded()
 }
 
+async function handleChooseFiles(): Promise<void> {
+  const res = await transport.selectFiles({
+    filters: dataFileFilters,
+    multiSelections: true,
+  })
+  if (!res) return
+  await applySelectedFilePaths(Array.isArray(res) ? res : [res])
+}
+
 async function handleImportFolder(): Promise<void> {
   const folder = await transport.selectFolder()
   if (!folder) return
   importFolderPath.value = folder
   await rescanFolder()
 }
+
+// Drag & drop onto the file section mirrors the two buttons above.
+const fileDrop = createImportDropZone({
+  transport,
+  extensions: () => extensionsFromFilters(dataFileFilters),
+  onFiles: (paths) => applySelectedFilePaths(paths),
+  onFolder: (folder) => {
+    importFolderPath.value = folder
+    void rescanFolder()
+  },
+})
 
 async function rescanFolder(): Promise<void> {
   if (!importFolderPath.value) return
@@ -2947,6 +2973,16 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* Drop-target highlight & hint / 拖放高亮与提示 */
+.fib-file-section--drop {
+  border-color: var(--primary-light);
+  background: var(--primary-bg);
+}
+
+.fib-drop-hint span {
+  font-size: 0.75rem;
 }
 
 .fib-section-title {

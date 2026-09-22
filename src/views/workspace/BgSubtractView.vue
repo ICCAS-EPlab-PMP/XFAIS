@@ -32,9 +32,16 @@
         <div class="bgs-card">
           <h3 class="bgs-card-title">{{ t('bgSubtract.fileSelection') }}</h3>
 
-          <!-- Single mode: multi-file selection / 单文件模式：多文件选择 -->
+          <!-- Single mode: multi-file selection / 单文件模式：多文件选择（支持拖放 / drop target） -->
           <template v-if="mode === 'single'">
-            <div class="bgs-file-actions">
+            <div
+              class="bgs-file-actions"
+              :class="{ 'bgs-file-actions--drop': fileDrop.isDragging.value }"
+              @dragenter="fileDrop.onDragEnter"
+              @dragover="fileDrop.onDragOver"
+              @dragleave="fileDrop.onDragLeave"
+              @drop="fileDrop.onDrop"
+            >
               <button type="button" class="bgs-btn" @click="handleChooseSampleFiles">
                 {{ t('bgSubtract.selectFiles') }}
               </button>
@@ -54,6 +61,9 @@
               </span>
               <span v-else class="bgs-file-summary bgs-file-summary--muted">
                 {{ t('bgSubtract.noFilesSelected') }}
+              </span>
+              <span class="bgs-file-summary bgs-file-summary--muted bgs-drop-hint">
+                {{ t('business.fileSelection.dropZoneHint') }}
               </span>
             </div>
 
@@ -484,6 +494,7 @@ import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
 import type { TaskBinaryPayload } from '@/lib/transport'
+import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
@@ -767,13 +778,8 @@ function removeSampleFile(index: number): void {
 
 // === Multi-file selection / 多文件选择 ===
 
-async function handleChooseSampleFiles(): Promise<void> {
-  const result = await transport.selectFiles({
-    filters: dataFileFilters,
-    multiSelections: true,
-  })
-  if (!result) return
-  const paths = Array.isArray(result) ? result : [result]
+/** Apply a batch of sample file paths honoring the replace/append import mode. */
+function applySampleFilePaths(paths: string[]): void {
   if (importMode.value === 'append') {
     const existingSet = new Set(samplePaths.value)
     const newFiles = paths.filter(p => !existingSet.has(p))
@@ -794,6 +800,29 @@ async function handleChooseSampleFiles(): Promise<void> {
     generateThumbnails()
   }
 }
+
+async function handleChooseSampleFiles(): Promise<void> {
+  const result = await transport.selectFiles({
+    filters: dataFileFilters,
+    multiSelections: true,
+  })
+  if (!result) return
+  applySampleFilePaths(Array.isArray(result) ? result : [result])
+}
+
+// Drag & drop onto the sample file area mirrors the select-files button.
+// (Dropping a folder routes through the batch-mode folder scan only in
+// desktop mode; in web mode a toast explains folders are unsupported.)
+const fileDrop = createImportDropZone({
+  transport,
+  extensions: () => extensionsFromFilters(dataFileFilters),
+  onFiles: (paths) => applySampleFilePaths(paths),
+  onFolder: (folder) => {
+    // Single mode has no folder list UI — switch into it like the batch picker.
+    mode.value = 'batch'
+    sampleFolder.value = folder
+  },
+})
 
 // === Folder scanning / 文件夹扫描 ===
 
@@ -1429,6 +1458,19 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  border-radius: var(--radius-md);
+  padding: 2px;
+  transition: background var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+/* Drop-target highlight & hint / 拖放高亮与提示 */
+.bgs-file-actions--drop {
+  background: var(--primary-bg);
+  box-shadow: 0 0 0 2px var(--primary-light);
+}
+
+.bgs-drop-hint {
+  font-size: 0.75rem;
 }
 
 .bgs-import-mode {

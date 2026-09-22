@@ -1,6 +1,6 @@
 <template>
   <div class="line-chart-wrap">
-    <!-- Line / points mode toggle / 线图·点图切换 -->
+    <!-- Line / points mode toggle + optional y-scale toggle / 线图·点图切换 + 可选 y 轴刻度切换 -->
     <div class="lc-mode-bar" role="group" :data-testid="testIds.lineChartMode">
       <button
         type="button"
@@ -30,6 +30,33 @@
         </svg>
         <span class="lc-label">{{ t('business.display.chartPoints') }}</span>
       </button>
+      <template v-if="yScaleToggle">
+        <span class="lc-divider" aria-hidden="true"></span>
+        <button
+          type="button"
+          :class="['lc-mode-btn', { 'lc-mode-active': yScaleState === 'log' }]"
+          :aria-pressed="yScaleState === 'log'"
+          :title="t('business.display.yLog')"
+          @click="yScaleState = 'log'"
+        >
+          <svg class="lc-icon" width="16" height="8" viewBox="0 0 16 8" aria-hidden="true">
+            <path d="M1,1 C4,1.5 6,5 15,7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+          <span class="lc-label">{{ t('business.display.yLog') }}</span>
+        </button>
+        <button
+          type="button"
+          :class="['lc-mode-btn', { 'lc-mode-active': yScaleState === 'linear' }]"
+          :aria-pressed="yScaleState === 'linear'"
+          :title="t('business.display.yLinear')"
+          @click="yScaleState = 'linear'"
+        >
+          <svg class="lc-icon" width="16" height="8" viewBox="0 0 16 8" aria-hidden="true">
+            <line x1="1" y1="7" x2="15" y2="1" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+          </svg>
+          <span class="lc-label">{{ t('business.display.yLinear') }}</span>
+        </button>
+      </template>
     </div>
 
     <PlotlyChart
@@ -46,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import PlotlyChart from './PlotlyChart.vue'
 import type { PlotData, PlotLayout } from 'plotly.js-dist-min'
@@ -64,6 +91,9 @@ export interface LineTrace {
   y: number[]
   name?: string
   color?: string
+  /** Plotly line dash style ('solid' | 'dash' | 'dot' | 'dashdot'). */
+  /** Plotly 线型（'solid' | 'dash' | 'dot' | 'dashdot'）。 */
+  dash?: string
 }
 
 const props = withDefaults(defineProps<{
@@ -73,12 +103,20 @@ const props = withDefaults(defineProps<{
   xUnit?: string
   yUnit?: string
   title?: string
+  /** Initial y-axis scale; SAXS I(q) curves default to log in callers that want it. */
+  /** y 轴初始刻度；SAXS I(q) 类曲线由调用方按需默认 log。 */
+  yScale?: 'linear' | 'log'
+  /** Render a log/linear toggle next to the line/points bar (initial = yScale). */
+  /** 在 线/点 切换条旁渲染 对数/线性 切换（初始值 = yScale）。 */
+  yScaleToggle?: boolean
 }>(), {
   xLabel: 'x',
   yLabel: 'Intensity',
   xUnit: '',
   yUnit: '',
   title: '',
+  yScale: 'linear',
+  yScaleToggle: false,
 })
 
 const { t } = useI18n()
@@ -86,6 +124,11 @@ const { t } = useI18n()
 /** Trace render mode: line chart vs. scatter (points) only. / 折线渲染模式：线图 / 点图。 */
 type LineMode = 'lines' | 'markers'
 const lineMode = ref<LineMode>('lines')
+
+/** Live y-axis scale; starts at the yScale prop and tracks it if the parent changes it. */
+/** y 轴当前刻度；初始取 yScale 属性，父组件改变时跟随。 */
+const yScaleState = ref<'linear' | 'log'>(props.yScale)
+watch(() => props.yScale, (v) => { yScaleState.value = v })
 
 const traces = computed<PlotData[]>(() =>
   props.traces.map((tr): PlotData => {
@@ -100,7 +143,14 @@ const traces = computed<PlotData[]>(() =>
     // `undefined`: Plotly's cleanData throws `'line' in undefined` on an explicit undefined.
     // 只为当前模式挂样式容器；切勿把另一个显式置为 undefined，否则 Plotly cleanData 会报错。
     if (lineMode.value === 'lines') {
-      return { ...common, line: tr.color ? { color: tr.color, width: 1.5 } : { width: 1.5 } }
+      return {
+        ...common,
+        line: {
+          width: 1.5,
+          ...(tr.color ? { color: tr.color } : {}),
+          ...(tr.dash ? { dash: tr.dash } : {}),
+        },
+      }
     }
     return { ...common, marker: tr.color ? { color: tr.color, size: 4 } : { size: 4 } }
   })
@@ -122,6 +172,7 @@ const chartLayout = computed<Partial<PlotLayout>>(() => ({
   },
   yaxis: {
     title: { text: axisTitle(props.yLabel, props.yUnit) },
+    type: yScaleState.value,
   },
 }))
 
@@ -186,6 +237,13 @@ const chartConfig = {
 
 .lc-icon {
   flex: 0 0 auto;
+}
+
+.lc-divider {
+  align-self: stretch;
+  width: 1px;
+  margin: 2px 3px;
+  background: var(--border, rgba(255, 255, 255, 0.18));
 }
 
 .lc-label {

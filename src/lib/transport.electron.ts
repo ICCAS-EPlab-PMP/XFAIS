@@ -108,7 +108,7 @@ export class ElectronTransport implements ITransport {
 
   // ── Web-mode file operations (not available in Electron) ─────────────────────
 
-  uploadFile(_file: File): Promise<string> {
+  uploadFile(_file: File, _onProgress?: (loaded: number, total: number) => void): Promise<string> {
     throw new Error('File upload is not available in Electron mode')
   }
 

@@ -1,5 +1,12 @@
 <template>
-  <section class="poni-importer-page">
+  <section
+    class="poni-importer-page"
+    :class="{ 'poni-importer-page--drop': fileDrop.isDragging.value }"
+    @dragenter="fileDrop.onDragEnter"
+    @dragover="fileDrop.onDragOver"
+    @dragleave="fileDrop.onDragLeave"
+    @drop="fileDrop.onDrop"
+  >
     <!-- Header / 页头 -->
     <header class="pi-header">
       <h1>{{ t('poniImporter.title') }}</h1>
@@ -450,6 +457,7 @@ import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { matchesExtensions, useDropZone } from '@/lib/fileDrop'
 import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
 import ImagePreview from '@/components/charts/ImagePreview.vue'
 import type { Overlay } from '@/components/charts/ImagePreview.vue'
@@ -739,7 +747,11 @@ async function handleImportPoni(): Promise<void> {
   })
   const poniPath = Array.isArray(result) ? result[0] : result
   if (!poniPath) return
+  await importPoniPath(poniPath)
+}
 
+/** Reverse-import geometry from a specific .poni path (shared with drag & drop). */
+async function importPoniPath(poniPath: string): Promise<void> {
   importingPoni.value = true
   try {
     const raw = await submitAndWait('poni_importer', { action: 'parse', filePath: poniPath })
@@ -926,6 +938,11 @@ async function handleChooseImage(): Promise<void> {
   if (!result) return
   const path = Array.isArray(result) ? result[0] : result
   if (!path) return
+  await chooseImagePath(path)
+}
+
+/** Import a specific reference image path (shared with drag & drop). */
+async function chooseImagePath(path: string): Promise<void> {
   currentImagePath.value = path
   currentImageName.value = path.split(/[/\\]/).pop() ?? path
   h5Datasets.value = []
@@ -933,6 +950,22 @@ async function handleChooseImage(): Promise<void> {
   autoMatchedFromImage.value = false
   await probeAndMatch(path)
 }
+
+// Drag & drop anywhere on the page: a .poni reverse-imports its geometry,
+// a detector image enters the reference-image flow.
+const fileDrop = useDropZone({
+  transport,
+  extensions: ['poni', ...imageFilters.flatMap(f => f.extensions)],
+  onDrop(resolution) {
+    const path = resolution.filePaths[0]
+    if (!path) return
+    if (matchesExtensions(path, ['poni'])) {
+      void importPoniPath(path)
+      return
+    }
+    void chooseImagePath(path)
+  },
+})
 
 /** Probe image shape → call match_detector → apply result to the form. */
 async function probeAndMatch(path: string): Promise<void> {
@@ -1406,6 +1439,12 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 24px;
+}
+
+/* Drop-target highlight / 拖放高亮 */
+.poni-importer-page--drop {
+  box-shadow: inset 0 0 0 3px var(--primary-light);
+  border-radius: var(--radius-md);
 }
 
 .pi-header {

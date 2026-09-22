@@ -376,3 +376,74 @@ def test_handle_integrate_cake_returns_displayable_traces(monkeypatch) -> None:
     }]
     assert captured["azimuth_range"] == (-30.0, 45.0)
     assert captured["radial_range"] == (0.1, 0.3)
+
+
+# ── Lamellar analysis handler / 片晶分析处理函数 ───────────────────────────────
+
+def test_handle_lamellar_curves_mode_with_one_sided_q_filter() -> None:
+    """v0.2.6 curves mode: a lone q_min clips the profile end-to-end.
+
+    v0.2.6 曲线模式：仅填 q 下限即可完成裁剪（单边可选窗口）。
+    """
+    from python.service_launcher import handle_lamellar_analysis
+
+    q = np.linspace(0.05, 2.0, 400)
+    peak = 100.0 * np.exp(-((q - 0.5) ** 2) / (2 * 0.02 ** 2))
+    tail = 3.0 * q ** -4.0
+    intensity = 10.0 + peak + tail
+
+    result = asyncio.run(
+        handle_lamellar_analysis(
+            {
+                "input_mode": "curves",
+                "q_unit": "nm^-1",
+                "q": q.tolist(),
+                "intensity": intensity.tolist(),
+                "q_min": 0.2,
+                "background": {"mode": "auto"},
+                "minority_phase": "crystalline",
+            },
+            _noop_progress,
+            asyncio.Event(),
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["quality"]["q_min_nm"] >= 0.2
+    # v0.2.6 per-step curves exposed for the UI. / 逐步曲线可供 UI 展示。
+    assert len(result["z"]) == len(result["q_nm"])
+    assert len(result["gamma"]) == len(result["gamma_r"])
+    assert result["results"][0]["method"] == "correlation"
+    assert "bragg" not in {r["method"] for r in result["results"]}
+
+
+def test_handle_lamellar_curves_mode_q_filter_follows_input_unit() -> None:
+    """Å⁻¹ curves input: q_min is interpreted in Å⁻¹ (×10 in nm⁻¹ internals).
+
+    Å⁻¹ 曲线输入：q_min 按 Å⁻¹ 解释（内部 nm⁻¹ 值 ×10）。回归：曾把阈值当作
+    nm⁻¹ 用在已换算数据上，裁剪量只有预期 1/10（表现为"低 q 数据没剪掉"）。
+    """
+    from python.service_launcher import handle_lamellar_analysis
+
+    q = np.linspace(0.01, 2.0, 400)  # Å⁻¹
+    intensity = 10.0 + 100.0 * np.exp(-((q - 0.05) ** 2) / (2 * 0.02 ** 2)) + 3.0 * q ** -4.0
+
+    result = asyncio.run(
+        handle_lamellar_analysis(
+            {
+                "input_mode": "curves",
+                "q_unit": "A^-1",
+                "q": q.tolist(),
+                "intensity": intensity.tolist(),
+                "q_min": 0.05,  # Å⁻¹ → 0.5 nm⁻¹ internal / 内部 0.5 nm⁻¹
+                "background": {"mode": "auto"},
+                "minority_phase": "crystalline",
+            },
+            _noop_progress,
+            asyncio.Event(),
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["quality"]["q_min_nm"] >= 0.5
+    assert result["quality"]["q_min_nm"] < 0.55

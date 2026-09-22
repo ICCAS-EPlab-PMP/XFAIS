@@ -5956,6 +5956,111 @@ async def handle_export_bat_pyfai(
     return {"status": "ok", "content": content, "filename": filename}
 
 
+async def _lamellar_extract_profile(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+    fpath: str | None = None,
+) -> tuple[Any, Any, str | None, str | None]:
+    """Extract one I(q) radial profile from an image + geometry.
+    从图像+几何提取一条径向分布 I(q)，供片晶分析使用。
+
+    `fpath` overrides payload["files"][0] so batch mode can loop over files
+    while reusing the same geometry/mask/options.
+    fpath 覆盖 payload["files"][0]，使批量模式可在同一几何/掩膜/选项下循环文件。
+    The radial q window is ONE-SIDED-OPTIONAL: a lone radial_min (e.g. to cut
+    the beamstop when a mask already handles the rest) or a lone radial_max is
+    applied on its own — integration runs unbounded and the result is filtered
+    afterwards, so the bin resolution never degrades.
+    径向 q 窗口上下限各自独立可选：仅填 radial_min（例如已用 mask 处理其余部
+    分、只需切除直射束）或仅填 radial_max 均可生效——积分不限范围、事后过滤，
+    bin 分辨率不受影响。
+    On success error is None. 返回 (q_list, i_list, label, error)。
+    """
+    await send_progress(0.1, "Loading geometry... / 加载几何...")
+    geo = payload.get("geometry", {})
+    if geo.get("poni_path"):
+        ai, _cx, _cy = await _run_blocking(IntegratorFactory.from_poni_path, geo["poni_path"])
+    elif geo.get("manual"):
+        ai, _cx, _cy = await _run_blocking(IntegratorFactory.from_manual_params, **geo["manual"])
+    else:
+        ai, _cx, _cy = await _run_blocking(
+            IntegratorFactory.from_manual_params,
+            float(geo.get("pixel1", geo.get("pixel_size_um", 172.0))),
+            float(geo.get("distance", geo.get("dist_mm", 200.0))),
+            float(geo.get("wavelength", geo.get("wavelength_A", 1.5418))),
+            float(geo.get("centerX", geo.get("center_x_px", 512.0))),
+            float(geo.get("centerY", geo.get("center_y_px", 512.0))),
+        )
+    if ai is None:
+        return [], [], None, "Failed to create integrator / 积分器创建失败"
+
+    if fpath is None:
+        files = payload.get("files", [])
+        if not files:
+            return [], [], None, "No files / 无文件"
+        fpath = files[0]
+    if cancel_event.is_set():
+        raise asyncio.CancelledError()
+    await send_progress(0.35, f"Loading {fpath} / 加载 {fpath}")
+    try:
+        data, dead_mask, meta = await _run_blocking(
+            ImageLoader.load, fpath,
+            payload.get("h5_dataset_path"), payload.get("h5_channel"),
+            payload.get("frame_index", 0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return [], [], None, f"Failed to load image: {exc} / 图像加载失败：{exc}"
+    if data is None:
+        return [], [], None, "No data loaded / 无数据"
+
+    opts = payload.get("options", {})
+    custom_mask = None
+    custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
+    if custom_mask_path:
+        custom_mask = await _run_blocking(MaskBuilder.load_mask_file, str(custom_mask_path))
+    mask = await _run_blocking(
+        MaskBuilder.build, data,
+        payload.get("valid_min", 0.0), payload.get("valid_max", 1e10),
+        dead_mask, custom_mask,
+    )
+
+    integrate_kwargs: dict[str, Any] = {
+        "data": data,
+        "npt": opts.get("npt", 1000),
+        "unit": "q_nm^-1" if payload.get("q_unit", "nm^-1") == "nm^-1" else "q_A^-1",
+        "mask": mask.astype(np.uint8),
+        "method": opts.get("method", "splitpixel"),
+        "correctSolidAngle": opts.get("correct_solid_angle", True),
+    }
+    await send_progress(0.6, "Integrating radially / 径向积分中")
+    if hasattr(ai, "integrate1d_ng"):
+        res = ai.integrate1d_ng(**integrate_kwargs)
+    else:
+        res = ai.integrate1d(**integrate_kwargs)
+    radial, inten = _drop_empty_bins(res, opts.get("drop_empty_bins", True))
+
+    # One-sided-optional q filter AFTER integration (resolution-preserving).
+    # 积分后过滤（保分辨率），上下限各自独立可选。
+    radial_min = opts.get("radial_min")
+    radial_max = opts.get("radial_max")
+    q_arr = np.asarray(radial, dtype=float)
+    keep = np.ones(q_arr.shape, dtype=bool)
+    if radial_min is not None:
+        keep &= q_arr >= float(radial_min)
+    if radial_max is not None:
+        keep &= q_arr <= float(radial_max)
+    q_list = q_arr[keep].tolist()
+    i_list = np.asarray(inten, dtype=float)[keep].tolist()
+    if len(q_list) < 8:
+        return [], [], None, (
+            f"q window left {len(q_list)} points (<8); relax radial limits. "
+            f"q 窗口后仅剩 {len(q_list)} 点（<8）；请放宽径向上/下限。"
+        )
+    label = meta.get("filename", fpath)
+    return q_list, i_list, label, None
+
+
 async def handle_lamellar_analysis(
     payload: dict[str, Any],
     send_progress: Callable[[float, str], Awaitable[None]],
@@ -5963,117 +6068,124 @@ async def handle_lamellar_analysis(
 ) -> dict[str, Any]:
     """SAXS lamellar structure analysis handler. SAXS 片晶结构分析处理函数。
 
-    Input modes / 输入模式:
-      - input_mode "image": integrate an image+geometry to I(q) first
-        (radial 1-D integration, q unit only), then analyze.
-      - input_mode "curves": use caller-supplied q/intensity arrays directly.
+    Correlation-function (Strobl–Schneider) pipeline with per-step curves;
+    the Bragg peak method was removed in v0.2.6. Image mode integrates
+    image+geometry to I(q) first; multiple files run as a batch under the
+    FIRST file's tuned conditions (frontend warns about possible deviation).
+    v0.2.6 起改为相关函数（Strobl–Schneider）流水线并逐步输出曲线，已移除
+    Bragg 峰法。图像模式先将图像+几何积分成 I(q)；多文件按第一个文件调好的
+    条件批量处理（前端会提示批量可能存在偏离）。
     """
     input_mode = payload.get("input_mode", "curves")
-    label: str | None = None
-    q_list: Any = []
-    i_list: Any = []
     q_unit = payload.get("q_unit", "nm^-1")
 
-    if input_mode == "image":
-        if q_unit not in ("nm^-1", "A^-1"):
-            return {
-                "status": "error",
-                "message": "Image mode requires a q radial unit (q_nm^-1 / q_A^-1). / 图像模式需要 q 径向单位。",
-            }
-        await send_progress(0.05, "Loading geometry... / 加载几何...")
-        geo = payload.get("geometry", {})
-        ai: Any = None
-        if geo.get("poni_path"):
-            ai, _cx, _cy = await _run_blocking(IntegratorFactory.from_poni_path, geo["poni_path"])
-        elif geo.get("manual"):
-            ai, _cx, _cy = await _run_blocking(IntegratorFactory.from_manual_params, **geo["manual"])
-        else:
-            ai, _cx, _cy = await _run_blocking(
-                IntegratorFactory.from_manual_params,
-                float(geo.get("pixel1", geo.get("pixel_size_um", 172.0))),
-                float(geo.get("distance", geo.get("dist_mm", 200.0))),
-                float(geo.get("wavelength", geo.get("wavelength_A", 1.5418))),
-                float(geo.get("centerX", geo.get("center_x_px", 512.0))),
-                float(geo.get("centerY", geo.get("center_y_px", 512.0))),
-            )
-        if ai is None:
-            return {"status": "error", "message": "Failed to create integrator / 积分器创建失败"}
+    def _analyze(q_list: Any, i_list: Any) -> dict[str, Any]:
+        opts: dict[str, Any] = {
+            "q_unit": q_unit,
+            "background": payload.get("background", {"mode": "auto"}),
+            "minority_phase": payload.get("minority_phase", "crystalline"),
+            "correlation": payload.get("correlation", {}),
+            "porod": payload.get("porod", {}),
+            # Manual tangent window (each side optional) — user-driven refit.
+            # 手动切线窗口（逐边可选）——用户驱动的重新拟合。
+            "tangent": payload.get("tangent", {}),
+        }
+        if input_mode != "image":
+            # Curves mode: optional one-sided q filter on the pasted profile.
+            # 曲线模式：对粘贴曲线做上下限各自可选的 q 过滤。
+            q_min = payload.get("q_min")
+            q_max = payload.get("q_max")
+            if q_min is not None or q_max is not None:
+                opts["q_min"] = q_min
+                opts["q_max"] = q_max
+        return LamellarAnalysis.analyze_lamellar(q_list, i_list, **opts)
 
-        files = payload.get("files", [])
+    if input_mode == "image":
+        files = payload.get("files", []) or []
         if not files:
             return {"status": "error", "message": "No files / 无文件"}
-        fpath = files[0]
-        if cancel_event.is_set():
-            raise asyncio.CancelledError()
-        await send_progress(0.25, f"Loading {fpath} / 加载 {fpath}")
-        try:
-            data, dead_mask, meta = await _run_blocking(
-                ImageLoader.load, fpath,
-                payload.get("h5_dataset_path"), payload.get("h5_channel"),
-                payload.get("frame_index", 0),
+
+        if len(files) == 1:
+            q_list, i_list, label, err = await _lamellar_extract_profile(
+                payload, send_progress, cancel_event,
             )
-        except Exception as exc:  # noqa: BLE001
-            return {"status": "error", "message": f"Failed to load image: {exc} / 图像加载失败：{exc}"}
-        if data is None:
-            return {"status": "error", "message": "No data loaded / 无数据"}
+            if err:
+                return {"status": "error", "message": err}
+            if not q_list or len(q_list) < 8:
+                return {"status": "error", "message": "Insufficient SAXS data (≥8 q points needed). / SAXS 数据不足（至少 8 个 q 点）。"}
+            try:
+                result = await _run_blocking(_analyze, q_list, i_list)
+            except ValueError as exc:
+                return {"status": "error", "message": str(exc)}
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                return {"status": "error", "message": f"Lamellar analysis failed: {exc}"}
+            await send_progress(1.0, "Complete / 完成")
+            result["status"] = "ok"
+            result["source_label"] = label or str(files[0])
+            return result
 
-        opts = payload.get("options", {})
-        custom_mask = None
-        custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
-        if custom_mask_path:
-            custom_mask = await _run_blocking(MaskBuilder.load_mask_file, str(custom_mask_path))
-        mask = await _run_blocking(
-            MaskBuilder.build, data,
-            payload.get("valid_min", 0.0), payload.get("valid_max", 1e10),
-            dead_mask, custom_mask,
-        )
+        # ── Batch: first file's tuned conditions applied to every file /
+        #    批量：把第一个文件调好的条件应用到所有文件 ──
+        items: list[dict[str, Any]] = []
+        failed: list[dict[str, str]] = []
+        n = len(files)
+        for i, fpath in enumerate(files):
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+            base = i / n
+            span = 1.0 / n
 
-        integrate_kwargs: dict[str, Any] = {
-            "data": data,
-            "npt": opts.get("npt", 1000),
-            "unit": "q_nm^-1" if q_unit == "nm^-1" else "q_A^-1",
-            "mask": mask.astype(np.uint8),
-            "method": opts.get("method", "splitpixel"),
-            "correctSolidAngle": opts.get("correct_solid_angle", True),
+            async def _file_progress(p: float, msg: str, _b: float = base, _s: float = span) -> None:
+                await send_progress(min(_b + p * _s, 0.999), f"[{i + 1}/{n}] {msg}")
+
+            try:
+                q_list, i_list, label, err = await _lamellar_extract_profile(
+                    payload, _file_progress, cancel_event, fpath=str(fpath),
+                )
+                if err:
+                    failed.append({"file": str(fpath), "reason": err})
+                    continue
+                if not q_list or len(q_list) < 8:
+                    failed.append({"file": str(fpath), "reason": "Insufficient SAXS data / SAXS 数据不足"})
+                    continue
+                result = await _run_blocking(_analyze, q_list, i_list)
+                result["status"] = "ok"
+                result["source_label"] = label or str(fpath)
+                items.append(result)
+            except ValueError as exc:
+                failed.append({"file": str(fpath), "reason": str(exc)})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                traceback.print_exc()
+                failed.append({"file": str(fpath), "reason": f"Lamellar analysis failed: {exc}"})
+
+        await send_progress(1.0, "Complete / 完成")
+        if not items:
+            reasons = "; ".join(f.get("reason", "") for f in failed[:3])
+            return {"status": "error", "message": f"All {n} files failed. {reasons}"}
+        return {
+            "status": "ok",
+            "batch": True,
+            "items": items,
+            "failed": failed,
         }
-        radial_min = opts.get("radial_min")
-        radial_max = opts.get("radial_max")
-        if radial_min is not None and radial_max is not None and float(radial_min) < float(radial_max):
-            integrate_kwargs["radial_range"] = (float(radial_min), float(radial_max))
-        await send_progress(0.45, "Integrating radially / 径向积分中")
-        if hasattr(ai, "integrate1d_ng"):
-            res = ai.integrate1d_ng(**integrate_kwargs)
-        else:
-            res = ai.integrate1d(**integrate_kwargs)
-        q_list, i_list = _drop_empty_bins(res, opts.get("drop_empty_bins", True))
-        label = meta.get("filename", fpath)
-    else:
-        q_list = payload.get("q", [])
-        i_list = payload.get("intensity", [])
 
+    # Curves mode / 曲线模式
+    q_list = payload.get("q", [])
+    i_list = payload.get("intensity", [])
     if not q_list or len(q_list) < 8:
         return {"status": "error", "message": "Insufficient SAXS data (≥8 q points needed). / SAXS 数据不足（至少 8 个 q 点）。"}
-
-    opts = {
-        "q_unit": q_unit,
-        "methods": payload.get("methods", ["bragg", "correlation"]),
-        "background": payload.get("background", {"mode": "auto"}),
-        "minority_phase": payload.get("minority_phase", "crystalline"),
-        "bragg": payload.get("bragg", {}),
-        "correlation": payload.get("correlation", {}),
-    }
     try:
-        result = await _run_blocking(LamellarAnalysis.analyze_lamellar, q_list, i_list, **opts)
+        result = await _run_blocking(_analyze, q_list, i_list)
     except ValueError as exc:
         return {"status": "error", "message": str(exc)}
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         return {"status": "error", "message": f"Lamellar analysis failed: {exc}"}
-
     await send_progress(1.0, "Complete / 完成")
     result["status"] = "ok"
-    if label is not None:
-        result["source_label"] = label
     return result
 
 
