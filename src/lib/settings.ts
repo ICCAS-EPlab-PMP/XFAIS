@@ -11,10 +11,13 @@
 // OMP 线程数同时推送到 Electron 主进程，下一次拉起 Python 时在解释器
 // 启动前注入 OMP_NUM_THREADS（见 manager.ts）。
 import { reactive, watch } from 'vue'
-import { DEFAULT_SETTINGS, type AppSettings, type IntegrationMethodSetting } from '@/types/settings'
+import { DEFAULT_SETTINGS, type AppSettings, type AiSettings, type IntegrationMethodSetting } from '@/types/settings'
 
 const STORAGE_KEY = 'xfaos.settings.v1'
 const LEGACY_LOCALE_KEY = 'x-fais-locale'
+
+/** True only in the Jev test build (vite --mode jev) / 仅 Jev 测试构建为真 */
+export const isJevBuild = (): boolean => import.meta.env.VITE_JEV_BUILD === '1'
 
 function readStored(): Partial<AppSettings> {
   try {
@@ -38,10 +41,21 @@ function migrateLocale(stored: Partial<AppSettings>): Partial<AppSettings> {
 
 const stored = migrateLocale(readStored())
 
+// Explicit per-field merge keeps AiSettings fields required (a plain spread of
+// `Partial<AiSettings>` would widen them back to `string | undefined`).
+// 逐字段合并以保持 AiSettings 字段为必填（直接展开 Partial 会把类型放宽回
+// string | undefined）。Stale llm* fields from older builds are dropped here.
+// 旧版本遗留的 llm* 字段在此合并中被丢弃。
+const aiDefaults = DEFAULT_SETTINGS.ai ?? { jevApiKey: '' }
+const aiStored: Partial<AiSettings> = stored.ai ?? {}
+
 const state = reactive<AppSettings>({
   ...DEFAULT_SETTINGS,
   ...stored,
-  performance: { ...DEFAULT_SETTINGS.performance, ...(stored.performance ?? {}) }
+  performance: { ...DEFAULT_SETTINGS.performance, ...(stored.performance ?? {}) },
+  ai: {
+    jevApiKey: aiStored.jevApiKey ?? aiDefaults.jevApiKey
+  }
 })
 
 /** Push the OMP override to the Electron main process (best-effort, web-safe). */
