@@ -13,6 +13,15 @@ import { resolvePythonPaths } from './python/runtime'
 // Setting process.noAsar = true before each call prevents the wrapper
 // from interfering with commands that run outside the ASAR archive.
 
+/**
+ * ASAR-safe execSync — NOT injection-safe by itself: `command` is handed to a
+ * shell, so callers must never interpolate untrusted or environment-derived
+ * values into it. Use literal command strings here, or safeSpawn with an
+ * args array (no shell) whenever a value varies.
+ * ASAR 安全的 execSync——其本身不保证注入安全：命令串会交给 shell，
+ * 调用方严禁内插不可信或环境变量来源的值；需要变量时改用 safeSpawn
+ * 的参数数组形式（不经 shell）。
+ */
 const safeExecSync = (command: string, options?: Parameters<typeof execSync>[1]): string => {
   const prev = process.noAsar
   process.noAsar = true
@@ -341,17 +350,19 @@ const checkPyfaiSystem = (): { available: boolean; version: string | null; calib
       try {
         const localAppData = process.env.LOCALAPPDATA
         if (localAppData) {
-          const dirOutput = safeExecSync(
-            `dir /b /ad "${localAppData}\\Programs\\Python\\Python*" ${DEV_NULL}`,
-            { timeout: 5000, encoding: 'utf-8', ...shellOpts }
-          ).trim()
-          if (dirOutput) {
-            for (const d of dirOutput.split('\n')) {
-              const dirName = d.trim()
-              if (!dirName) continue
-              const candidate = path.join(localAppData, 'Programs', 'Python', dirName, 'Scripts', calib2Name)
-              if (existsSync(candidate)) { calib2Path = candidate; break }
-            }
+          // v0.3.0 hardening: enumerate via fs instead of a shell `dir`
+          // command — environment-derived values never enter a command
+          // string. / v0.3.0 加固：改用 fs 枚举目录，环境变量不再进入命令串。
+          const pythonRoot = path.join(localAppData, 'Programs', 'Python')
+          let dirEntries: string[] = []
+          try {
+            dirEntries = readdirSync(pythonRoot, { withFileTypes: true })
+              .filter((entry) => entry.isDirectory() && entry.name.startsWith('Python'))
+              .map((entry) => entry.name)
+          } catch { /* python root missing / Python 根目录不存在 */ }
+          for (const dirName of dirEntries) {
+            const candidate = path.join(pythonRoot, dirName, 'Scripts', calib2Name)
+            if (existsSync(candidate)) { calib2Path = candidate; break }
           }
         }
       } catch { /* not found */ }

@@ -17,6 +17,11 @@ from typing import Any, Callable, Optional
 import h5py
 import numpy as np
 
+# Relative import works under both import routes: `services.*` (launcher,
+# python/ on sys.path) and `python.services.*` (tests).
+# 相对导入兼容两种导入路由：services.*（launcher）与 python.services.*（测试）。
+from .paths import validated_output_path_optional
+
 OVERFLOW_THRESHOLD = 4.25e9
 OVERFLOW_VALUE = -1.0
 
@@ -81,7 +86,10 @@ class H5Converter:
         image_format: str = "tiff",
     ):
         self.root_dir = str(root_dir)
-        self.output_dir = str(output_dir)
+        # v0.3.0 hardening: all converted outputs are written under this
+        # directory (joins use sanitized relative names), so validating it
+        # here confines every _write_csv/_write_dat target.
+        self.output_dir = validated_output_path_optional(str(output_dir or ""), field="output_dir")
         self.master_suffix = master_suffix
         self.table_format = table_format
         self.image_format = image_format
