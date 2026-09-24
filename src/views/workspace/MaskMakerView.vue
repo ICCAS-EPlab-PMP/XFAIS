@@ -70,10 +70,11 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onBeforeUnmount, watch } from 'vue'
+import { ref, computed, onBeforeUnmount, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTransport } from '@/lib/transport'
 import { useToast } from '@/lib/toast'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { matchesExtensions, useDropZone } from '@/lib/fileDrop'
 import { MaskStore } from '@/lib/mask/mask-store'
 import type {
@@ -117,6 +118,29 @@ const canvasRef = ref<InstanceType<typeof MaskCanvas> | null>(null)
 // Since store.getMask() returns the same Uint8Array reference, Vue's watch cannot detect
 // in-place mutations. We use a monotonically increasing counter as a reactivity signal.
 const maskVersion = ref(0)
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。maskEdits 计数
+// 复用 maskVersion（每次掩膜编辑 +1）。
+const maskExportedOnce = ref(false)
+watch(
+  [imageLoaded, maskVersion, maskExportedOnce],
+  () => {
+    reportWorkspace('mask-maker', {
+      filesCount: imageLoaded.value ? 1 : 0,
+      hasPoni: false,
+      canRun: imageLoaded.value,
+      phase: 'idle',
+      extras: {
+        maskEdits: maskVersion.value,
+        exported: maskExportedOnce.value,
+      },
+    })
+  },
+  { immediate: true }
+)
+onUnmounted(() => clearWorkspace('mask-maker'))
 
 // Display settings (colormap / log / clim) — mirrors the viewer. The backend
 // `mask_maker` route reuses viewer_config's load/load_preview action, which
@@ -579,6 +603,7 @@ async function handleExport(payload: {
   savePath: string
 }): Promise<void> {
   if (!store.value) return
+  maskExportedOnce.value = true
 
   try {
     const { taskId } = await transport.submitTask('mask_maker', {

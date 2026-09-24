@@ -42,6 +42,16 @@
         >
           {{ currentLocale === 'zh' ? 'EN' : '中' }}
         </button>
+
+        <button
+          class="settings-button"
+          type="button"
+          data-ai-id="shell:settings"
+          :title="t('settings.title')"
+          @click="goSettings"
+        >
+          ⚙
+        </button>
       </div>
     </header>
 
@@ -98,6 +108,7 @@ function toggleLocale(): void {
   locale.value = next
   localStorage.setItem(localeStorageKey, next)
 }
+
 const route = useRoute()
 const router = useRouter()
 const transport = useTransport()
@@ -134,6 +145,10 @@ const pythonStateLabel = computed(() => {
 
 const goHome = async (): Promise<void> => {
   await router.push('/')
+}
+
+const goSettings = async (): Promise<void> => {
+  await router.push('/settings')
 }
 
 const restartPython = async (): Promise<void> => {
@@ -366,6 +381,24 @@ onBeforeUnmount(() => {
 
 .locale-toggle:hover {
   opacity: 0.85;
+}
+
+.settings-button {
+  border: none;
+  border-radius: 999px;
+  padding: 10px 14px;
+  min-width: 44px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--text-primary);
+  font-size: 0.95rem;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: all var(--transition-fast);
+}
+
+.settings-button:hover {
+  background: var(--primary-bg);
+  color: var(--primary);
 }
 
 .shell-main {

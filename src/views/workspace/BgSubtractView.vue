@@ -42,7 +42,7 @@
               @dragleave="fileDrop.onDragLeave"
               @drop="fileDrop.onDrop"
             >
-              <button type="button" class="bgs-btn" @click="handleChooseSampleFiles">
+              <button type="button" class="bgs-btn" data-ai-id="bg:files" @click="handleChooseSampleFiles">
                 {{ t('bgSubtract.selectFiles') }}
               </button>
               <div class="bgs-import-mode">
@@ -107,6 +107,7 @@
               mode="openFile"
               :label="t('bgSubtract.bgFile')"
               :filters="dataFileFilters"
+              data-ai-id="bg:background"
             />
           </template>
 
@@ -138,6 +139,7 @@
               mode="openFile"
               :label="t('bgSubtract.bgFile')"
               :filters="dataFileFilters"
+              data-ai-id="bg:background"
             />
           </template>
         </div>
@@ -306,6 +308,7 @@
             type="button"
             class="bgs-btn bgs-btn-primary"
             :disabled="!canSubtract"
+            data-ai-id="bg:run"
             @click="handleSubtract"
           >
             {{ mode === 'batch' ? t('bgSubtract.startBatch') : t('bgSubtract.execute') }}
@@ -493,6 +496,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import type { TaskBinaryPayload } from '@/lib/transport'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
@@ -646,6 +650,27 @@ const canSubtract = computed(() => {
   }
   return batchFolderFiles.value.length > 0 && !!bgPath.value && !!outputDir.value
 })
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。
+watch(
+  [samplePaths, batchFolderFiles, bgPath, outputDir, state, canSubtract],
+  () => {
+    reportWorkspace('bg-subtract', {
+      filesCount: currentSamplePaths.value.length,
+      hasPoni: false,
+      canRun: canSubtract.value,
+      phase: state.value,
+      extras: {
+        hasBackground: Boolean(bgPath.value),
+        hasOutputDir: Boolean(outputDir.value),
+      },
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('bg-subtract'))
 
 const canMatchIonchamber = computed(() => {
   const hasFiles = mode.value === 'batch'

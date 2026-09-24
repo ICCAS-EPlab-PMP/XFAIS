@@ -13,7 +13,7 @@
         <div class="is-card">
           <div class="is-card-header">
             <h3 class="is-card-title">{{ t('imageStitch.images') }}</h3>
-            <button type="button" class="is-btn is-btn-sm" @click="addImage">
+            <button type="button" class="is-btn is-btn-sm" data-ai-id="stitch:add" @click="addImage">
               + {{ t('imageStitch.addImage') }}
             </button>
           </div>
@@ -174,6 +174,7 @@
             type="button"
             class="is-btn"
             :disabled="!canSave"
+            data-ai-id="stitch:save"
             @click="handleSave"
           >
             {{ t('imageStitch.saveResult') }}
@@ -186,6 +187,7 @@
             type="button"
             class="is-btn is-btn-primary"
             :disabled="!canCompute"
+            data-ai-id="stitch:run"
             @click="handleCompute"
           >
             {{ t('imageStitch.execute') }}
@@ -255,10 +257,11 @@
  * Image Stitch page: stitch multiple detector images taken at different
  * spatial positions into a single large canvas using pixel offsets.
  */
-import { ref, computed, onUnmounted } from 'vue'
+import { ref, computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import type { TaskBinaryPayload } from '@/lib/transport'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 
@@ -391,6 +394,25 @@ const canCompute = computed(() => {
   if (state.value === 'running') return false
   return validImages.value.length >= 2
 })
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。
+const stitchSavedOnce = ref(false)
+watch(
+  [images, state, canCompute, stitchSavedOnce],
+  () => {
+    reportWorkspace('image-stitch', {
+      filesCount: validImages.value.length,
+      hasPoni: false,
+      canRun: canCompute.value,
+      phase: state.value,
+      extras: { saved: stitchSavedOnce.value },
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('image-stitch'))
 
 const canSave = computed(() => {
   return state.value === 'done' && !!outputDir.value && validImages.value.length >= 2
@@ -559,6 +581,7 @@ async function handleCompute(): Promise<void> {
 
 async function handleSave(): Promise<void> {
   if (!outputDir.value || validImages.value.length < 2) return
+  stitchSavedOnce.value = true
 
   const params: Record<string, unknown> = {
     action: 'save',

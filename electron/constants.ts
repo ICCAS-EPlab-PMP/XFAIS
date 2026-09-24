@@ -1,5 +1,5 @@
 export const APP_NAME = 'X-FAIS'
-export const APP_VERSION = '0.2.5'
+export const APP_VERSION = '0.3.0'
 export const IPC_CHANNELS = {
   appMeta: 'app:meta',
   pythonStatus: 'python:status',
@@ -23,5 +23,7 @@ export const IPC_CHANNELS = {
   pyfaiLaunch: 'pyfai:launch',
   pyfaiInstall: 'pyfai:install',
   pyfaiInstallDeps: 'pyfai:installDeps',
-  pyfaiExportBat: 'pyfai:exportBat'
+  pyfaiExportBat: 'pyfai:exportBat',
+  // 设置 → 主进程启动环境覆盖（OMP 线程数等）/ Settings → main-process launch env overrides
+  settingsSetPythonLaunchEnv: 'settings:setPythonLaunchEnv'
 } as const

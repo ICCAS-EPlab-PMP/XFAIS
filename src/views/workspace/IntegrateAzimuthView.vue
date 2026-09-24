@@ -8,7 +8,7 @@
     <div class="az-layout">
       <!-- ===== Sidebar / 侧边栏 ===== -->
       <aside class="az-sidebar">
-        <GeometryForm v-model="geometry" />
+        <GeometryForm v-model="geometry" data-ai-id="azimuth:geometry" />
 
         <!-- Mask Import (collapsible, collapsed by default) / 掩膜导入（可折叠，默认收起） -->
         <div class="az-collapsible">
@@ -171,6 +171,19 @@
             <input v-model="dropEmptyBins" type="checkbox" :data-testid="testIds.azimuthDropEmptyBins" />
             <span>{{ t('business.advancedOptions.dropEmptyBins') }}</span>
           </label>
+          <!-- v0.3.0 integration method (absent before; backend default splitpixel
+               keeps pre-0.3.0 results identical) / v0.3.0 积分算法（此前无此项；
+               后端默认 splitpixel，旧结果保持一致） -->
+          <label class="az-field" style="margin-top: 10px;">
+            <span class="az-field-label">{{ t('business.advancedOptions.algorithm') }}</span>
+            <select v-model="method" class="az-input">
+              <option value="splitpixel">splitpixel</option>
+              <option value="csr">csr</option>
+              <option value="lut">lut</option>
+              <option value="bbox">bbox</option>
+              <option value="numpy">numpy</option>
+            </select>
+          </label>
         </fieldset>
 
         <!-- Display settings (collapsible, default collapsed) / 显示设置（可折叠，默认收起） -->
@@ -212,6 +225,7 @@
             <button
               type="button"
               class="az-file-btn"
+              data-ai-id="azimuth:files"
               @click="handleChooseFiles"
             >
               {{ t('business.fileSelection.selectFiles') }}
@@ -364,6 +378,7 @@
             class="az-run-btn"
             :disabled="isRunning || !!radialValidationError || !!azimuthValidationError || files.length === 0"
             :data-testid="testIds.azimuthRunBtn"
+            data-ai-id="azimuth:run"
             @click="handleRun"
           >
             {{ isRunning ? t('integrateAzimuth.running') : t('integrateAzimuth.run') }}
@@ -401,6 +416,7 @@
           :result="exportData"
           :formats="['txt', 'csv', 'hdf5']"
           :data-testid="testIds.azimuthExport"
+          data-ai-id="azimuth:export"
           @export="handleExport"
         />
       </main>
@@ -418,6 +434,7 @@
  * within a specified radial range.
  */
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
@@ -528,6 +545,20 @@ const radialMax = ref(1.02)
 const chiUnit = ref<'chi_deg' | 'chi_rad'>('chi_deg')
 const npt = ref(360)
 const nptRad = ref(100)
+// v0.3.0 integration method — initial value follows Settings defaultMethod.
+// v0.3.0 积分算法——初始值跟随设置的默认算法。
+const method = ref<'splitpixel' | 'csr' | 'lut' | 'bbox' | 'numpy'>(
+  ((): 'splitpixel' | 'csr' | 'lut' | 'bbox' | 'numpy' => {
+    try {
+      const raw = localStorage.getItem('xfaos.settings.v1')
+      const parsed = raw ? JSON.parse(raw) : null
+      const m = parsed?.performance?.defaultMethod
+      return m === 'csr' ? 'csr' : 'splitpixel'
+    } catch {
+      return 'splitpixel'
+    }
+  })()
+)
 /** Drop fully-masked empty bins from the result (default on). / 剔除完全遮蔽的空 bin（默认开）。 */
 const dropEmptyBins = ref(true)
 /** Azimuth integration range in degrees. Default -180..180 = full 360°. */
@@ -660,6 +691,33 @@ const azimuthValidationError = computed<string | null>(() => {
   }
   return null
 })
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。
+watch(
+  [files, isRunning, errorMessage, chartTraces, () => geometry.value.poniPath],
+  () => {
+    reportWorkspace('integrate-azimuth', {
+      filesCount: files.value.length,
+      hasPoni: Boolean(geometry.value.poniPath),
+      canRun:
+        !isRunning.value &&
+        radialValidationError.value === null &&
+        azimuthValidationError.value === null &&
+        files.value.length > 0,
+      phase: isRunning.value
+        ? 'running'
+        : errorMessage.value
+          ? 'error'
+          : chartTraces.value.length
+            ? 'done'
+            : 'idle',
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('integrate-azimuth'))
 
 // ── Computed / 计算属性 ──
 
@@ -1279,6 +1337,7 @@ async function handleRun(): Promise<void> {
       chiUnit: chiUnit.value,
       npt: npt.value,
       nptRad: nptRad.value,
+      method: method.value,
       dropEmptyBins: dropEmptyBins.value,
     }
 

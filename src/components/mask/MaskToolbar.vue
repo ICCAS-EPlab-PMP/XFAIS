@@ -3,7 +3,7 @@
     <!-- File operations -->
     <div class="toolbar-group">
       <h4 class="group-title">{{ t('maskMaker.toolbar.file') }}</h4>
-      <button class="toolbar-btn" @click="$emit('open-image')">
+      <button class="toolbar-btn" data-ai-id="mask:open" @click="$emit('open-image')">
         <span class="btn-icon">📂</span>
         <span>{{ t('maskMaker.toolbar.openImage') }}</span>
       </button>
@@ -11,7 +11,7 @@
         <span class="btn-icon">📥</span>
         <span>{{ t('maskMaker.toolbar.loadMask') }}</span>
       </button>
-      <button class="toolbar-btn" :disabled="!imageLoaded" @click="$emit('export-mask')">
+      <button class="toolbar-btn" :disabled="!imageLoaded" data-ai-id="mask:export" @click="$emit('export-mask')">
         <span class="btn-icon">📤</span>
         <span>{{ t('maskMaker.toolbar.exportMask') }}</span>
       </button>

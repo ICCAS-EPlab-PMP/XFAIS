@@ -38,6 +38,16 @@ Thumbs.db
 # Sisyphus AI workspace
 .sisyphus/
 
+# Security-scan plugin state — never commit / 安全扫描插件状态目录，禁止入库
+.mimosa/
+.zcode/
+.zcodeignore
+.workbuddy/
+reasonix.toml
+
+# Tutorials stay local-only, never committed / 教程仅本地保留，不入库
+/tutorials/
+
 # Reference code artifacts (ref/ dir contains reference projects)
 ref/frontend/node_modules/
 ref/frontend/dist/

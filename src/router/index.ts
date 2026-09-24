@@ -103,6 +103,16 @@ const router = createRouter({
       }
     },
     {
+      path: '/settings',
+      name: 'settings',
+      component: () => import('@/views/SettingsView.vue'),
+      meta: {
+        titleKey: 'settings.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'settings.subtitle'
+      }
+    },
+    {
       path: '/workspace/pyfai-calib',
       name: 'pyfai-calib',
       component: () => import('@/views/workspace/PyfaicalibView.vue'),
@@ -110,6 +120,16 @@ const router = createRouter({
         titleKey: 'pyfaiCalib.title',
         sectionKey: 'shell.sections.workspace',
         descriptionKey: 'pyfaiCalib.subtitle'
+      }
+    },
+    {
+      path: '/workspace/calibration',
+      name: 'calibration',
+      component: () => import('@/views/workspace/CalibrationView.vue'),
+      meta: {
+        titleKey: 'calibration.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'calibration.subtitle'
       }
     },
     {

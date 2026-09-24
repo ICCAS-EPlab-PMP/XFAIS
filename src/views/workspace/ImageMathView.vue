@@ -41,6 +41,7 @@
             mode="openFile"
             :label="t('imageMath.selectFile')"
             :filters="dataFileFilters"
+            data-ai-id="math:image1"
           />
           <div class="im-field">
             <label class="im-label">{{ t('imageMath.factor') }}</label>
@@ -61,6 +62,7 @@
             mode="openFile"
             :label="t('imageMath.selectFile')"
             :filters="dataFileFilters"
+            data-ai-id="math:image2"
           />
           <div class="im-field">
             <label class="im-label">{{ t('imageMath.factor') }}</label>
@@ -93,6 +95,7 @@
             type="button"
             class="im-btn"
             :disabled="!canSave"
+            data-ai-id="math:save"
             @click="handleSave"
           >
             {{ t('imageMath.saveResult') }}
@@ -105,6 +108,7 @@
             type="button"
             class="im-btn im-btn-primary"
             :disabled="!canCompute"
+            data-ai-id="math:run"
             @click="handleCompute"
           >
             {{ t('imageMath.execute') }}
@@ -269,6 +273,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import type { TaskBinaryPayload } from '@/lib/transport'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 
@@ -363,6 +368,25 @@ const canCompute = computed(() => {
   if (state.value === 'running') return false
   return !!image1Path.value && !!image2Path.value
 })
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。
+const mathSavedOnce = ref(false)
+watch(
+  [image1Path, image2Path, state, canCompute, mathSavedOnce],
+  () => {
+    reportWorkspace('image-math', {
+      filesCount: (image1Path.value ? 1 : 0) + (image2Path.value ? 1 : 0),
+      hasPoni: false,
+      canRun: canCompute.value,
+      phase: state.value,
+      extras: { saved: mathSavedOnce.value },
+    })
+  },
+  { immediate: true }
+)
+onUnmounted(() => clearWorkspace('image-math'))
 
 const canSave = computed(() => {
   return state.value === 'done' && !!outputDir.value
@@ -642,6 +666,7 @@ async function handleCompute(): Promise<void> {
 
 async function handleSave(): Promise<void> {
   if (!outputDir.value || !image1Path.value || !image2Path.value) return
+  mathSavedOnce.value = true
 
   const params: Record<string, unknown> = {
     action: 'save',
