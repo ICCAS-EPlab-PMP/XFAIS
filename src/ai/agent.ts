@@ -35,7 +35,7 @@ import {
 import { NAV_CATALOG, PONI_PATH_KEY, buildAppState, navEntry, navTitle } from './context'
 import { highlightTarget } from './highlight'
 import { decideRouteViaRules, decideTemplateViaRules, unitForTemplate, unitRuleReason } from './rules-router'
-import { askTypesafeChoice, askTypesafeChoices } from './providers/typesafe'
+import { askTypesafeChoice, askTypesafeChoices, webJevConfigured } from './providers/typesafe'
 import { createGuideEngine, teachingEnabled, type GuideEngine } from './guide/engine'
 import { GUIDES, hasGuide } from './guide/registry'
 
@@ -323,9 +323,11 @@ export function useAiAgent() {
     const ctx = buildAppState()
     const settings = getAiSettings()
 
-    if (settings.jevApiKey) {
+    // Web deployments share the server-admin key, so the gate is "personal
+    // key set OR the backend reports a shared key"; desktop stays key-gated.
+    if (settings.jevApiKey || (await webJevConfigured())) {
       try {
-        return await routeViaJev(intent, ctx, settings.jevApiKey)
+        return await routeViaJev(intent, ctx, settings.jevApiKey ?? '')
       } catch (err) {
         explainJevFailure(err)
       }
@@ -337,9 +339,9 @@ export function useAiAgent() {
   const decideTemplate = async (intent: string, summary: PoniSummary | null): Promise<TemplateDecision> => {
     const settings = getAiSettings()
 
-    if (settings.jevApiKey) {
+    if (settings.jevApiKey || (await webJevConfigured())) {
       try {
-        return await templateAndUnitViaJev(intent, summary, settings.jevApiKey)
+        return await templateAndUnitViaJev(intent, summary, settings.jevApiKey ?? '')
       } catch (err) {
         explainJevFailure(err)
       }

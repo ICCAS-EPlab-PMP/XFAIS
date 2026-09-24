@@ -233,3 +233,61 @@ def test_endpoint_rejects_oversized_body(web_server: _WebServer, monkeypatch: py
     monkeypatch.setattr(sl, "_JEV_MAX_BODY_BYTES", 8)
     status, _, _body = _post(web_server.port, "/api/ai/systemone", b'{"state": {}}')
     assert status == 413
+
+
+# ---------------------------------------------------------------------------
+# Client source restriction (XFAIS_JEV_ALLOWED_CIDRS) — default: allow all
+# ---------------------------------------------------------------------------
+
+
+def _wire_forwarding(monkeypatch: pytest.MonkeyPatch, mock_upstream: ThreadingHTTPServer) -> None:
+    monkeypatch.setenv(sl._JEV_API_KEY_ENV, "test-key")
+    monkeypatch.setenv(sl._JEV_API_URL_ENV, f"http://127.0.0.1:{mock_upstream.server_address[1]}/v1/systemone")
+    monkeypatch.setattr(sl, "_validate_public_http_url", lambda url: None)
+
+
+def test_cidr_unset_shares_key_with_everyone(web_server: _WebServer, mock_upstream: ThreadingHTTPServer,
+                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    """未配置 CIDR = 默认全员可用（既定需求）/ Unset = everyone (documented default)."""
+    _wire_forwarding(monkeypatch, mock_upstream)
+    monkeypatch.delenv(sl._JEV_ALLOWED_CIDRS_ENV, raising=False)
+    status, _, _body = _post(web_server.port, "/api/ai/systemone", b'{"state": {}}')
+    assert status == 200
+
+
+def test_cidr_blocks_client_outside_whitelist(web_server: _WebServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    """白名单外的客户端 → 403 / Client outside the whitelist → 403."""
+    monkeypatch.setenv(sl._JEV_API_KEY_ENV, "test-key")
+    monkeypatch.setenv(sl._JEV_ALLOWED_CIDRS_ENV, "10.6.8.0/24")  # test client is 127.0.0.1
+    status, _, body = _post(web_server.port, "/api/ai/systemone", b'{"state": {}}')
+    assert status == 403
+    assert "restricted" in json.loads(body)["error"]
+
+
+@pytest.mark.parametrize("cidrs", [
+    "127.0.0.0/8,::1/128",   # v4 net matches; v6 entry exercises mixed families
+    "127.0.0.1",             # single-IP form (/32)
+])
+def test_cidr_allows_listed_client(web_server: _WebServer, mock_upstream: ThreadingHTTPServer,
+                                   monkeypatch: pytest.MonkeyPatch, cidrs: str) -> None:
+    """白名单内的客户端正常转发 / Listed client forwards normally."""
+    _wire_forwarding(monkeypatch, mock_upstream)
+    monkeypatch.setenv(sl._JEV_ALLOWED_CIDRS_ENV, cidrs)
+    status, _, _body = _post(web_server.port, "/api/ai/systemone", b'{"state": {}}')
+    assert status == 200
+
+
+def test_cidr_malformed_config_fails_closed(web_server: _WebServer, monkeypatch: pytest.MonkeyPatch) -> None:
+    """配置笔误必须封死（500），不能悄悄放开 / Malformed config fails closed."""
+    monkeypatch.setenv(sl._JEV_API_KEY_ENV, "test-key")
+    monkeypatch.setenv(sl._JEV_ALLOWED_CIDRS_ENV, "10.6.8.0/24,not-a-cidr")
+    status, _, body = _post(web_server.port, "/api/ai/systemone", b'{"state": {}}')
+    assert status == 500
+    assert sl._JEV_ALLOWED_CIDRS_ENV in json.loads(body)["error"]
+
+
+def test_jev_client_allowed_version_mismatch_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v4 客户端对 v6-only 白名单 = 拒绝（不抛异常）/ v4 client vs v6-only list rejects cleanly."""
+    monkeypatch.setenv(sl._JEV_ALLOWED_CIDRS_ENV, "fe80::/10")
+    assert sl._jev_client_allowed(("fe80::1", 1, 0, 0)) is True
+    assert sl._jev_client_allowed(("127.0.0.1", 1)) is False
