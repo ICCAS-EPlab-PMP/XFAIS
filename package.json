@@ -13,6 +13,7 @@
     "dev:electron": "wait-on tcp:127.0.0.1:5173 file:dist-electron/main/index.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .",
     "build": "run-s build:renderer build:electron",
     "build:pack": "npm run build && electron-builder --win",
+    "build:pack:jev": "npm run build:jev && electron-builder --win --config build/electron-builder.jev.json",
     "build:pack:dir": "npm run build && electron-builder --win --dir",
     "build:pack:mac": "npm run build && electron-builder --mac",
     "build:pack:all": "npm run build && electron-builder --win --mac",
@@ -26,7 +27,9 @@
     "test:unit": "vitest run",
     "test:python": "npm run python:health -- --quiet && \".python-runtime/python-3.11.9-win32-x64/python.exe\" -m pytest python/tests",
     "e2e": "npm run build && playwright test",
-    "build:web": "vite build --mode web"
+    "build:web": "vite build --mode web",
+    "build:jev": "run-s build:electron build:renderer:jev",
+    "build:renderer:jev": "vite build --mode jev"
   },
   "dependencies": {
     "plotly.js-dist-min": "^3.5.0",

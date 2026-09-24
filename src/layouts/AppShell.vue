@@ -84,11 +84,17 @@
 
     <GlobalToastHost />
     <UploadProgressHost />
+    <!-- AI assistant — Jev test build only. The dynamic import is statically
+         dead in the main build (VITE_JEV_BUILD is undefined → false), so the
+         chunk is never emitted into production bundles.
+         AI 助手——仅 Jev 测试构建。主线构建中该动态导入为静态死代码
+         （VITE_JEV_BUILD 未定义 → false），产物不含此 chunk。 -->
+    <AiAssistant v-if="AiAssistant" />
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import GlobalToastHost from '@/components/GlobalToastHost.vue'
@@ -109,6 +115,16 @@ function toggleLocale(): void {
   localStorage.setItem(localeStorageKey, next)
 }
 
+// Jev test build gating: static env replacement makes this branch dead code in
+// the main build. / Jev 测试构建门控：主构建中经静态环境替换成为死代码。
+// NOTE: the binding name must EXACTLY match the template tag <AiAssistant> —
+// Vue's setup-binding lookup is case-sensitive and does not camelize
+// `aiAssistant` to match `AiAssistant`.
+// 注意：绑定名必须与模板标签 <AiAssistant> 完全一致——Vue 的 setup 绑定查找
+// 区分大小写，不会把 `aiAssistant` 驼峰化去匹配 `AiAssistant`。
+const AiAssistant = import.meta.env.VITE_JEV_BUILD === '1'
+  ? defineAsyncComponent(() => import('@/components/ai/AssistantBar.vue'))
+  : null
 const route = useRoute()
 const router = useRouter()
 const transport = useTransport()

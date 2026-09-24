@@ -1,0 +1,63 @@
+{
+  "appId": "com.iccas.x-fais.ai-assistant-preview",
+  "productName": "X-FAIS-AI-Assistant-Preview",
+  "directories": {
+    "buildResources": "resources",
+    "output": "dist-electron-builder"
+  },
+  "icon": "ICON/icon.ico",
+  "afterPack": "build/afterPack.cjs",
+  "mac": {
+    "icon": "ICON/icon.icns",
+    "category": "public.app-category.productivity",
+    "target": [
+      {
+        "target": "dmg",
+        "arch": ["x64", "arm64"]
+      }
+    ]
+  },
+  "dmg": {
+    "artifactName": "${productName}-${version}-${arch}.${ext}"
+  },
+  "files": [
+    "dist/**/*",
+    "dist-electron/**/*",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": ".python-runtime",
+      "to": "python-runtime"
+    },
+    {
+      "from": "python",
+      "to": "python"
+    },
+    {
+      "from": "resources/run-command.mjs",
+      "to": "run-command.mjs"
+    }
+  ],
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": ["x64"]
+      },
+      {
+        "target": "portable",
+        "arch": ["x64"]
+      }
+    ]
+  },
+  "nsis": {
+    "artifactName": "${productName}-${version}-setup-${arch}.${ext}",
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "include": "build/installer.nsh"
+  },
+  "portable": {
+    "artifactName": "${productName}-${version}-portable-${arch}.${ext}"
+  }
+}

@@ -82,6 +82,7 @@ API_ROUTES: list[str] = [
     "/api/install_pyfai",
     "/api/export_bat_pyfai",
     "/api/calibration",
+    "/api/ai_context",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -6357,6 +6358,23 @@ async def handle_calibration(
     return await _run(payload, send_progress, cancel_event)
 
 
+async def handle_ai_context(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Deterministic context computation for the AI assistant (v0.3.0).
+
+    'poni_summary': parse a .poni and derive the reachable q range — the
+    numbers the assistant's template decision is based on. Pure math, no AI.
+    AI 助手的确定性上下文计算（v0.3.0）。'poni_summary'：解析 .poni 并推导
+    可达 q 范围——模板决策所依据的数字。纯计算，无 AI 参与。
+    """
+    from services.ai_context import handle_ai_context as _run
+
+    return await _run(payload, send_progress, cancel_event)
+
+
 # Route → handler mapping / 路由→处理函数映射
 ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/integrate1d": handle_integrate1d,
@@ -6385,6 +6403,7 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/install_pyfai": handle_install_pyfai,
     "/api/export_bat_pyfai": handle_export_bat_pyfai,
     "/api/calibration": handle_calibration,
+    "/api/ai_context": handle_ai_context,
 }
 
 
