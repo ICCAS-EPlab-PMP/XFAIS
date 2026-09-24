@@ -46,6 +46,7 @@ if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from services.export_helper import ExportHelper, IntegrationResult  # noqa: E402
+from services.paths import validated_output_path, validated_output_path_optional  # noqa: E402
 
 SERVICE_NAME = "waxs_saxs_embedded_runtime"
 
@@ -867,6 +868,8 @@ async def handle_export_integration(
 
     if not output_path:
         return {"success": False, "error": "No output path specified."}
+    # v0.3.0 hardening: single choke point for user-supplied output paths.
+    output_path = validated_output_path(output_path, field="outputPath")
 
     print(f"[export] type={data_type} fmt={fmt} mode={mode} path={output_path} results={len(results)}", flush=True)
     await send_progress(0.1, f"Preparing {fmt.upper()} export...")
@@ -907,19 +910,19 @@ async def handle_export_integration(
                     safe_stem = "".join(c if c.isalnum() or c in "-_." else "_" for c in stem)
                     if fmt == "txt":
                         content = ExportHelper.to_txt([ir], unit_display)
-                        p = out_dir / f"{safe_stem}.txt"
+                        p = Path(validated_output_path(out_dir / f"{safe_stem}.txt", field="export path"))
                         p.write_text(content, encoding="utf-8")
                     elif fmt == "csv":
                         content = ExportHelper.to_txt([ir], unit_display).replace("\t", ",")
-                        p = out_dir / f"{safe_stem}.csv"
+                        p = Path(validated_output_path(out_dir / f"{safe_stem}.csv", field="export path"))
                         p.write_text(content, encoding="utf-8")
                     elif fmt == "xy":
                         lines = [f"{ir.radial[i]:.6e}\t{ir.intensity[i]:.6f}" for i in range(min(len(ir.radial), len(ir.intensity)))]
-                        p = out_dir / f"{safe_stem}.xy"
+                        p = Path(validated_output_path(out_dir / f"{safe_stem}.xy", field="export path"))
                         p.write_text("\n".join(lines), encoding="utf-8")
                     elif fmt == "hdf5":
                         h5_bytes = ExportHelper.to_hdf5_bytes([ir], unit_display, extra_meta={"data_type": data_type})
-                        p = out_dir / f"{safe_stem}.h5"
+                        p = Path(validated_output_path(out_dir / f"{safe_stem}.h5", field="export path"))
                         p.write_bytes(h5_bytes)
                     else:
                         return {"success": False, "error": f"Unsupported format: {fmt}"}
@@ -929,12 +932,12 @@ async def handle_export_integration(
 
             if fmt == "txt":
                 content = ExportHelper.to_txt(integration_results, unit_display)
-                Path(output_path).write_text(content, encoding="utf-8")
+                Path(validated_output_path(output_path, field="outputPath")).write_text(content, encoding="utf-8")
             elif fmt == "csv":
                 # CSV: comma-separated variant of TXT
                 content = ExportHelper.to_txt(integration_results, unit_display)
                 csv_content = content.replace("\t", ",")
-                Path(output_path).write_text(csv_content, encoding="utf-8")
+                Path(validated_output_path(output_path, field="outputPath")).write_text(csv_content, encoding="utf-8")
             elif fmt == "xy":
                 # XY format: two columns per curve, simple
                 lines = []
@@ -942,13 +945,13 @@ async def handle_export_integration(
                     for i in range(min(len(r.radial), len(r.intensity))):
                         lines.append(f"{r.radial[i]:.6e}\t{r.intensity[i]:.6f}")
                     lines.append("")  # blank line between curves
-                Path(output_path).write_text("\n".join(lines), encoding="utf-8")
+                Path(validated_output_path(output_path, field="outputPath")).write_text("\n".join(lines), encoding="utf-8")
             elif fmt == "hdf5":
                 h5_bytes = ExportHelper.to_hdf5_bytes(
                     integration_results, unit_display,
                     extra_meta={"data_type": data_type},
                 )
-                Path(output_path).write_bytes(h5_bytes)
+                Path(validated_output_path(output_path, field="outputPath")).write_bytes(h5_bytes)
             else:
                 return {"success": False, "error": f"Unsupported format for 1D: {fmt}"}
 
@@ -1068,20 +1071,20 @@ async def handle_export_integration(
                             axis_oop = item["axis_oop"]
                             try:
                                 if fmt in ("hdf5", "h5"):
-                                    p = out_dir / f"{safe_stem}.h5"
+                                    p = Path(validated_output_path(out_dir / f"{safe_stem}.h5", field="export path"))
                                     p.write_bytes(ExportHelper.to_hdf5_2d_bytes(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
                                 elif fmt in ("tiff", "tif"):
-                                    p = out_dir / f"{safe_stem}.tiff"
+                                    p = Path(validated_output_path(out_dir / f"{safe_stem}.tiff", field="export path"))
                                     p.write_bytes(ExportHelper.to_image_bytes(intensity, fmt="tiff"))
                                 elif fmt == "edf":
-                                    p = out_dir / f"{safe_stem}.edf"
+                                    p = Path(validated_output_path(out_dir / f"{safe_stem}.edf", field="export path"))
                                     p.write_bytes(ExportHelper.to_image_bytes(intensity, fmt="edf"))
                                 elif fmt == "npy":
-                                    p = out_dir / f"{safe_stem}.npy"
+                                    p = Path(validated_output_path(out_dir / f"{safe_stem}.npy", field="export path"))
                                     p.write_bytes(ExportHelper.to_npy_dict(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
                                 elif fmt == "csv":
                                     import csv
-                                    p = out_dir / f"{safe_stem}.csv"
+                                    p = Path(validated_output_path(out_dir / f"{safe_stem}.csv", field="export path"))
                                     with open(p, "w", newline="", encoding="utf-8") as f:
                                         writer = csv.writer(f)
                                         writer.writerow(["oop_index", "ip_index", "axis_oop", "axis_ip", "intensity"])
@@ -1090,7 +1093,7 @@ async def handle_export_integration(
                                                 val = intensity[i][j] if i < len(intensity) and j < len(intensity[i]) else ""
                                                 writer.writerow([i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
                                 elif fmt == "png":
-                                    p = out_dir / f"{safe_stem}.png"
+                                    p = Path(validated_output_path(out_dir / f"{safe_stem}.png", field="export path"))
                                     p.write_bytes(_export_png(intensity, axis_ip, axis_oop))
                                 else:
                                     return written, errors, f"Unsupported format for fiber: {fmt}"
@@ -1125,14 +1128,14 @@ async def handle_export_integration(
                     axis_oop = item["axis_oop"]
 
                     if fmt in ("tiff", "tif"):
-                        Path(output_path).write_bytes(ExportHelper.to_image_bytes(intensity, fmt="tiff"))
+                        Path(validated_output_path(output_path, field="outputPath")).write_bytes(ExportHelper.to_image_bytes(intensity, fmt="tiff"))
                     elif fmt == "edf":
-                        Path(output_path).write_bytes(ExportHelper.to_image_bytes(intensity, fmt="edf"))
+                        Path(validated_output_path(output_path, field="outputPath")).write_bytes(ExportHelper.to_image_bytes(intensity, fmt="edf"))
                     elif fmt == "npy":
-                        Path(output_path).write_bytes(ExportHelper.to_npy_dict(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
+                        Path(validated_output_path(output_path, field="outputPath")).write_bytes(ExportHelper.to_npy_dict(intensity, axis_ip, axis_oop, unit_ip, unit_oop))
                     elif fmt == "csv":
                         import csv
-                        with open(output_path, "w", newline="", encoding="utf-8") as f:
+                        with open(validated_output_path(output_path, field="outputPath"), "w", newline="", encoding="utf-8") as f:
                             writer = csv.writer(f)
                             writer.writerow(["result_index", "oop_index", "ip_index", "axis_oop", "axis_ip", "intensity"])
                             for ri, item2 in enumerate(batch_results):
@@ -1144,7 +1147,7 @@ async def handle_export_integration(
                                         val = I[i][j] if i < len(I) and j < len(I[i]) else ""
                                         writer.writerow([ri, i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
                     elif fmt == "png":
-                        Path(output_path).write_bytes(await _run_blocking(_export_png, intensity, axis_ip, axis_oop))
+                        Path(validated_output_path(output_path, field="outputPath")).write_bytes(await _run_blocking(_export_png, intensity, axis_ip, axis_oop))
                     else:
                         return {"success": False, "error": f"Unsupported format for fiber: {fmt}"}
             else:
@@ -1162,21 +1165,21 @@ async def handle_export_integration(
                     h5_bytes = ExportHelper.to_hdf5_2d_bytes(
                         intensity, axis_ip, axis_oop, unit_ip, unit_oop,
                     )
-                    Path(output_path).write_bytes(h5_bytes)
+                    Path(validated_output_path(output_path, field="outputPath")).write_bytes(h5_bytes)
                 elif fmt == "tiff" or fmt == "tif":
                     img_bytes = ExportHelper.to_image_bytes(intensity, fmt="tiff")
-                    Path(output_path).write_bytes(img_bytes)
+                    Path(validated_output_path(output_path, field="outputPath")).write_bytes(img_bytes)
                 elif fmt == "edf":
                     img_bytes = ExportHelper.to_image_bytes(intensity, fmt="edf")
-                    Path(output_path).write_bytes(img_bytes)
+                    Path(validated_output_path(output_path, field="outputPath")).write_bytes(img_bytes)
                 elif fmt == "npy":
                     npy_bytes = ExportHelper.to_npy_dict(
                         intensity, axis_ip, axis_oop, unit_ip, unit_oop,
                     )
-                    Path(output_path).write_bytes(npy_bytes)
+                    Path(validated_output_path(output_path, field="outputPath")).write_bytes(npy_bytes)
                 elif fmt == "csv":
                     import csv
-                    with open(output_path, "w", newline="", encoding="utf-8") as f:
+                    with open(validated_output_path(output_path, field="outputPath"), "w", newline="", encoding="utf-8") as f:
                         writer = csv.writer(f)
                         writer.writerow(["oop_index", "ip_index", "axis_oop", "axis_ip", "intensity"])
                         for i, oop_val in enumerate(axis_oop):
@@ -1184,7 +1187,7 @@ async def handle_export_integration(
                                 val = intensity[i][j] if i < len(intensity) and j < len(intensity[i]) else ""
                                 writer.writerow([i, j, f"{oop_val:.6e}", f"{ip_val:.6e}", f"{val:.6e}" if val != "" else ""])
                 elif fmt == "png":
-                    Path(output_path).write_bytes(await _run_blocking(_export_png, intensity, axis_ip, axis_oop))
+                    Path(validated_output_path(output_path, field="outputPath")).write_bytes(await _run_blocking(_export_png, intensity, axis_ip, axis_oop))
                 else:
                     return {"success": False, "error": f"Unsupported format for fiber: {fmt}"}
         else:
@@ -1661,7 +1664,7 @@ async def handle_integrate_fiber(
     opts = payload.get("options", {})
 
     # ── Determine mode ──
-    output_path = payload.get("outputPath")
+    output_path = validated_output_path_optional(payload.get("outputPath"), field="outputPath")
     output_format = payload.get("outputFormat", "npy")
     batch_to_folder = bool(output_path)
 
@@ -1724,16 +1727,16 @@ async def handle_integrate_fiber(
                 qoop = result["axis_oop"]
 
                 if output_format in ("hdf5", "h5"):
-                    out_file = out_dir / f"{stem}.h5"
+                    out_file = Path(validated_output_path(out_dir / f"{stem}.h5", field="output file"))
                     out_file.write_bytes(ExportHelper.to_hdf5_2d_bytes(I, qip, qoop, unit_ip, unit_oop))
                 elif output_format in ("tiff", "tif"):
-                    out_file = out_dir / f"{stem}.tiff"
+                    out_file = Path(validated_output_path(out_dir / f"{stem}.tiff", field="output file"))
                     out_file.write_bytes(ExportHelper.to_image_bytes(I, fmt="tiff"))
                 elif output_format == "edf":
-                    out_file = out_dir / f"{stem}.edf"
+                    out_file = Path(validated_output_path(out_dir / f"{stem}.edf", field="output file"))
                     out_file.write_bytes(ExportHelper.to_image_bytes(I, fmt="edf"))
                 elif output_format == "npy":
-                    out_file = out_dir / f"{stem}.npy"
+                    out_file = Path(validated_output_path(out_dir / f"{stem}.npy", field="output file"))
                     out_file.write_bytes(ExportHelper.to_npy_dict(I, qip, qoop, unit_ip, unit_oop))
                 else:
                     errors.append(f"{fpath.name}: unsupported format '{output_format}'")
@@ -2245,7 +2248,9 @@ async def handle_viewer_config(
         frame_index = max(0, int(payload.get("frame", 0) or 0))
         dataset_path = payload.get("dataset")
         h5_channel = payload.get("channel")
-        output_path = payload.get("output_path") or payload.get("outputPath")
+        output_path = validated_output_path_optional(
+            payload.get("output_path") or payload.get("outputPath"), field="output_path"
+        )
         user_settings = payload.get("settings", {})
         dpi = int(user_settings.get("dpi", 100))
 
@@ -3486,7 +3491,9 @@ async def handle_h5convert(
     await send_progress(0.0, "Initializing conversion...")
 
     source_dir = payload.get("source_dir", "") or payload.get("sourceDir", "")
-    output_dir = payload.get("output_dir", "") or payload.get("outputDir", "")
+    output_dir = validated_output_path_optional(
+        payload.get("output_dir", "") or payload.get("outputDir", ""), field="output_dir"
+    )
     master_suffix = payload.get("master_suffix", "") or payload.get("refSuffix", "_master")
     table_format = payload.get("table_format", "csv") or payload.get("format", "csv")
     image_format = payload.get("image_format", "tiff") or payload.get("imageFormat", "tiff")
@@ -3621,7 +3628,10 @@ async def handle_h5_extract(
     await send_progress(0.0, "Starting extraction...")
 
     source_dir = payload.get("source_dir", "") or payload.get("sourceDir", "")
-    output_dir = payload.get("output_dir", "") or payload.get("targetDir", "") or payload.get("outputDir", "")
+    output_dir = validated_output_path_optional(
+        payload.get("output_dir", "") or payload.get("targetDir", "") or payload.get("outputDir", ""),
+        field="output_dir",
+    )
     suffix_filter = payload.get("suffix_filter", "") or payload.get("suffix", "")
     prepend_folder = payload.get("prepend_folder", True) or payload.get("prependFolder", True)
     prefix = payload.get("prefix", "")
@@ -4508,7 +4518,7 @@ async def _handle_bg_subtract_batch(
     bg_ionchamber_path = payload.get("bg_ionchamber_path", "")
     ionchamber_channel = payload.get("ionchamber_channel", "Ionchamber0")
     ionchamber_method = payload.get("ionchamber_method", "median")
-    output_dir = payload.get("output_dir", "")
+    output_dir = validated_output_path_optional(payload.get("output_dir", ""), field="output_dir")
     transmission = float(payload.get("transmission", 1.0))
     output_format = payload.get("output_format", "h5")
 
@@ -4895,9 +4905,17 @@ async def _handle_poni_importer_export(
             result["exported_content"] = json_str
         elif export_format == "poni":
             # Prefer output_path; fall back to output_dir + timestamped name.
-            output_path = payload.get("output_path")
+            # v0.3.0 hardening: both go through the output-path choke point;
+            # the fallback name is a server-side literal, so a validated
+            # output_dir + literal join stays inside the allowed root.
+            output_path = validated_output_path_optional(
+                payload.get("output_path"), field="output_path"
+            )
             if not output_path:
-                output_dir = payload.get("output_dir") or payload.get("outputDir") or ""
+                output_dir = validated_output_path_optional(
+                    payload.get("output_dir") or payload.get("outputDir") or "",
+                    field="output_dir",
+                )
                 if output_dir:
                     import time
                     default_name = f"calibration_{int(time.time())}.poni"
@@ -5141,7 +5159,7 @@ async def _handle_image_math_save(
     factor1 = float(payload.get("factor1", 1.0))
     factor2 = float(payload.get("factor2", 1.0))
     operation = payload.get("operation", "subtract")
-    output_dir = payload.get("output_dir", "")
+    output_dir = validated_output_path_optional(payload.get("output_dir", ""), field="output_dir")
     output_format = payload.get("output_format", "tif")
 
     if not image1_path:
@@ -5592,9 +5610,9 @@ async def _handle_image_stitch_save(
     if not images_meta:
         return {"status": "error", "message": strategy}
 
-    output_dir = payload.get("output_dir", "")
+    output_dir = validated_output_path_optional(payload.get("output_dir", ""), field="output_dir")
     output_format = payload.get("output_format", "tif")
-    output_path = payload.get("output_path")
+    output_path = validated_output_path_optional(payload.get("output_path"), field="output_path")
     if not output_path:
         if not output_dir:
             return {"status": "error", "message": "Missing output_dir or output_path"}
@@ -7097,11 +7115,13 @@ class UploadHandler:
                 continue
 
             # Conflict resolution: add _1, _2, … suffixes
-            dest = os.path.join(tmp_dir_real, safe_name)
+            dest = validated_output_path(os.path.join(tmp_dir_real, safe_name), field="upload dest")
             counter = 1
             while os.path.exists(dest):
                 name_part, ext_part = os.path.splitext(safe_name)
-                dest = os.path.join(tmp_dir_real, f"{name_part}_{counter}{ext_part}")
+                dest = validated_output_path(
+                    os.path.join(tmp_dir_real, f"{name_part}_{counter}{ext_part}"), field="upload dest"
+                )
                 counter += 1
 
             with open(dest, "wb") as f:
@@ -7252,8 +7272,10 @@ def build_parser() -> argparse.ArgumentParser:
         "serve_web",
         help="start standalone web server (no Electron, session-isolated, CORS enabled)",
     )
-    web_parser.add_argument("--host", default="0.0.0.0",
-                            help="bind address (default: 0.0.0.0 for external access)")
+    web_parser.add_argument("--host", default="127.0.0.1",
+                            help="bind address (default: 127.0.0.1, loopback only; to serve "
+                                 "externally use an authenticated reverse proxy/VPN — this API "
+                                 "has no built-in auth)")
     web_parser.add_argument("--port", type=int, default=8765,
                             help="HTTP port (default: 8765, WebSocket on port+1)")
     web_parser.add_argument("--requirements-lock", default=None,
