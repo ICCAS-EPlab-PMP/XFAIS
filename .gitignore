@@ -38,7 +38,7 @@ Thumbs.db
 # Sisyphus AI workspace
 .sisyphus/
 
-# Security-scan plugin state — never commit / 安全扫描插件状态目录，禁止入库
+# Tool/engineering state — NEVER commit / 工程工具状态，严禁入库
 .mimosa/
 .zcode/
 .zcodeignore
