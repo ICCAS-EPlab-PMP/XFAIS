@@ -10,7 +10,9 @@
  * one-file fix.
  *
  * No network is touched at import time; only `askTypesafeChoice` performs a
- * request (via the main-process proxy — the API sends no CORS headers). All
+ * request — via the main-process proxy on desktop (the API sends no CORS
+ * headers), or via the same-origin backend forward in serve_web deployments
+ * (the admin-configured key lives server-side, shared by all users). All
  * failures surface as `AiProviderError` with a stable code so the agent chain
  * can fall through to the rules router.
  */
@@ -20,8 +22,14 @@ import { AiProviderError, type ChoiceAnswer, type ChoiceQuestion } from '../type
 // ── Endpoint / payload constants (single source of truth) ─────────────────────
 
 const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
+/** serve_web backend forward — same origin, admin-configured shared key. */
+const WEB_FORWARD_PATH = '/api/ai/systemone'
 const MODEL_ID = 'jev-latest'
 const TIMEOUT_MS = 12_000
+
+/** True inside the Electron desktop app (renderer with the IPC proxy bridge). */
+const hasDesktopProxy = (): boolean =>
+  typeof window !== 'undefined' && typeof window.desktop?.net?.postJson === 'function'
 
 // ── Small defensive-parsing helpers ───────────────────────────────────────────
 
@@ -86,7 +94,10 @@ interface PostResult {
 /**
  * POST JSON to the endpoint. In the desktop app this goes through the
  * main-process IPC proxy (api.typesafe.ai sends no CORS headers, so a
- * renderer fetch() is ALWAYS blocked there); web mode falls back to fetch.
+ * renderer fetch() is ALWAYS blocked there); in a serve_web deployment it
+ * goes through the same-origin backend forward — the key is set by the
+ * server admin (XFAIS_JEV_API_KEY) and shared by every user, so the
+ * apiKey argument is only used on the desktop path.
  */
 async function postJson(
   body: Record<string, unknown>,
@@ -107,12 +118,11 @@ async function postJson(
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS)
   let response: Response
   try {
-    response = await fetch(ENDPOINT, {
+    response = await fetch(WEB_FORWARD_PATH, {
       method: 'POST',
       signal: controller.signal,
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify(body),
     })
@@ -150,7 +160,9 @@ export async function askTypesafeChoices(
   apiKey: string
 ): Promise<ChoiceAnswer[]> {
   const key = typeof apiKey === 'string' ? apiKey.trim() : ''
-  if (!key) {
+  if (!key && hasDesktopProxy()) {
+    // Web deployments use the server-admin key, so a missing personal key only
+    // blocks the desktop app.
     throw new AiProviderError('no_key', 'Jev (TypeSafe) API key is missing — add it in Settings.')
   }
   if (questions.length === 0) return []
@@ -182,6 +194,12 @@ export async function askTypesafeChoices(
     throw new AiProviderError('network', `Jev network request failed: ${message}`)
   }
 
+  if (result.status === 501) {
+    throw new AiProviderError(
+      'no_key',
+      'Jev is not configured on this server — ask the admin to set XFAIS_JEV_API_KEY.'
+    )
+  }
   if (result.status === 401 || result.status === 403) {
     throw new AiProviderError('no_key', `Jev rejected the API key (HTTP ${result.status}).`)
   }
