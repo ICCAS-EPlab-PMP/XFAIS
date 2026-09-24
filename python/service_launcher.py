@@ -6687,6 +6687,10 @@ class WebHealthHandler(BaseHTTPRequestHandler):
         for k, v in _CORS_HEADERS.items():
             self.send_header(k, v)
         self.end_headers()
+        # The connection speaks WebSocket from here on; once the WS loop in
+        # this handler returns, the HTTP keep-alive loop must not try to
+        # parse another request off the raw socket.
+        self.close_connection = True
 
         # Create a new session for this connection
         session_id = _ws_service.session_manager.create_session() if _ws_service else ""
@@ -6813,7 +6817,11 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             loop.close()
             # Cleanup session
             if _ws_service is not None and session_id:
-                _ws_service.session_manager.remove_session(session_id)
+                try:
+                    _ws_service.session_manager.destroy_session(session_id)
+                except Exception as exc:
+                    # Cleanup must never mask the disconnect path.
+                    print(f"[web-server] session cleanup failed for {session_id[:8]}: {exc}")
 
     def _ws_send(self, data: str | bytes, binary: bool = False) -> None:
         """Send a WebSocket frame. Supports text and binary.
@@ -6921,6 +6929,10 @@ class WebHealthHandler(BaseHTTPRequestHandler):
                 # Cache static assets
                 if ext in (".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2", ".ttf"):
                     self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                elif ext == ".html":
+                    # HTML entry must revalidate so a new build is picked up;
+                    # hashed assets keep their immutable cache.
+                    self.send_header("Cache-Control", "no-cache")
                 for k, v in _CORS_HEADERS.items():
                     self.send_header(k, v)
                 self.end_headers()
@@ -6938,6 +6950,8 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             if os.path.isfile(index_path):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                # SPA fallback serves index.html — same revalidate rule as .html
+                self.send_header("Cache-Control", "no-cache")
                 index_size = os.path.getsize(index_path)
                 self.send_header("Content-Length", str(index_size))
                 for k, v in _CORS_HEADERS.items():
@@ -7198,10 +7212,12 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
     """Start standalone web server mode (no Electron dependency).
     启动独立 Web 服务器模式（无 Electron 依赖）。
     
-    Binds to 0.0.0.0 by default for external access.
+    Binds to loopback (127.0.0.1) by default; pass --host 0.0.0.0 to serve
+    externally — prefer an authenticated reverse proxy / VPN (no built-in auth).
     Includes CORS headers for browser-based clients.
     HTTP and WebSocket share the same port (WebSocket via /ws upgrade).
-    默认绑定 0.0.0.0 以允许外部访问。
+    默认绑定回环地址 127.0.0.1；对外服务请传 --host 0.0.0.0——建议前置
+    带认证的反向代理/VPN（本服务无内置认证）。
     包含 CORS 头供浏览器客户端使用。
     HTTP 和 WebSocket 共享同一端口（WebSocket 通过 /ws 路径升级）。
     """
