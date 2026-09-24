@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { APP_NAME, APP_VERSION, IPC_CHANNELS } from './constants'
-import { PythonServiceManager, type PythonServiceStatus } from './python/manager'
+import { PythonServiceManager, pythonLaunchOverrides, type PythonServiceStatus } from './python/manager'
 import { resolvePythonPaths } from './python/runtime'
 
 // ── ASAR-safe child_process wrappers ────────────────────────────────────
@@ -110,6 +110,20 @@ const registerAppMeta = (): void => {
     logDirectory: getLogDirectory(),
     platform: process.platform
   }))
+  // Settings → launch env overrides (OMP thread cap etc.). Stored in the
+  // manager module; consumed on the NEXT Python spawn — OpenMP reads the env
+  // at interpreter start, so changes require a runtime restart (UI notes this).
+  // 设置 → 启动环境覆盖（OMP 线程数等）。保存在 manager 模块；下一次拉起
+  // Python 时生效——OpenMP 在解释器启动时读取环境变量，修改后需重启运行时。
+  ipcMain.handle(
+    IPC_CHANNELS.settingsSetPythonLaunchEnv,
+    async (_event: Electron.IpcMainInvokeEvent, env: { ompThreads?: number } | undefined) => {
+      const omp = env?.ompThreads
+      pythonLaunchOverrides.ompThreads =
+        typeof omp === 'number' && Number.isFinite(omp) && omp > 0 ? Math.floor(omp) : undefined
+      return { ok: true, ompThreads: pythonLaunchOverrides.ompThreads ?? null }
+    }
+  )
 }
 
 const registerPythonRuntime = (): void => {
@@ -857,7 +871,8 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   image_stitch: '/api/image_stitch',
   orientation_analysis: '/api/orientation_analysis',
   lamellar_analysis: '/api/lamellar_analysis',
-  poni_importer: '/api/poni_importer'
+  poni_importer: '/api/poni_importer',
+  calibration: '/api/calibration'
 }
 
 

@@ -98,6 +98,13 @@ const desktopApi = {
 
 const desktopApiWithPyfai = {
   ...desktopApi,
+  settings: {
+    // Push launch-env overrides (e.g. OpenMP thread cap) to the main process.
+    // Applies on the next Python service start.
+    // 推送启动环境覆盖（如 OpenMP 线程上限）到主进程，下次启动 Python 时生效。
+    setPythonLaunchEnv: (env: { ompThreads?: number }): Promise<{ ok: boolean; ompThreads: number | null }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.settingsSetPythonLaunchEnv, env) as Promise<{ ok: boolean; ompThreads: number | null }>
+  },
   pyfai: {
     check: (): Promise<{
       embedded: { available: boolean; version: string | null; calib2Path: string | null; hasQtBinding: boolean }

@@ -74,6 +74,15 @@ const openLogStream = async (logDirectory: string): Promise<WriteStream> => {
   return createWriteStream(path.join(logDirectory, 'python-service.log'), { flags: 'a' })
 }
 
+/**
+ * Launch-env overrides pushed from the renderer Settings page (via main.ts
+ * IPC). Applied to the NEXT Python spawn: OpenMP reads these at interpreter
+ * start, so a change requires restarting the runtime.
+ * 渲染层设置页（经 main.ts IPC）推送的启动环境覆盖。在下次拉起 Python 时
+ * 应用：OpenMP 在解释器启动时读取，修改后需重启运行时。
+ */
+export const pythonLaunchOverrides: { ompThreads?: number } = {}
+
 export class PythonServiceManager {
   private readonly allowTestCrash: boolean
   private readonly appRoot: string
@@ -225,6 +234,17 @@ export class PythonServiceManager {
         // 让下次安装报“无法关闭”）。取值为 process.pid 的系统数字 PID，
         // 绝非用户输入。
         XFAIS_PARENT_PID: String(process.pid)
+      }
+      // Optional OpenMP/BLAS thread cap from Settings ('auto' → no override,
+      // identical to the pre-0.3.0 behavior).
+      // 来自设置的可选 OpenMP/BLAS 线程上限（auto → 不覆盖，与 0.3.0 之前
+      // 行为完全一致）。
+      const ompCap = pythonLaunchOverrides.ompThreads
+      if (ompCap && ompCap > 0) {
+        spawnEnv.OMP_NUM_THREADS = String(ompCap)
+        spawnEnv.OPENBLAS_NUM_THREADS = String(ompCap)
+        spawnEnv.MKL_NUM_THREADS = String(ompCap)
+        stream.write(`[debug] omp thread cap applied: ${ompCap}\n`)
       }
 
       stream.write(`[debug] spawning python: exe=${paths.pythonExecutable} shell=false noAsar=true\n`)

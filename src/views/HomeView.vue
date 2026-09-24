@@ -23,9 +23,17 @@
           <button
             class="hero-action secondary"
             type="button"
+            data-ai-id="home:cite-pyfai"
             @click="openPyFAICitation"
           >
             {{ t('home.actions.citePyFAI') }}
+          </button>
+          <button
+            class="hero-action secondary"
+            type="button"
+            @click="openCalib2Citation"
+          >
+            {{ t('home.actions.citeCalib2') }}
           </button>
           <button
             class="hero-action secondary"
@@ -86,6 +94,7 @@
           :to="card.route"
           class="feature-card"
           :data-testid="`home-card-${card.key}`"
+          :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
@@ -104,6 +113,7 @@
           :to="card.route"
           class="feature-card"
           :data-testid="`home-card-${card.key}`"
+          :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
@@ -122,6 +132,7 @@
           :to="card.route"
           class="feature-card"
           :data-testid="`home-card-${card.key}`"
+          :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
@@ -140,6 +151,7 @@
           :to="card.route"
           class="feature-card"
           :data-testid="`home-card-${card.key}`"
+          :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
@@ -158,6 +170,7 @@
           :to="card.route"
           class="feature-card"
           :data-testid="`home-card-${card.key}`"
+          :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
@@ -176,6 +189,7 @@
           :to="card.route"
           class="feature-card"
           :data-testid="`home-card-${card.key}`"
+          :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
@@ -328,8 +342,13 @@ const bgSubtractCards: FeatureCard[] = [
   }
 ]
 
-// Row 5: PyFAI辅助功能
+// Row 5: PyFAI辅助功能（内置校正向导排在首位）
 const pyfaiCards: FeatureCard[] = [
+  {
+    key: 'calibration',
+    route: '/workspace/calibration',
+    icon: '◎'
+  },
   {
     key: 'cellCalibrantGenerator',
     route: '/workspace/cell-calibrant-generator',
@@ -448,6 +467,11 @@ async function checkUpdate(): Promise<void> {
 
 function openPyFAICitation(): void {
   window.open('https://doi.org/10.1107/S1600576715004306', '_blank', 'noopener')
+}
+
+function openCalib2Citation(): void {
+  // Calibration tools paper (calib2) / 标定工具论文（calib2）
+  window.open('https://doi.org/10.1107/S1600577520000776', '_blank', 'noopener')
 }
 
 function openFabIOCitation(): void {

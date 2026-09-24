@@ -26,14 +26,6 @@ def _sanitize_poni_text(raw: str) -> str:
         if line.isascii()
     )
 
-INTEGRATION_METHODS: dict[str, str] = {
-    "splitpixel": "splitpixel",
-    "csr": "csr",
-    "lut": "lut",
-    "bbox": "bbox",
-    "numpy": "numpy",
-}
-
 UNIT_LABELS: dict[str, str] = {
     "q_nm^-1": "q (1/nm)",
     "q_A^-1": "q (1/Å)",

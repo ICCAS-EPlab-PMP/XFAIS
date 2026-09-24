@@ -27,6 +27,16 @@ SERVICE_NAME="${SERVICE_NAME:-xfais}"
 USER_SYSTEMD_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 USER_UNIT_FILE="$USER_SYSTEMD_DIR/${SERVICE_NAME}.service"
 
+# ------------------------------------------------------------------------------
+# v0.3.0 可选：OpenMP/BLAS 线程上限（多用户并发时避免线程超订）
+# 不设置 = pyFAI 默认吃满所有核（与 0.3.0 之前一致）。
+# 例：每任务限 12 核，在启动前 export OMP_NUM_THREADS=12
+#（systemd 模式可写 Environment=OMP_NUM_THREADS=12 到 unit 文件）。
+# Optional OpenMP/BLAS thread cap (v0.3.0). Unset = pyFAI default (all cores,
+# identical to pre-0.3.0 behavior). Export OMP_NUM_THREADS before launching,
+# or add Environment=OMP_NUM_THREADS=12 to the systemd unit.
+# ------------------------------------------------------------------------------
+
 # 源码目录
 SOURCE_DIST_DIR="$SOURCE_ROOT/dist"
 SOURCE_PYTHON_DIR="$SOURCE_ROOT/python"

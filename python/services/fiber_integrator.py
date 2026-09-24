@@ -203,10 +203,78 @@ class FiberIntegratorService:
         polarization_factor: Optional[float] = None,
         progress_fn: Optional[Any] = None,
         error_collector: Optional[list[str]] = None,
+        parallel: bool = False,
+        max_workers: int = 0,
     ) -> list[dict[str, Any]]:
-        """Batch integrate multiple files. 批量积分多个文件。"""
-        results: list[dict[str, Any]] = []
+        """Batch integrate multiple files. 批量积分多个文件。
+
+        v0.3.0 optional file-level thread pool (OFF by default — serial loop
+        below is the default and reference path). Each worker thread uses its
+        own FiberIntegrator clone: pyFAI caches regrid engines per instance,
+        and concurrent calls on one instance are not guaranteed thread-safe.
+        v0.3.0 可选文件级线程池（默认关闭——下方串行循环为默认与参考路径）。
+        每个工作线程使用各自的 FiberIntegrator 克隆：pyFAI 在实例上缓存
+        重栅格引擎，共享实例的并发调用无线程安全保证。
+        """
         n_files = len(file_paths)
+        if parallel and n_files > 1:
+            import threading
+            from concurrent.futures import ThreadPoolExecutor
+
+            try:
+                workers = int(max_workers or 0)
+            except (TypeError, ValueError):
+                workers = 0
+            if workers <= 0:
+                workers = min(4, max(1, (os.cpu_count() or 4) - 2))
+            workers = max(1, min(workers, n_files))
+
+            tls = threading.local()
+
+            def _thread_fi() -> FiberIntegrator:
+                cached = getattr(tls, "fi", None)
+                if cached is None:
+                    cached = fi.clone()
+                    tls.fi = cached
+                return cached
+
+            def _one(fpath: str | Path) -> dict[str, Any]:
+                p = Path(fpath)
+                raw_data, dead_mask, _meta = ImageLoader.load(p, h5_dataset_path, h5_channel)
+                if raw_data is None:
+                    raise RuntimeError("ImageLoader.load returned None")
+                final_mask = MaskBuilder.build(raw_data, valid_min, valid_max, dead_mask, custom_mask)
+                result = FiberIntegratorService.integrate_single(
+                    _thread_fi(), raw_data, final_mask, params,
+                    dark=dark, flat=flat,
+                    correct_solid_angle=correct_solid_angle,
+                    polarization_factor=polarization_factor,
+                )
+                result["stem"] = p.stem + "_fiber_integration"
+                result["filename"] = p.name
+                return result
+
+            def _one_safe(fpath: str | Path) -> dict[str, Any]:
+                try:
+                    return _one(fpath)
+                except Exception as exc:  # noqa: BLE001
+                    return {"__error__": f"{Path(fpath).name}: {exc}"}
+
+            results: list[dict[str, Any]] = []
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                # pool.map preserves input order — result ordering matches the
+                # serial path. / pool.map 保序——结果顺序与串行路径一致。
+                for item in pool.map(_one_safe, list(file_paths)):
+                    if "__error__" in item:
+                        if error_collector is not None:
+                            error_collector.append(item["__error__"])
+                        continue
+                    results.append(item)
+                    if progress_fn:
+                        progress_fn(len(results) / max(n_files, 1))
+            return results
+
+        results: list[dict[str, Any]] = []
 
         for file_idx, fpath in enumerate(file_paths):
             fpath = Path(fpath)

@@ -38,6 +38,17 @@ Thumbs.db
 # Sisyphus AI workspace
 .sisyphus/
 
+# Tool/engineering state — NEVER commit / 工程工具状态，严禁入库
+.mimosa/
+.zcode/
+.zcodeignore
+.workbuddy/
+reasonix.toml
+*.tsbuildinfo
+
+# Tutorials stay local-only, never committed / 教程仅本地保留，不入库
+/tutorials/
+
 # Reference code artifacts (ref/ dir contains reference projects)
 ref/frontend/node_modules/
 ref/frontend/dist/
@@ -51,3 +62,6 @@ index.js
 
 # Python runtime installer
 python-*.exe
+
+# Tutorials stay local-only, never committed / 教程仅本地保留，不入库
+/tutorials/

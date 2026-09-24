@@ -188,6 +188,33 @@ module.exports = async function afterPack(context) {
     }
   }
 
+  // Trim the CPython distribution's dev-tools directory (Tools/: analyze_dxp,
+  // cleanfuture, crlf, 2to3, ...). These are python.org source-tree utilities —
+  // never imported or executed by X-FAIS at runtime, and shipping CLI scripts
+  // that open caller-supplied paths only widens the attack surface. The dev
+  // source runtime has Tools/ removed too; this is a guard in case the runtime
+  // is ever re-provisioned from a fresh CPython distribution.
+  // 裁剪 CPython 发行版自带开发工具目录（Tools/）。这些是 python.org 源码树
+  // 工具，X-FAIS 运行时从不导入或执行；随包分发“打开调用方传入路径”的 CLI
+  // 脚本只会扩大攻击面。开发源运行时已删除 Tools/，此处为防护——防止将来
+  // 重新铺设运行时再次带入。
+  const runtimeRoot = path.join(
+    context.appOutDir,
+    'resources',
+    'python-runtime',
+    'python-3.11.9-win32-x64',
+  )
+  const toolsDir = path.join(runtimeRoot, 'Tools')
+  if (fs.existsSync(toolsDir)) {
+    const sz = dirSizeBytes(toolsDir)
+    try {
+      fs.rmSync(toolsDir, { recursive: true, force: true })
+      console.log(`[afterPack]   removed Tools/ (${bytesToMB(sz).toFixed(1)} MB, CPython dev scripts)`)
+    } catch (err) {
+      console.warn(`[afterPack]   WARNING: could not remove Tools/: ${err.message}`)
+    }
+  }
+
   const after = dirSizeBytes(sitePackages)
   console.log(
     `[afterPack] done: removed ${removedCount} packages ` +

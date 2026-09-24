@@ -9,7 +9,7 @@
     <div class="i1d-layout">
       <!-- Sidebar: parameter forms / 侧边栏：参数表单 -->
       <aside class="i1d-sidebar">
-        <GeometryForm v-model="geometryParams" />
+        <GeometryForm v-model="geometryParams" data-ai-id="integrate1d:geometry" />
 
         <!-- Output Unit (standalone, pulled out of Advanced Options) / 输出单位（独立于高级选项） -->
         <div class="i1d-output-unit">
@@ -41,7 +41,7 @@
         <PolarizationForm v-model="polarizationFactor" />
 
         <!-- Advanced Options (collapsible, collapsed by default) / 高级选项（可折叠，默认收起） -->
-        <div class="i1d-collapsible">
+        <div class="i1d-collapsible" data-ai-id="integrate1d:advanced">
           <div class="i1d-section-toggle" @click="advancedExpanded = !advancedExpanded">
             <span class="i1d-toggle-icon">{{ advancedExpanded ? '▾' : '▸' }}</span>
             <span>{{ t('business.advancedOptions.title') }}</span>
@@ -102,6 +102,7 @@
               <button
                 type="button"
                 class="i1d-file-btn"
+                data-ai-id="integrate1d:files"
                 @click="handleChooseFiles"
               >
                 {{ t('business.fileSelection.selectFiles') }}
@@ -249,6 +250,7 @@
             class="i1d-run-btn"
             :disabled="!canRun"
             :data-testid="testIds.integrate1dRunBtn"
+            data-ai-id="integrate1d:run"
             @click="handleRun"
           >
             {{ t('integrate1d.runIntegration') }}
@@ -294,6 +296,7 @@
           :result="resultData"
           :formats="exportFormats"
           :data-testid="testIds.integrate1dExport"
+          data-ai-id="integrate1d:export"
           @export="handleExport"
         />
       </main>
@@ -311,8 +314,10 @@
  */
 import { ref, reactive, computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { useSettings } from '@/lib/settings'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
 import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } from '@/lib/chart-utils'
@@ -331,6 +336,7 @@ import type { AdvancedOptions, IntegrationUnit, IntegrationAlgorithm, Integrator
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ExportDialog from '@/components/business/ExportDialog.vue'
 import type { ExportFormat, ExportMode } from '@/components/business/ExportDialog.vue'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
 import LineChart from '@/components/charts/LineChart.vue'
 import type { LineTrace } from '@/components/charts/LineChart.vue'
@@ -379,9 +385,15 @@ type PageState = 'idle' | 'running' | 'done' | 'error'
 
 // === Composables / 组合函数 ===
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
+const route = useRoute()
 const toast = useToast()
 const transport = useTransport()
+const settings = useSettings()
+
+// Export completion flag, reported to the workspace-state bridge.
+// 导出完成标志，上报给工作区状态桥。
+const exportedOnce = ref(false)
 
 // === Colormap options / 色图选项 ===
 
@@ -420,6 +432,28 @@ const geometryParams = ref<GeometryParams>({
   centerX: 512,
   centerY: 512,
 })
+
+// === Calibration auto-import (去积分, calibration wizard step 4) ===
+// The wizard's 去积分 button auto-saves the refined .poni to the OS temp dir
+// and routes here with ?poni=<encoded path>. On mount, bind it into
+// geometryParams.poniPath — GeometryForm's poniPath watcher switches its mode
+// to 'poni' and parses the summary (exactly the manual PONI-file flow), and
+// downstream handleRun/resolveBeamCenter already forward poniPath first.
+// 标定向导“去积分”自动导入：挂载时读取 ?poni 查询参数并绑定
+// geometryParams.poniPath——GeometryForm 的 poniPath 监听会切到 PONI 模式并
+// 解析摘要（与手动选择 PONI 文件完全同路径），下游运行/中心解析已优先透传。
+const isZh = computed(() => locale.value.startsWith('zh'))
+{
+  const poniQuery = typeof route.query.poni === 'string' ? route.query.poni.trim() : ''
+  if (poniQuery) {
+    geometryParams.value = { ...geometryParams.value, poniPath: poniQuery }
+    toast.push({
+      title: t('integrate1d.title'),
+      message: isZh.value ? '已导入校正参数' : 'Calibration parameters imported',
+      tone: 'success',
+    })
+  }
+}
 
 const maskConfig = ref<MaskConfig>({
   valueRangeMin: 0,
@@ -550,6 +584,28 @@ let cleanupPreviewError: (() => void) | null = null
 const canRun = computed(() => {
   return files.value.length > 0 && state.value !== 'running'
 })
+
+// Publish progress to the workspace-state bridge so external observers (e.g.
+// the Jev-build guided tour) can watch prerequisites and auto-advance. Inert
+// in the main build — no AI module is imported.
+// 向状态桥上报进度，供外部观测方（如 Jev 构建的教学模式）观测前置条件并推进。
+watch(
+  [files, canRun, state, exportedOnce, () => geometryParams.value.poniPath],
+  () => {
+    reportWorkspace('integrate-1d', {
+      filesCount: files.value.length,
+      hasPoni: Boolean(geometryParams.value.poniPath),
+      canRun: canRun.value,
+      phase: state.value,
+      extras: {
+        poniPath: geometryParams.value.poniPath ?? '',
+        exported: exportedOnce.value,
+      },
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('integrate-1d'))
 
 const thumbTotalPages = computed(() =>
   Math.max(1, Math.ceil(files.value.length / thumbPageSize.value))
@@ -1038,6 +1094,11 @@ async function handleRun(): Promise<void> {
       customMaskPath: maskConfig.value.customMaskPath,
     },
     polarizationFactor: polarizationFactor.value,
+    // v0.3.0 optional batch parallelism from Settings (default OFF = serial,
+    // identical to pre-0.3.0 behavior) / 设置页可选批处理并行（默认关闭 =
+    // 串行，与 0.3.0 之前行为一致）
+    parallel: settings.performance.batchParallel && files.value.length > 1,
+    maxWorkers: settings.performance.batchParallel ? settings.performance.batchWorkers : undefined,
     advanced: {
       nptRad: advancedOptions.nptRad,
       nptAzim: advancedOptions.nptAzim,
@@ -1158,6 +1219,7 @@ async function handleExport(payload: { format: ExportFormat; path: string; mode:
     const removeOk = transport.onTaskResult(response.taskId, (r) => {
       const data = r.data as { success?: boolean; error?: string; path?: string }
       if (data?.success) {
+        exportedOnce.value = true
         toast.push({
           title: t('integrate1d.exportTitle'),
           message: `${payload.format.toUpperCase()} → ${data.path ?? payload.path}`,
