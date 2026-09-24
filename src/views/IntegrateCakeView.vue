@@ -8,7 +8,7 @@
     <div class="cake-layout">
       <!-- ── Sidebar / 侧边栏 ───────────────────────────────────────── -->
       <aside class="cake-sidebar">
-        <GeometryForm v-model="geometry" />
+        <GeometryForm v-model="geometry" data-ai-id="cake:geometry" />
 
         <!-- Mask Import (collapsible, collapsed by default) / 掩膜导入（可折叠，默认收起） -->
         <div class="cake-collapsible">
@@ -96,6 +96,7 @@
               v-model="advancedOptions"
               :hide-unit="true"
               :bare="true"
+              :show-integration-method="true"
             />
           </div>
         </div>
@@ -139,6 +140,7 @@
             <button
               type="button"
               class="cake-file-btn"
+              data-ai-id="cake:files"
               @click="handleChooseFiles"
             >
               {{ t('business.fileSelection.selectFiles') }}
@@ -299,6 +301,7 @@
             class="cake-run-btn"
             :disabled="!canRun"
             :data-testid="testIds.cakeRunButton"
+            data-ai-id="cake:run"
             @click="handleRun"
           >
             {{ t('integrateCake.run') }}
@@ -331,6 +334,7 @@
           v-if="resultTraces.length > 0"
           :result="resultData"
           :formats="exportFormats"
+          data-ai-id="cake:export"
           @export="handleExport"
         />
       </div>
@@ -350,6 +354,7 @@
  * 适用于各向异性样品，只关注 Debye-Scherrer 环某个扇区时使用。
  */
 import { ref, computed, watch, onUnmounted } from 'vue'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
@@ -632,6 +637,29 @@ const canRun = computed(() => {
     taskId.value === null
   )
 })
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。
+watch(
+  [files, canRun, taskId, runError, resultTraces, () => geometry.value.poniPath],
+  () => {
+    reportWorkspace('integrate-cake', {
+      filesCount: files.value.length,
+      hasPoni: Boolean(geometry.value.poniPath),
+      canRun: canRun.value,
+      phase: taskId.value
+        ? 'running'
+        : runError.value
+          ? 'error'
+          : resultTraces.value.length
+            ? 'done'
+            : 'idle',
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('integrate-cake'))
 
 const thumbTotalPages = computed(() =>
   Math.max(1, Math.ceil(files.value.length / thumbPageSize.value))

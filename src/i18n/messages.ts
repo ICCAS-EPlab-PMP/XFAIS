@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.2.6'
+      version: 'v0.3.0'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.2.6',
+      kicker: '桌面集成版 v0.3.0',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -83,6 +83,7 @@ export const messages = {
         showLogs: '显示日志目录',
         checkUpdate: '检测更新',
         citePyFAI: '引用 pyFAI',
+        citeCalib2: '引用 calib2',
         citeFabIO: '引用 fabIO'
       },
       update: {
@@ -134,6 +135,10 @@ export const messages = {
         cellCalibrantGenerator: {
           title: '校正标样生成器',
           description: 'CIF 晶体文件 / 晶胞参数 / 手动输入 d/q/2θ 生成 .D 标样校准文件'
+        },
+        calibration: {
+          title: '几何校正（内置向导）',
+          description: 'Debye–Scherrer 环校正向导：峰拾取 → 几何精化 → 导出 .poni，无需外部 calib2'
         },
         bgSubtract: {
           title: '2D 背景扣除',
@@ -324,7 +329,7 @@ export const messages = {
     },
     integrate1d: {
       title: '1D 径向积分',
-      subtitle: '使用 pyFAI 对探测器图像执行批量一维径向平均积分。',
+      subtitle: '批量径向积分，输出 I(q) / I(2θ) 曲线',
       dataFiles: '数据文件',
       selectDataFiles: '选择数据文件（.edf / .tif / .h5）',
       runIntegration: '运行积分',
@@ -1401,11 +1406,111 @@ export const messages = {
       detectorName: '探测器名称',
       detectorConfig: '探测器配置',
     },
+  settings: {
+    title: '设置',
+    subtitle: '应用偏好与性能选项',
+    language: {
+      title: '语言',
+      hint: '界面显示语言'
+    },
+    performance: {
+      title: '性能',
+      hint: '并行能力默认关闭，任务全部保持串行行为；开启前请阅读各项说明',
+      defaultMethod: '默认积分算法',
+      defaultMethodHint: '新任务算法选择器的初始值；csr 在多核机器上更快，与 splitpixel 存在微小数值差异',
+      batchParallel: '批处理并行（实验性）',
+      batchParallelHint: '多文件任务用线程池并行处理；默认关闭（串行）',
+      batchWorkers: '并行工作线程数',
+      batchWorkersHint: '仅批处理并行开启时生效',
+      ompThreads: 'OpenMP 线程数',
+      ompThreadsAuto: '自动（不限制）',
+      ompThreadsHint: '限制 pyFAI/BLAS 的多核占用；修改后需重启 Python 运行时生效',
+      restartNote: 'OMP 线程数在 Python 服务启动时读取，更改后需重启应用。',
+      saved: '设置已保存'
+    }
+  },
+  calibration: {
+    title: '几何校正（calib2 内置）',
+    subtitle: '基于 pyFAI 精化引擎的 Debye–Scherrer 环校正向导，无需外部 calib2 窗口',
+    setup: {
+      imageFile: '校正图像',
+      selectImage: '选择图像',
+      calibrant: '标样',
+      calibrantFile: '标样 .D 文件（可选，覆盖内置标样）',
+      calibrantName: '内置标样',
+      detector: '探测器（pyFAI 名称，可选）',
+      pixelSize: '像素尺寸 (µm)',
+      wavelength: '波长 (Å)',
+      energy: '能量 (keV)',
+      unitToggle: '输入单位',
+      wavelengthHint: '可切换 Å / keV，例如 Cu Kα：1.5418 Å = 8.048 keV',
+      distGuess: '初始距离猜测 (mm)',
+      distHint: '粗略值即可，精化会自动收敛',
+      load: '载入并开始',
+      loading: '载入中…',
+      loadOk: '校正会话已建立',
+      loadFail: '建立校正会话失败',
+      seedFromPoni: '从 PONI 初始化'
+    },
+    canvas: {
+      addPeakHint: '点击图像添加峰；右键移除最近的峰',
+      peaks: '峰',
+      rings: '理论环',
+      noImage: '尚未载入图像'
+    },
+    peaks: {
+      title: '峰拾取',
+      count: '已选 {count} 个峰',
+      auto: '自动拾取',
+      autoHint: 'Massif 峰群搜索；灵敏度越高找到的峰越多',
+      sensitivity: '灵敏度',
+      clear: '清空',
+      empty: '尚无峰，请自动拾取或手动点击图像添加',
+      addMode: '添加模式：开启',
+      exitMode: '退出添加模式',
+      colRing: '环',
+      colY: 'y (行)',
+      colX: 'x (列)'
+    },
+    refine: {
+      title: '几何精化',
+      run: '运行精化',
+      running: '精化中…',
+      chi2: 'χ²',
+      fixed: '固定',
+      free: '自由',
+      passes: '精化强度',
+      geometry: '当前几何',
+      residuals: '每峰残差 (°)',
+      notConverged: '精化未收敛，请检查峰与初始距离',
+      needPeaks: '请先拾取至少 4 个峰',
+      done: '精化完成',
+      centerX: '光束中心 X (px)',
+      centerY: '光束中心 Y (px)'
+    },
+    export: {
+      title: '导出',
+      savePoni: '保存 .poni',
+      saved: 'PONI 已保存',
+      citationTitle: '引用与致谢',
+      citationBody: '本校正功能基于开源 pyFAI 的精化引擎实现。若在论文中使用，建议引用：',
+      citationCalib2: '标定工具论文 (calib2)',
+      citationPyfai: 'pyFAI 论文',
+      licenseNote: 'pyFAI 采用 MIT 许可证发布。',
+      goIntegrate: '去 1D 积分',
+      pathLabel: '保存路径'
+    },
+    errors: {
+      noSession: '校正会话不存在，请重新载入',
+      loadFailed: '载入失败',
+      refineFailed: '精化失败'
+    }
+  },
   },
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.2.6'
+      version: 'v0.3.0'
     },
     shell: {
       sections: {
@@ -1439,7 +1544,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.2.6',
+      kicker: 'Desktop Edition v0.3.0',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -1484,6 +1589,7 @@ export const messages = {
         showLogs: 'Show Log Directory',
         checkUpdate: 'Check for Updates',
         citePyFAI: 'Cite pyFAI',
+        citeCalib2: 'Cite calib2',
         citeFabIO: 'Cite fabIO'
       },
       update: {
@@ -1535,6 +1641,10 @@ export const messages = {
         cellCalibrantGenerator: {
           title: 'Calibrant Generator',
           description: 'Generate .D calibrant files from CIF / unit cell parameters / manual d/q/2θ input'
+        },
+        calibration: {
+          title: 'Geometry Calibration (built-in)',
+          description: 'Debye–Scherrer ring wizard: peak picking → refinement → .poni export — no external calib2 window'
         },
         bgSubtract: {
           title: '2D Background Subtraction',
@@ -1725,7 +1835,7 @@ export const messages = {
     },
     integrate1d: {
       title: '1D Radial Integration',
-      subtitle: 'Batch 1D azimuthal integration of detector images using pyFAI.',
+      subtitle: 'Batch radial integration to I(q) / I(2θ) curves',
       dataFiles: 'Data Files',
       selectDataFiles: 'Select Data Files (.edf / .tif / .h5)',
       runIntegration: 'Run Integration',
@@ -2801,6 +2911,106 @@ export const messages = {
       detectorName: 'Detector Name',
       detectorConfig: 'Detector Config',
     },
+  settings: {
+    title: 'Settings',
+    subtitle: 'Application preferences and performance options',
+    language: {
+      title: 'Language',
+      hint: 'Interface display language'
+    },
+    performance: {
+      title: 'Performance',
+      hint: 'Parallelism is OFF by default — all tasks stay serial. Read the hints before enabling anything.',
+      defaultMethod: 'Default integration method',
+      defaultMethodHint: 'Initial value of the method selector for new tasks; csr is faster on multi-core machines, with tiny numerical differences vs splitpixel',
+      batchParallel: 'Batch parallelism (experimental)',
+      batchParallelHint: 'Process multi-file tasks with a thread pool; off by default (serial)',
+      batchWorkers: 'Parallel workers',
+      batchWorkersHint: 'Only effective when batch parallelism is enabled',
+      ompThreads: 'OpenMP threads',
+      ompThreadsAuto: 'Auto (unlimited)',
+      ompThreadsHint: 'Cap pyFAI/BLAS multi-core usage; takes effect after restarting the Python runtime',
+      restartNote: 'OpenMP threads are read when the Python service starts — restart the app after changing.',
+      saved: 'Settings saved'
+    }
+  },
+  calibration: {
+    title: 'Geometry Calibration (built-in calib2)',
+    subtitle: 'Debye–Scherrer ring calibration wizard powered by the pyFAI refinement engine — no external calib2 window',
+    setup: {
+      imageFile: 'Calibration image',
+      selectImage: 'Select image',
+      calibrant: 'Calibrant',
+      calibrantFile: 'Calibrant .D file (optional, overrides built-in)',
+      calibrantName: 'Built-in calibrant',
+      detector: 'Detector (pyFAI name, optional)',
+      pixelSize: 'Pixel size (µm)',
+      wavelength: 'Wavelength (Å)',
+      energy: 'Energy (keV)',
+      unitToggle: 'Input unit',
+      wavelengthHint: 'Switchable Å / keV, e.g. Cu Kα: 1.5418 Å = 8.048 keV',
+      distGuess: 'Initial distance guess (mm)',
+      distHint: 'A rough value is fine — refinement converges from it',
+      load: 'Load and start',
+      loading: 'Loading…',
+      loadOk: 'Calibration session established',
+      loadFail: 'Failed to establish calibration session',
+      seedFromPoni: 'Seed from PONI'
+    },
+    canvas: {
+      addPeakHint: 'Click the image to add a peak; right-click removes the nearest peak',
+      peaks: 'Peaks',
+      rings: 'Theoretical rings',
+      noImage: 'No image loaded yet'
+    },
+    peaks: {
+      title: 'Peak picking',
+      count: '{count} peaks selected',
+      auto: 'Auto-pick',
+      autoHint: 'Massif peak-group search; higher sensitivity finds more peaks',
+      sensitivity: 'Sensitivity',
+      clear: 'Clear',
+      empty: 'No peaks yet — auto-pick or click the image to add them manually',
+      addMode: 'Add mode: ON',
+      exitMode: 'Exit add mode',
+      colRing: 'Ring',
+      colY: 'y (row)',
+      colX: 'x (col)'
+    },
+    refine: {
+      title: 'Geometry refinement',
+      run: 'Run refinement',
+      running: 'Refining…',
+      chi2: 'χ²',
+      fixed: 'Fixed',
+      free: 'Free',
+      passes: 'Refinement strength',
+      geometry: 'Current geometry',
+      residuals: 'Per-peak residuals (°)',
+      notConverged: 'Refinement did not converge — check peaks and the initial distance',
+      needPeaks: 'Pick at least 4 peaks first',
+      done: 'Refinement complete',
+      centerX: 'Beam center X (px)',
+      centerY: 'Beam center Y (px)'
+    },
+    export: {
+      title: 'Export',
+      savePoni: 'Save .poni',
+      saved: 'PONI saved',
+      citationTitle: 'Citation & acknowledgment',
+      citationBody: 'This calibration feature is built on the open-source pyFAI refinement engine. If you use it in a publication, please cite:',
+      citationCalib2: 'Calibration tools paper (calib2)',
+      citationPyfai: 'pyFAI paper',
+      licenseNote: 'pyFAI is distributed under the MIT license.',
+      goIntegrate: 'Go to 1D integration',
+      pathLabel: 'Save path'
+    },
+    errors: {
+      noSession: 'Calibration session missing — please reload',
+      loadFailed: 'Load failed',
+      refineFailed: 'Refinement failed'
+    }
+  }
   }
 } as const
 

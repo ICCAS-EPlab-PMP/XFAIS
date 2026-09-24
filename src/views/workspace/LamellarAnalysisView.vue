@@ -39,7 +39,7 @@
                  await the batch apply. / 多文件选择：勾选文件先单跑，其余
                  待“按首个结果批量处理”。 -->
             <div class="lm-btn-row">
-              <button type="button" class="lm-btn" @click="handleAddFiles">
+              <button type="button" class="lm-btn" data-ai-id="lamellar:files" @click="handleAddFiles">
                 {{ t('lamellar.files.add') }}
               </button>
               <button v-if="files.length" type="button" class="lm-btn lm-btn-sm" @click="clearFiles">
@@ -79,7 +79,7 @@
             </ul>
           </div>
 
-          <details class="lm-card lm-details">
+          <details class="lm-card lm-details" data-ai-id="lamellar:geometry">
             <summary>{{ t('lamellar.geometry') }}</summary>
             <GeometryForm v-model="geometry" />
           </details>
@@ -182,6 +182,7 @@
             type="button"
             class="lm-btn lm-btn-primary"
             :disabled="!canRun || isRunning"
+            data-ai-id="lamellar:run"
             @click="handleRun"
           >
             {{ isRunning ? t('lamellar.running') : t('lamellar.run') }}
@@ -189,7 +190,7 @@
           <button v-if="isRunning" type="button" class="lm-btn" @click="handleCancel">
             {{ t('lamellar.cancel') }}
           </button>
-          <button v-if="detailData" type="button" class="lm-btn" @click="exportCsv">
+          <button v-if="detailData" type="button" class="lm-btn" data-ai-id="lamellar:export" @click="exportCsv">
             {{ t('lamellar.exportCsv') }}
           </button>
         </div>
@@ -462,6 +463,7 @@ import { ref, computed, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import GeometryForm from '@/components/business/GeometryForm.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
@@ -552,6 +554,31 @@ const canRun = computed(() => {
   if (inputMode.value === 'image') return files.value.length > 0
   return parsedQ.value.length >= 8
 })
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。
+const lamellarExportedOnce = ref(false)
+watch(
+  [files, isRunning, errorMessage, resultData, () => geometry.value.poniPath, lamellarExportedOnce],
+  () => {
+    reportWorkspace('lamellar-analysis', {
+      filesCount: files.value.length,
+      hasPoni: Boolean(geometry.value.poniPath),
+      canRun: canRun.value,
+      phase: isRunning.value
+        ? 'running'
+        : errorMessage.value
+          ? 'error'
+          : resultData.value
+            ? 'done'
+            : 'idle',
+      extras: { exported: lamellarExportedOnce.value },
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('lamellar-analysis'))
 
 // The backend ALWAYS returns q arrays (q / zQ / zExtQ) in nm⁻¹ (Å⁻¹ input is
 // converted ×10 internally). The UI displays them in the unit the user
@@ -996,6 +1023,7 @@ function downloadText(content: string, name: string): void {
 function exportCsv(): void {
   const d = detailData.value
   if (!d) return
+  lamellarExportedOnce.value = true
   // CSV q columns follow the selected unit (matches the on-screen charts);
   // r/gamma columns stay nm (real space is always reported in nm).
   // CSV 的 q 列按所选单位（与图表一致）；r/γ 列保持 nm（实空间恒以 nm 报告）。

@@ -116,5 +116,8 @@ interface Window {
       installDeps: () => Promise<{ success: boolean; output?: string; error?: string }>
       exportBat: () => Promise<{ success: boolean; error?: string }>
     }
+    settings: {
+      setPythonLaunchEnv: (env: { ompThreads?: number }) => Promise<{ ok: boolean; ompThreads: number | null }>
+    }
   }
 }

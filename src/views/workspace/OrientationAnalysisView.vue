@@ -36,7 +36,7 @@
             <!-- Multi-file batch selection (same experimental conditions) -->
             <!-- 多文件批量选择（同一实验条件） -->
             <div class="or-btn-row">
-              <button type="button" class="or-btn" @click="handleAddFiles">
+              <button type="button" class="or-btn" data-ai-id="orientation:files" @click="handleAddFiles">
                 {{ t('orientationAnalysis.files.add') }}
               </button>
               <button v-if="files.length" type="button" class="or-btn or-btn-sm" @click="clearFiles">
@@ -72,7 +72,7 @@
             />
           </div>
 
-          <details class="or-card or-details">
+          <details class="or-card or-details" data-ai-id="orientation:geometry">
             <summary>{{ t('orientationAnalysis.geometry') }}</summary>
             <GeometryForm v-model="geometry" />
           </details>
@@ -298,6 +298,7 @@
             class="or-btn or-btn-primary"
             :disabled="!canRun || isRunning"
             :data-testid="testIds.orientationRunBtn"
+            data-ai-id="orientation:run"
             @click="handleRun()"
           >
             {{ isRunning ? t('orientationAnalysis.running') : runButtonLabel }}
@@ -320,6 +321,7 @@
             type="button"
             class="or-btn"
             :data-testid="testIds.orientationExport"
+            data-ai-id="orientation:export"
             @click="exportCsv"
           >
             {{ exportButtonLabel }}
@@ -466,6 +468,7 @@ import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
 import GeometryForm from '@/components/business/GeometryForm.vue'
@@ -614,6 +617,31 @@ const canRun = computed(() => {
   if (inputMode.value === 'image') return files.value.length > 0
   return parsedChi.value.length >= 2
 })
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。
+const orientationExportedOnce = ref(false)
+watch(
+  [files, isRunning, errorMessage, resultData, () => geometry.value.poniPath, orientationExportedOnce],
+  () => {
+    reportWorkspace('orientation-analysis', {
+      filesCount: files.value.length,
+      hasPoni: Boolean(geometry.value.poniPath),
+      canRun: canRun.value,
+      phase: isRunning.value
+        ? 'running'
+        : errorMessage.value
+          ? 'error'
+          : resultData.value
+            ? 'done'
+            : 'idle',
+      extras: { exported: orientationExportedOnce.value },
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('orientation-analysis'))
 
 const runButtonLabel = computed(() =>
   inputMode.value === 'image' && files.value.length > 1
@@ -1105,6 +1133,7 @@ function downloadBlob(content: string, filename: string, mime = 'text/csv'): voi
 
 function exportCsv(): void {
   if (!resultData.value) return
+  orientationExportedOnce.value = true
 
   if (batchItems.value) {
     // Batch summary CSV / 批量汇总 CSV

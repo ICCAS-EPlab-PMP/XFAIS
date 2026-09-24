@@ -148,6 +148,10 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         h5_dataset_path: h5DatasetPath,
         h5_channel: h5Channel,
         frame_index: frameIndex,
+        // v0.3.0 optional batch parallelism (off unless the view sets it) /
+        // v0.3.0 可选批处理并行（视图未设置时关闭）
+        parallel: asBoolean(params.parallel, false),
+        max_workers: asOptionalNumber(params.maxWorkers),
         options: {
           npt: asNumber(advanced.nptRad, 1000),
           npt_azim: asNumber(advanced.nptAzim, 360),
@@ -186,6 +190,10 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           radial_max: asOptionalNumber(params.radialMax),
           azimuth_min: asOptionalNumber(params.azimuthMin),
           azimuth_max: asOptionalNumber(params.azimuthMax),
+          // v0.3.0: method plumbing (absent → backend splitpixel default, i.e.
+          // unchanged behavior) / v0.3.0：算法透传（不传 → 后端 splitpixel
+          // 默认，行为不变）
+          method: asString(params.method),
           correct_solid_angle: true,
           drop_empty_bins: asBoolean(params.dropEmptyBins, true),
           polarization_factor: polarizationFactor,
@@ -216,6 +224,8 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           radial_max: asOptionalNumber(advanced.radialMax),
           azimuth_min: asOptionalNumber(params.azimuthMin),
           azimuth_max: asOptionalNumber(params.azimuthMax),
+          // v0.3.0: method via AdvancedOptionsForm algorithm select / 算法选择器
+          method: asString(advanced.algorithm ?? advanced.method) ?? 'splitpixel',
           correct_solid_angle: asBoolean(advanced.correctSolidAngle, true),
           drop_empty_bins: asBoolean(advanced.dropEmptyBins, true),
           polarization_factor: polarizationFactor,
@@ -252,6 +262,8 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         files: fileList,
         geometry: geometryForFiber,
         params: fiberParams,
+        parallel: asBoolean(params.parallel, false),
+        max_workers: asOptionalNumber(params.maxWorkers),
         outputPath: asString(params.outputPath) ?? undefined,
         outputFormat: asString(params.outputFormat) ?? undefined,
         options: {

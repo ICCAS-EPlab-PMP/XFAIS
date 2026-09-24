@@ -80,6 +80,7 @@ API_ROUTES: list[str] = [
     "/api/launch_pyfai",
     "/api/install_pyfai",
     "/api/export_bat_pyfai",
+    "/api/calibration",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -1218,6 +1219,120 @@ def _drop_empty_bins(res, drop: bool):
     return radial.tolist(), intensity.tolist()
 
 
+async def _integrate1d_batch_parallel(
+    ai,
+    files: list[str],
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Optional file-level thread-pool batch for handle_integrate1d (v0.3.0).
+
+    OFF unless payload['parallel'] is truthy — the serial loop in
+    handle_integrate1d remains the reference implementation and the default
+    behavior. pyFAI's Cython kernels release the GIL inside OpenMP regions,
+    so file-level threads overlap I/O + compute. Each worker thread uses its
+    OWN clone of the AzimuthalIntegrator: pyFAI caches regrid engines on the
+    instance, and concurrent calls sharing one instance are not guaranteed
+    thread-safe (a per-thread clone also gives each worker a warm CSR cache).
+    v0.3.0 可选文件级线程池批处理。默认关闭——handle_integrate1d 的串行
+    循环仍是参考实现与默认行为。每个工作线程使用各自的积分器克隆：
+    pyFAI 在实例上缓存重栅格引擎，共享实例的并发调用无线程安全保证
+    （线程本地克隆同时让每个 worker 拥有热 CSR 缓存）。
+    """
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    opts = payload.get("options", {})
+    tls = threading.local()
+
+    def _thread_ai():
+        cached = getattr(tls, "ai", None)
+        if cached is None:
+            cached = ai.clone()
+            tls.ai = cached
+        return cached
+
+    def _one(fpath: str) -> dict:
+        """Sync per-file pipeline (load → mask → integrate). 同步单文件流水线。"""
+        data, dead_mask, meta = ImageLoader.load(
+            fpath,
+            payload.get("h5_dataset_path"), payload.get("h5_channel"),
+            payload.get("frame_index", 0),
+        )
+        if data is None:
+            raise RuntimeError("No data loaded")
+        custom_mask = None
+        custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
+        if custom_mask_path:
+            custom_mask = MaskBuilder.load_mask_file(str(custom_mask_path))
+        mask = MaskBuilder.build(
+            data,
+            payload.get("valid_min", 0.0), payload.get("valid_max", 1e10),
+            dead_mask, custom_mask,
+        )
+        integrate_kwargs = {
+            "data": data,
+            "npt": opts.get("npt", 1000),
+            "unit": opts.get("unit", "q_nm^-1"),
+            "mask": mask.astype(np.uint8),
+            "method": opts.get("method", "splitpixel"),
+            "correctSolidAngle": opts.get("correct_solid_angle", True),
+            "polarization_factor": opts.get("polarization_factor"),
+        }
+        worker_ai = _thread_ai()
+        if opts.get("integrator", "ng") == "ng" and hasattr(worker_ai, "integrate1d_ng"):
+            res = worker_ai.integrate1d_ng(**integrate_kwargs)
+        else:
+            res = worker_ai.integrate1d(**integrate_kwargs)
+        radial_list, intensity_list = _drop_empty_bins(res, opts.get("drop_empty_bins", True))
+        return {
+            "radial": radial_list,
+            "intensity": intensity_list,
+            "label": meta.get("filename", fpath),
+            "filename": meta.get("filename", fpath),
+            "unit": opts.get("unit", "q_nm^-1"),
+        }
+
+    try:
+        max_workers = int(payload.get("max_workers") or 0)
+    except (TypeError, ValueError):
+        max_workers = 0
+    if max_workers <= 0:
+        max_workers = min(4, max(1, (os.cpu_count() or 4) - 2))
+    max_workers = max(1, min(max_workers, len(files)))
+    print(f"[integrate1d] parallel batch: {len(files)} files × {max_workers} workers", flush=True)
+
+    results: list[dict] = []
+    failed: list[dict] = []
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        fut_map = {
+            loop.run_in_executor(pool, _one, fpath): fpath
+            for fpath in files
+        }
+        done = 0
+        for fut in asyncio.as_completed(list(fut_map.keys())):
+            if cancel_event.is_set():
+                raise asyncio.CancelledError()
+            done += 1
+            fpath = fut_map[fut]
+            try:
+                results.append(await fut)
+            except Exception as file_exc:  # noqa: BLE001
+                failed.append({"file": fpath, "reason": str(file_exc)})
+                print(f"[integrate1d][parallel] ERROR on {fpath}: {file_exc}", flush=True)
+            await send_progress(done / max(len(files), 1), f"Integrating ({done}/{len(files)}) [parallel]")
+
+    await send_progress(1.0, "Complete")
+    print(f"[integrate1d][parallel] Done: {len(results)} success, {len(failed)} failed", flush=True)
+    if not results and not failed:
+        return {"status": "error", "message": "No files provided."}
+    if not results:
+        return {"status": "error", "message": f"All {len(files)} file(s) failed.", "failed": failed}
+    return {"status": "ok", "results": results, "failed": failed}
+
+
 async def handle_integrate1d(
     payload: dict[str, Any],
     send_progress: Callable[[float, str], Awaitable[None]],
@@ -1258,6 +1373,11 @@ async def handle_integrate1d(
         if isinstance(single, str):
             files = [single]
     print(f"[integrate1d] Processing {len(files)} files", flush=True)
+
+    # Optional parallel batch (v0.3.0, OFF by default — see helper docstring).
+    # 可选并行批处理（v0.3.0，默认关闭——见上方辅助函数说明）。
+    if bool(payload.get("parallel", False)) and len(files) > 1:
+        return await _integrate1d_batch_parallel(ai, files, payload, send_progress, cancel_event)
 
     results: list[dict] = []
     failed: list[dict] = []
@@ -1300,9 +1420,14 @@ async def handle_integrate1d(
                 "polarization_factor": opts.get("polarization_factor"),
             }
             if integrator == "ng" and hasattr(ai, "integrate1d_ng"):
-                res = ai.integrate1d_ng(**integrate_kwargs)
+                # v0.3.0: the integration itself runs in the worker pool — a
+                # long integration no longer freezes the shared event loop
+                # (progress pushes / other users' messages keep flowing).
+                # v0.3.0：积分本体进入线程池——长积分不再冻结共享事件循环
+                # （进度推送与其他消息不再排队）。
+                res = await _run_blocking(ai.integrate1d_ng, **integrate_kwargs)
             else:
-                res = ai.integrate1d(**integrate_kwargs)
+                res = await _run_blocking(ai.integrate1d, **integrate_kwargs)
             radial_list, intensity_list = _drop_empty_bins(
                 res, opts.get("drop_empty_bins", True)
             )
@@ -1395,7 +1520,7 @@ async def handle_integrate_azimuth(
             radial_max = opts.get("radial_max")
             if radial_min is not None and radial_max is not None:
                 kw["radial_range"] = (float(radial_min), float(radial_max))
-            res = ai.integrate_radial(**kw)
+            res = await _run_blocking(ai.integrate_radial, **kw)
             radial_list, intensity_list = _drop_empty_bins(
                 res, opts.get("drop_empty_bins", True)
             )
@@ -1487,9 +1612,7 @@ async def handle_integrate_cake(
             if radial_min is not None and radial_max is not None:
                 integrate_kwargs["radial_range"] = (float(radial_min), float(radial_max))
 
-            res = ai.integrate1d(
-                **integrate_kwargs,
-            )
+            res = await _run_blocking(ai.integrate1d, **integrate_kwargs)
             x_list, y_list = _drop_empty_bins(
                 res, opts.get("drop_empty_bins", True)
             )
@@ -1574,13 +1697,20 @@ async def handle_integrate_fiber(
                 custom_mask = None
                 custom_mask_path = opts.get("custom_mask_path") or payload.get("custom_mask_path")
                 if custom_mask_path:
-                    custom_mask = MaskBuilder.load_mask_file(str(custom_mask_path))
-                final_mask = MaskBuilder.build(
+                    # v0.3.0: mask load/build and the GI integration also run
+                    # in the worker pool (this folder-mode path previously ran
+                    # them synchronously on the event loop).
+                    # v0.3.0：mask 装载/构建与掠入射积分同样进线程池执行
+                    # （此前该文件夹模式路径在事件循环上同步执行）。
+                    custom_mask = await _run_blocking(MaskBuilder.load_mask_file, str(custom_mask_path))
+                final_mask = await _run_blocking(
+                    MaskBuilder.build,
                     raw_data, opts.get("valid_min", 0.0), opts.get("valid_max", 1e10),
                     dead_mask, custom_mask,
                 )
 
-                result = FiberIntegratorService.integrate_single(
+                result = await _run_blocking(
+                    FiberIntegratorService.integrate_single,
                     fi, raw_data, final_mask, params,
                     correct_solid_angle=opts.get("correct_solid_angle", True),
                     polarization_factor=opts.get("polarization_factor"),
@@ -1643,6 +1773,9 @@ async def handle_integrate_fiber(
             correct_solid_angle=opts.get("correct_solid_angle", True),
             polarization_factor=opts.get("polarization_factor"),
             error_collector=batch_errors,
+            # v0.3.0 optional parallel batch, OFF by default / 可选并行，默认关
+            parallel=bool(payload.get("parallel", False)),
+            max_workers=int(payload.get("max_workers") or 0),
         )
         return results, batch_errors
 
@@ -6189,6 +6322,23 @@ async def handle_lamellar_analysis(
     return result
 
 
+async def handle_calibration(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Built-in geometry calibration wizard (pyFAI refinement engine, v0.3.0).
+
+    Thin forwarder — the engine lives in services/calibration.py so the
+    heavyweight pyFAI imports stay out of this module's import path.
+    内置几何校正向导（pyFAI 精化引擎，v0.3.0）。仅做转发——引擎位于
+    services/calibration.py，重量级 pyFAI 导入不进入本模块导入路径。
+    """
+    from services.calibration import handle_calibration as _run
+
+    return await _run(payload, send_progress, cancel_event)
+
+
 # Route → handler mapping / 路由→处理函数映射
 ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/integrate1d": handle_integrate1d,
@@ -6216,6 +6366,7 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/launch_pyfai": handle_launch_pyfai,
     "/api/install_pyfai": handle_install_pyfai,
     "/api/export_bat_pyfai": handle_export_bat_pyfai,
+    "/api/calibration": handle_calibration,
 }
 
 

@@ -16,7 +16,7 @@
             <span>{{ t('integrateFiber.geomGroup') }}</span>
           </div>
           <div v-show="geomExpanded" class="fib-collapsible-body fib-group-body">
-            <GeometryForm v-model="geometry" />
+            <GeometryForm v-model="geometry" data-ai-id="fiber:geometry" />
 
             <PolarizationForm v-model="polarizationFactor" />
 
@@ -330,7 +330,7 @@
         </div>
 
         <!-- ── Export result (sidebar, expands after preview) / 导出结果（侧栏，预览后展开） ── -->
-        <div v-if="result" class="fib-collapsible">
+        <div v-if="result" class="fib-collapsible" data-ai-id="fiber:export">
           <div class="fib-section-toggle" @click="exportExpanded = !exportExpanded">
             <span class="fib-toggle-icon">{{ exportExpanded ? '▾' : '▸' }}</span>
             <span>{{ t('integrateFiber.exportGroup') }}</span>
@@ -359,7 +359,7 @@
         >
           <h2 class="fib-section-title">{{ t('integrate1d.dataFiles') }}</h2>
           <div class="fib-file-buttons">
-            <button type="button" class="fib-file-btn" @click="handleChooseFiles">
+            <button type="button" class="fib-file-btn" data-ai-id="fiber:files" @click="handleChooseFiles">
               {{ t('business.fileSelection.selectFiles') }}
             </button>
             <button
@@ -498,6 +498,7 @@
             class="fib-run-btn"
             :disabled="!canRun || isPreviewRunning"
             :data-testid="testIds.fiberRunBtn"
+            data-ai-id="fiber:run"
             @click="runPreviewIntegration"
           >
             {{ isPreviewRunning ? t('integrateFiber.running') : t('integrateFiber.preview') }}
@@ -927,6 +928,7 @@
  * using pyFAI's FiberIntegrator via the desktop task bridge.
  */
 import { ref, reactive, computed, watch, onUnmounted, nextTick } from 'vue'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
@@ -1438,6 +1440,29 @@ const validationError = computed<string | null>(() => {
 })
 
 const canRun = computed(() => files.value.length > 0 && !validationError.value)
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// 向状态桥上报进度供教学模式使用；主线构建中为惰性。
+watch(
+  [files, canRun, isPreviewRunning, previewError, result, () => geometry.value.poniPath],
+  () => {
+    reportWorkspace('integrate-fiber', {
+      filesCount: files.value.length,
+      hasPoni: Boolean(geometry.value.poniPath),
+      canRun: canRun.value && !isPreviewRunning.value,
+      phase: isPreviewRunning.value
+        ? 'running'
+        : previewError.value
+          ? 'error'
+          : result.value
+            ? 'done'
+            : 'idle',
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('integrate-fiber'))
 
 const thumbTotalPages = computed(() =>
   Math.max(1, Math.ceil(files.value.length / thumbPageSize.value))

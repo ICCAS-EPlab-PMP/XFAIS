@@ -23,6 +23,7 @@
             <button
               type="button"
               class="vw-export-btn vw-export-btn--secondary"
+              data-ai-id="viewer:files"
               @click="handleChooseFiles"
             >
               {{ t('viewer.selectFile') }}
@@ -270,6 +271,7 @@
             type="button"
             class="vw-export-btn"
             :disabled="!fullImageB64 || pngExporting || pixelInfoMode"
+            data-ai-id="viewer:export"
             @click="handleExportSinglePng"
           >
             {{ pngExporting ? t('viewer.exporting') : t('viewer.exportSingle') }}
@@ -581,6 +583,7 @@
  * Fast probe (metadata) + single-frame load flow.
  */
 import { ref, computed, onUnmounted, watch } from 'vue'
+import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
@@ -1256,6 +1259,32 @@ const geometry = ref<GeometryParams>({
   pixel1: 172, pixel2: 172, distance: 200, wavelength: 1.5418, centerX: 512, centerY: 512,
 })
 const resolvedBeamCenter = ref<{ x: number; y: number } | null>(null)
+
+// Publish progress to the workspace-state bridge for the AI guided tour
+// (Jev build); inert in the main build — no AI module is imported.
+// Passive view: files → auto load → inspect → optional PNG export.
+// 被动查看页：选文件 → 自动加载 → 查看 → 可选导出 PNG。
+const viewerExportedOnce = ref(false)
+watch(
+  [selectedFiles, state, errorMessage, hasDisplayImage, viewerExportedOnce, () => geometry.value.poniPath],
+  () => {
+    reportWorkspace('viewer', {
+      filesCount: selectedFiles.value.length,
+      hasPoni: Boolean(geometry.value.poniPath),
+      canRun: hasDisplayImage.value,
+      phase: state.value === 'running'
+        ? 'running'
+        : state.value === 'error' || errorMessage.value
+          ? 'error'
+          : hasDisplayImage.value
+            ? 'done'
+            : 'idle',
+      extras: { exported: viewerExportedOnce.value },
+    })
+  },
+  { immediate: true, deep: true }
+)
+onUnmounted(() => clearWorkspace('viewer'))
 /** q-range ring bounds (Å⁻¹). / q 范围圆环边界（Å⁻¹）。 */
 const ringMin = ref(0)
 const ringMax = ref(1.5)
@@ -1898,6 +1927,7 @@ watch(pixelInfoMode, (on) => {
 
 async function handleExportSinglePng(): Promise<void> {
   if (!filePath.value || pngExporting.value) return
+  viewerExportedOnce.value = true
 
   try {
     const savePath = await transport.selectSavePath({
