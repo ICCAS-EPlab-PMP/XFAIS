@@ -28,8 +28,31 @@ const MODEL_ID = 'jev-latest'
 const TIMEOUT_MS = 12_000
 
 /** True inside the Electron desktop app (renderer with the IPC proxy bridge). */
-const hasDesktopProxy = (): boolean =>
+export const hasDesktopProxy = (): boolean =>
   typeof window !== 'undefined' && typeof window.desktop?.net?.postJson === 'function'
+
+/**
+ * Whether a web deployment should attempt Jev at all: probes the same-origin
+ * /health once and caches the jev_api boolean (the backend sets it from the
+ * admin-configured key). Desktop resolves false — there the gate is the
+ * user's personal Settings key. Any probe failure also resolves false so a
+ * backend-less renderer (e.g. vite dev) never spams failed Jev calls.
+ */
+let webJevConfiguredCache: Promise<boolean> | null = null
+
+export const webJevConfigured = (): Promise<boolean> => {
+  if (hasDesktopProxy()) return Promise.resolve(false)
+  if (!webJevConfiguredCache) {
+    webJevConfiguredCache = fetch('/health')
+      .then((response) => (response.ok ? (response.json() as Promise<unknown>) : undefined))
+      .then((payload: unknown) => {
+        const record = payload as Record<string, unknown> | undefined
+        return record?.jev_api === true
+      })
+      .catch(() => false)
+  }
+  return webJevConfiguredCache
+}
 
 // ── Small defensive-parsing helpers ───────────────────────────────────────────
 

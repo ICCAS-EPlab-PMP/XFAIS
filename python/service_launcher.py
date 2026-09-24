@@ -6673,6 +6673,7 @@ _CORS_HEADERS = {
 
 _JEV_API_KEY_ENV = "XFAIS_JEV_API_KEY"
 _JEV_API_URL_ENV = "XFAIS_JEV_API_URL"
+_JEV_ALLOWED_CIDRS_ENV = "XFAIS_JEV_ALLOWED_CIDRS"
 _JEV_DEFAULT_UPSTREAM = "https://api.typesafe.ai/v1/systemone"
 _JEV_MAX_BODY_BYTES = 1_000_000
 _JEV_MAX_RESPONSE_BYTES = 2_000_000
@@ -6693,6 +6694,40 @@ _JEV_MAX_RESPONSE_BYTES = 2_000_000
 
 def _jev_api_key() -> str:
     return os.environ.get(_JEV_API_KEY_ENV, "").strip()
+
+
+def _jev_client_allowed(client_address: tuple[Any, ...]) -> bool:
+    """Whether this client may use the shared key. Unset / empty
+    XFAIS_JEV_ALLOWED_CIDRS = allow everyone (the documented default); set =
+    comma-separated CIDRs or single IPs, and a malformed entry fails CLOSED
+    (500) so a typo never silently widens the gate. The source is the socket
+    peer address — X-Forwarded-For is deliberately not trusted (spoofable);
+    behind a reverse proxy all clients appear as the proxy, so restrict at
+    the proxy or include its address range.
+    客户端是否可用共享 Key。XFAIS_JEV_ALLOWED_CIDRS 未设置/为空 = 对所有
+    人开放（默认）；设置为逗号分隔的 CIDR 或单个 IP，配置错误一律封死
+    （500），绝不让笔误悄悄放宽门槛。判定依据是套接字对端地址——刻意不
+    信任可伪造的 X-Forwarded-For；反向代理后所有客户端都呈现为代理地址，
+    需在代理层限制或把代理网段并入白名单。
+    """
+    raw = os.environ.get(_JEV_ALLOWED_CIDRS_ENV, "").strip()
+    if not raw:
+        return True
+    networks = []
+    try:
+        for part in raw.split(","):
+            part = part.strip()
+            if part:
+                networks.append(ipaddress.ip_network(part, strict=False))
+    except ValueError as exc:
+        raise RuntimeError(f"invalid {_JEV_ALLOWED_CIDRS_ENV}: {exc}") from exc
+    if not networks:
+        return True
+    try:
+        client = ipaddress.ip_address(str(client_address[0]).split("%", 1)[0])
+    except ValueError:
+        return False
+    return any(client.version == net.version and client in net for net in networks)
 
 
 def _validate_public_http_url(url: str) -> str | None:
@@ -6964,7 +6999,7 @@ class WebHealthHandler(BaseHTTPRequestHandler):
                     _ws_service.session_manager.destroy_session(session_id)
                 except Exception as exc:
                     # Cleanup must never mask the disconnect path.
-                    print(f"[web-server] session cleanup failed for {session_id[:8]}: {exc}")
+                    print(f"[web-server] session cleanup failed for {session_id[:8]}: {exc}", flush=True)
 
     def _ws_send(self, data: str | bytes, binary: bool = False) -> None:
         """Send a WebSocket frame. Supports text and binary.
@@ -7183,6 +7218,16 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             }, HTTPStatus.NOT_IMPLEMENTED)
             return
         try:
+            if not _jev_client_allowed(self.client_address):
+                self._write_json(
+                    {"error": "Jev access restricted on this server"},
+                    HTTPStatus.FORBIDDEN,
+                )
+                return
+        except RuntimeError as exc:
+            self._write_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+        try:
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             length = 0
@@ -7228,7 +7273,9 @@ class WebHealthHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[web-server] {self.address_string()} - {format % args}")
+        # flush=True keeps request logs visible promptly under redirected
+        # (block-buffered) stdout, matching the startup banner above.
+        print(f"[web-server] {self.address_string()} - {format % args}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -7434,7 +7481,12 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
     expected_python = python_version
 
     report = build_health_report(expected_python, requirements_lock or "")
-    print(json.dumps({"startup": report, "mode": "web_server"}, ensure_ascii=False))
+    # flush: stdout is block-buffered when redirected to a file (systemd
+    # StandardOutput=append:) — without it the startup banner only hits the
+    # log after the buffer fills, which reads as "service never started".
+    # flush：stdout 重定向到文件时为块缓冲——不刷缓冲，启动横幅要等缓冲区
+    # 满才落盘，排障时会被误判为"服务没起来"。
+    print(json.dumps({"startup": report, "mode": "web_server"}, ensure_ascii=False), flush=True)
 
     session_mgr = SessionManager()
     ws_service = WebSocketService(session_manager=session_mgr)
@@ -7462,15 +7514,17 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
         "dist_dir": dist_dir,
     })
 
-    print(f"[web-server] HTTP + WebSocket on {host}:{port} (single-port mode)")
-    print(f"[web-server] Session isolation enabled. Each client gets isolated temp directory.")
-    print(f"[web-server] No pyFAI-calib2 launcher — server mode only.")
+    print(f"[web-server] HTTP + WebSocket on {host}:{port} (single-port mode)", flush=True)
+    print(f"[web-server] Session isolation enabled. Each client gets isolated temp directory.", flush=True)
+    print(f"[web-server] No pyFAI-calib2 launcher — server mode only.", flush=True)
     if _jev_api_key():
+        cidrs = os.environ.get(_JEV_ALLOWED_CIDRS_ENV, "").strip()
+        scope = f", clients restricted to {cidrs}" if cidrs else ", shared by all users"
         print("[web-server] Jev AI forwarding enabled: POST /api/ai/systemone "
-              f"(key from {_JEV_API_KEY_ENV}, shared by all users)")
+              f"(key from {_JEV_API_KEY_ENV}{scope})", flush=True)
     else:
         print("[web-server] Jev AI forwarding disabled — "
-              f"set {_JEV_API_KEY_ENV} to enable shared AI for all users")
+              f"set {_JEV_API_KEY_ENV} to enable shared AI for all users", flush=True)
 
     threading.Thread(target=_warm_viewer_runtime, daemon=True).start()
 
@@ -7478,7 +7532,7 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
         with ThreadingHTTPServer((host, port), handler) as httpd:
             httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n[web-server] Shutting down...")
+        print("\n[web-server] Shutting down...", flush=True)
     return 0
 
 
