@@ -6821,7 +6821,7 @@ class WebHealthHandler(BaseHTTPRequestHandler):
                     _ws_service.session_manager.destroy_session(session_id)
                 except Exception as exc:
                     # Cleanup must never mask the disconnect path.
-                    print(f"[web-server] session cleanup failed for {session_id[:8]}: {exc}")
+                    print(f"[web-server] session cleanup failed for {session_id[:8]}: {exc}", flush=True)
 
     def _ws_send(self, data: str | bytes, binary: bool = False) -> None:
         """Send a WebSocket frame. Supports text and binary.
@@ -7021,7 +7021,9 @@ class WebHealthHandler(BaseHTTPRequestHandler):
         self._write_json({"error": "not-found"}, HTTPStatus.NOT_FOUND)
 
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"[web-server] {self.address_string()} - {format % args}")
+        # flush=True keeps request logs visible promptly under redirected
+        # (block-buffered) stdout, matching the startup banner above.
+        print(f"[web-server] {self.address_string()} - {format % args}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -7227,7 +7229,12 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
     expected_python = python_version
 
     report = build_health_report(expected_python, requirements_lock or "")
-    print(json.dumps({"startup": report, "mode": "web_server"}, ensure_ascii=False))
+    # flush: stdout is block-buffered when redirected to a file (systemd
+    # StandardOutput=append:) — without it the startup banner only hits the
+    # log after the buffer fills, which reads as "service never started".
+    # flush：stdout 重定向到文件时为块缓冲——不刷缓冲，启动横幅要等缓冲区
+    # 满才落盘，排障时会被误判为"服务没起来"。
+    print(json.dumps({"startup": report, "mode": "web_server"}, ensure_ascii=False), flush=True)
 
     session_mgr = SessionManager()
     ws_service = WebSocketService(session_manager=session_mgr)
@@ -7255,9 +7262,9 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
         "dist_dir": dist_dir,
     })
 
-    print(f"[web-server] HTTP + WebSocket on {host}:{port} (single-port mode)")
-    print(f"[web-server] Session isolation enabled. Each client gets isolated temp directory.")
-    print(f"[web-server] No pyFAI-calib2 launcher — server mode only.")
+    print(f"[web-server] HTTP + WebSocket on {host}:{port} (single-port mode)", flush=True)
+    print(f"[web-server] Session isolation enabled. Each client gets isolated temp directory.", flush=True)
+    print(f"[web-server] No pyFAI-calib2 launcher — server mode only.", flush=True)
 
     threading.Thread(target=_warm_viewer_runtime, daemon=True).start()
 
@@ -7265,7 +7272,7 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
         with ThreadingHTTPServer((host, port), handler) as httpd:
             httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\n[web-server] Shutting down...")
+        print("\n[web-server] Shutting down...", flush=True)
     return 0
 
 
