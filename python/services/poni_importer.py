@@ -475,7 +475,10 @@ def export_to_json(poni_data: Dict[str, Any], output_path: Optional[str] = None)
     json_str = json.dumps(poni_data, indent=2)
 
     if output_path:
-        with open(output_path, 'w', encoding='utf-8') as f:
+        # v0.3.0 hardening: sink-level validation (defense in depth on top of
+        # the entry check in the caller).
+        from .paths import validated_output_path
+        with open(validated_output_path(output_path, field="output_path"), 'w', encoding='utf-8') as f:
             f.write(json_str)
         logger.info(f"Exported PONI data to JSON: {output_path}")
         return output_path
@@ -610,6 +613,11 @@ def export_to_poni(poni_data: Dict[str, Any], output_path: str) -> str:
     str
         Output file path.
     """
+    # v0.3.0 hardening: user-supplied output path goes through the shared
+    # output-path choke point before any file write.
+    from .paths import validated_output_path
+    output_path = validated_output_path(output_path, field="output_path")
+
     # Resolve detector info BEFORE writing, so the output always has a valid
     # `Detector:` line even when the caller didn't pick a preset. We copy
     # `poni_data` to avoid mutating the caller's dict.
@@ -666,7 +674,7 @@ def export_to_poni(poni_data: Dict[str, Any], output_path: str) -> str:
         if key not in written_keys and not key.startswith('_') and key not in _NONPONI_DATA_KEYS:
             lines.append(_format_poni_field(key, value))
 
-    with open(output_path, 'w', encoding='utf-8') as f:
+    with open(validated_output_path(output_path, field="output_path"), 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
 
     logger.info(f"Exported PONI data to file: {output_path}")

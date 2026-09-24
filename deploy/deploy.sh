@@ -42,10 +42,29 @@ SOURCE_DIST_DIR="$SOURCE_ROOT/dist"
 SOURCE_PYTHON_DIR="$SOURCE_ROOT/python"
 
 # 配置
-APP_HOST="${APP_HOST:-0.0.0.0}"
+# v0.3.0 安全默认：只绑回环地址。对外服务必须经带鉴权的反向代理/VPN 暴露，
+# 并设置 XFAIS_OUTPUT_ROOT 限制结果写入范围（见下方安全说明）。
+# Security default (v0.3.0): loopback-only. To serve externally, front this
+# with an authenticated reverse proxy / VPN and set XFAIS_OUTPUT_ROOT.
+APP_HOST="${APP_HOST:-127.0.0.1}"
 APP_PORT="${APP_PORT:-8765}"
 DEPLOY_MODE="${DEPLOY_MODE:-}"
 FORCE_REBUILD="${FORCE_REBUILD:-false}"
+
+# ------------------------------------------------------------------------------
+# v0.3.0 服务器安全说明（重要 / IMPORTANT）
+# serve_web 的 HTTP/WS API 没有内置鉴权。若 APP_HOST 设为非回环地址：
+#   1. 必须用 nginx basic auth / 实验室内网 VPN 等带鉴权的反代罩住；
+#   2. 必须导出 XFAIS_OUTPUT_ROOT=<结果根目录>，所有导出写入将被限制在该
+#      目录树内（services/paths.py 统一校验，含 .. 与符号链接逃逸防护）；
+#   3. 防火墙限制源 IP。缺一即等于把未认证的任意文件写接口暴露到网络。
+# The serve_web API has NO built-in auth. Binding non-loopback requires:
+#   1. an authenticated reverse proxy (or VPN) in front;
+#   2. XFAIS_OUTPUT_ROOT=<results root> exported (output-path containment,
+#      enforced in services/paths.py, incl. `..` and symlink escapes);
+#   3. firewall source restrictions. Skipping any of these exposes an
+#      unauthenticated arbitrary-file-write API to the network.
+# ------------------------------------------------------------------------------
 
 # ------------------------------------------------------------------------------
 # 工具函数
@@ -484,7 +503,7 @@ fi
 
 # 启动服务
 echo "Starting X-FAIS Web Service..."
-nohup venv/bin/python python/service_launcher.py serve_web --port PORT_PLACEHOLDER > logs/xfais.out 2>&1 &
+nohup venv/bin/python python/service_launcher.py serve_web --host HOST_PLACEHOLDER --port PORT_PLACEHOLDER > logs/xfais.out 2>&1 &
 echo $! > xfais.pid
 echo "X-FAIS started with PID: $(cat xfais.pid)"
 echo "Log file: $SCRIPT_DIR/logs/xfais.out"
@@ -535,9 +554,10 @@ echo "Health check:"
 curl -sf http://localhost:PORT_PLACEHOLDER/health 2>/dev/null && echo "" || echo "FAILED"
 STATUS_EOF
 
-  # 替换端口
+  # 替换端口与主机
   sed -i "s/PORT_PLACEHOLDER/$APP_PORT/g" "$APP_INSTALL_DIR/start.sh"
   sed -i "s/PORT_PLACEHOLDER/$APP_PORT/g" "$APP_INSTALL_DIR/status.sh"
+  sed -i "s/HOST_PLACEHOLDER/$APP_HOST/g" "$APP_INSTALL_DIR/start.sh"
   
   chmod +x "$APP_INSTALL_DIR/start.sh" "$APP_INSTALL_DIR/stop.sh" "$APP_INSTALL_DIR/status.sh"
 
