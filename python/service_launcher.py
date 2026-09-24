@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import base64
 import hashlib
+import ipaddress
 import math
 import importlib
 import importlib.metadata
@@ -22,6 +23,9 @@ import shutil
 import socket
 import struct
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 import sys
 import threading
@@ -6651,6 +6655,126 @@ _CORS_HEADERS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Jev (TypeSafe AI) forwarding for web deployments — admin-configured key
+# Jev（TypeSafe AI）Web 部署转发 — 管理员配置的共享 Key
+#
+# api.typesafe.ai sends no CORS headers, so a browser can never call it
+# directly. In serve_web mode the ADMIN decides whether AI is available: set
+# XFAIS_JEV_API_KEY in the server environment and every client shares it via
+# POST /api/ai/systemone (same-origin, no CORS involved). Without the env var
+# the endpoint answers 501 and the frontend silently falls back to the
+# built-in rules router. A personal key from Settings stays desktop-only.
+# api.typesafe.ai 不返回 CORS 头，浏览器永远无法直连。serve_web 模式下由
+# 管理员决定是否启用 AI：在服务器环境设置 XFAIS_JEV_API_KEY，所有客户端经
+# POST /api/ai/systemone 共享同一 Key（同源，无 CORS 问题）。未设置时端点
+# 返回 501，前端静默回退到内置规则路由。设置页里的个人 Key 仅桌面版可用。
+# ---------------------------------------------------------------------------
+
+_JEV_API_KEY_ENV = "XFAIS_JEV_API_KEY"
+_JEV_API_URL_ENV = "XFAIS_JEV_API_URL"
+_JEV_DEFAULT_UPSTREAM = "https://api.typesafe.ai/v1/systemone"
+_JEV_MAX_BODY_BYTES = 1_000_000
+_JEV_MAX_RESPONSE_BYTES = 2_000_000
+
+# Only HTTP clients send request BODIES here — the upstream URL itself comes
+# from operator-controlled env config, never from the network request. Still,
+# before any request we validate scheme + host + every resolved IP (public
+# only), refuse redirects (so a 3xx cannot hop to an internal target), and cap
+# body/response sizes. Validation runs immediately before the fetch to shrink
+# the DNS-rebinding window; the remaining trust in the operator env matches
+# the operator's existing power to bind --host 0.0.0.0.
+# 只有 HTTP 客户端能提交请求体——上游 URL 本身来自运维环境变量，绝不来自网
+# 络请求。尽管如此，每次请求前仍校验协议+主机+全部解析 IP（仅公网）、拒绝
+# 重定向（防止 3xx 跳向内网目标），并限制请求/响应体大小；校验紧贴抓取执行
+# 以缩小 DNS 重绑定窗口；对运维环境变量的残余信任与运维者绑定 --host
+# 0.0.0.0 的既有权限一致。
+
+
+def _jev_api_key() -> str:
+    return os.environ.get(_JEV_API_KEY_ENV, "").strip()
+
+
+def _validate_public_http_url(url: str) -> str | None:
+    """SSRF guard for the admin-configured upstream: http/https only, and every
+    resolved address must be public (loopback / private / reserved rejected).
+    Returns an error string, or None when the URL is safe to request.
+    管理员可配置上游的 SSRF 防护：仅 http/https，且解析出的所有地址必须是
+    公网地址（拒绝环回/私网/保留地址）。返回错误信息；安全则返回 None。"""
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        scheme = parsed.scheme
+        host = parsed.hostname
+        port = parsed.port or (443 if scheme == "https" else 80)
+    except ValueError as exc:
+        return f"unparseable URL: {exc}"
+    if scheme not in ("http", "https"):
+        return f"scheme must be http or https, got {scheme!r}"
+    if not host:
+        return "URL has no host"
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        return f"cannot resolve {host!r}: {exc}"
+    for info in infos:
+        raw_addr = info[4][0]
+        addr = raw_addr.split("%", 1)[0]  # strip IPv6 scope id
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return f"unrecognized address {raw_addr!r} for {host!r}"
+        if not ip.is_global:
+            return f"{host!r} resolves to non-public address {raw_addr!r}"
+    return None
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects so an upstream 3xx can never re-target the fetch to an
+    internal address the pre-flight validation never saw.
+    拒绝重定向：上游 3xx 不得把抓取重定向到预校验未覆盖的内网地址。"""
+
+    def redirect_request(self, req: Any, fp: Any, code: Any, msg: Any,  # noqa: N802
+                         headers: Any, newurl: Any) -> None:
+        return None  # urlopen then raises HTTPError for the 3xx itself
+
+
+_JEV_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def _forward_jev_request(
+    body: bytes, api_key: str, url: str, timeout: float = 20.0
+) -> tuple[int, bytes, str]:
+    """POST body to the Jev upstream with the admin key (redirects refused).
+    Returns (status, body, content_type); upstream error statuses pass through.
+    用管理员 Key 将 body POST 到 Jev 上游（拒绝重定向）。返回
+    (状态码, 响应体, 类型)；上游的错误状态码原样透传。"""
+    request = urllib.request.Request(
+        url,
+        data=body,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+            "User-Agent": "X-FAIS-serve-web/jev-forward",
+        },
+    )
+    try:
+        with _JEV_OPENER.open(request, timeout=timeout) as response:
+            payload = response.read(_JEV_MAX_RESPONSE_BYTES + 1)
+            return response.status, payload, response.headers.get("Content-Type", "application/json")
+    except urllib.error.HTTPError as exc:
+        try:
+            payload = exc.read(_JEV_MAX_RESPONSE_BYTES + 1) or b"{}"
+        except Exception:
+            payload = b"{}"
+        headers = exc.headers
+        content_type = headers.get("Content-Type", "application/json") if headers else "application/json"
+        return exc.code, payload, content_type
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        raise RuntimeError(f"Jev upstream request failed: {exc}") from exc
+
+
+
 class WebHealthHandler(BaseHTTPRequestHandler):
     """HTTP handler for standalone web server mode with CORS + WebSocket upgrade.
     独立 Web 服务器模式的 HTTP 处理程序（带 CORS 支持 + WebSocket 升级）。
@@ -6706,6 +6830,10 @@ class WebHealthHandler(BaseHTTPRequestHandler):
         for k, v in _CORS_HEADERS.items():
             self.send_header(k, v)
         self.end_headers()
+        # The connection speaks WebSocket from here on; once the WS loop in
+        # this handler returns, the HTTP keep-alive loop must not try to
+        # parse another request off the raw socket.
+        self.close_connection = True
 
         # Create a new session for this connection
         session_id = _ws_service.session_manager.create_session() if _ws_service else ""
@@ -6832,7 +6960,11 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             loop.close()
             # Cleanup session
             if _ws_service is not None and session_id:
-                _ws_service.session_manager.remove_session(session_id)
+                try:
+                    _ws_service.session_manager.destroy_session(session_id)
+                except Exception as exc:
+                    # Cleanup must never mask the disconnect path.
+                    print(f"[web-server] session cleanup failed for {session_id[:8]}: {exc}")
 
     def _ws_send(self, data: str | bytes, binary: bool = False) -> None:
         """Send a WebSocket frame. Supports text and binary.
@@ -6940,6 +7072,10 @@ class WebHealthHandler(BaseHTTPRequestHandler):
                 # Cache static assets
                 if ext in (".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".woff", ".woff2", ".ttf"):
                     self.send_header("Cache-Control", "public, max-age=31536000, immutable")
+                elif ext == ".html":
+                    # HTML entry must revalidate so a new build is picked up;
+                    # hashed assets keep their immutable cache.
+                    self.send_header("Cache-Control", "no-cache")
                 for k, v in _CORS_HEADERS.items():
                     self.send_header(k, v)
                 self.end_headers()
@@ -6957,6 +7093,8 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             if os.path.isfile(index_path):
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                # SPA fallback serves index.html — same revalidate rule as .html
+                self.send_header("Cache-Control", "no-cache")
                 index_size = os.path.getsize(index_path)
                 self.send_header("Content-Length", str(index_size))
                 for k, v in _CORS_HEADERS.items():
@@ -7001,6 +7139,8 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             if self.ws_port is not None:
                 report["ws_port"] = self.ws_port
             report["mode"] = "web_server"
+            # Whether the admin configured a shared Jev key (never the key itself)
+            report["jev_api"] = bool(_jev_api_key())
             self._write_json(report)
             return
 
@@ -7017,6 +7157,9 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             else:
                 self._write_json({"error": "Service not ready"}, HTTPStatus.SERVICE_UNAVAILABLE)
             return
+        if self.path == "/api/ai/systemone":
+            self._handle_ai_forward()
+            return
         if self.path == "/shutdown":
             self._write_json({"ok": True})
             if _ws_service is not None:
@@ -7024,6 +7167,65 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         self._write_json({"error": "not-found"}, HTTPStatus.NOT_FOUND)
+
+    def _handle_ai_forward(self) -> None:
+        """POST /api/ai/systemone — forward to the admin-configured Jev upstream.
+
+        The API key never reaches the browser: the admin sets it in the server
+        environment and every client of this deployment shares it.
+        Key 未配置 → 501（前端静默回退规则路由）。
+        """
+        api_key = _jev_api_key()
+        if not api_key:
+            self._write_json({
+                "error": "Jev API key is not configured on this server",
+                "hint": f"set {_JEV_API_KEY_ENV} in the server environment to enable shared AI for all users",
+            }, HTTPStatus.NOT_IMPLEMENTED)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0:
+            self._write_json({"error": "Missing request body"}, HTTPStatus.BAD_REQUEST)
+            return
+        if length > _JEV_MAX_BODY_BYTES:
+            self.close_connection = True  # body deliberately left unread
+            self._write_json({"error": "Request body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+            return
+        body = self.rfile.read(length)
+        try:
+            parsed = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self._write_json({"error": "Request body must be valid JSON"}, HTTPStatus.BAD_REQUEST)
+            return
+        if not isinstance(parsed, dict):
+            self._write_json({"error": "Request body must be a JSON object"}, HTTPStatus.BAD_REQUEST)
+            return
+
+        upstream = os.environ.get(_JEV_API_URL_ENV, "").strip() or _JEV_DEFAULT_UPSTREAM
+        validation_error = _validate_public_http_url(upstream)
+        if validation_error is not None:
+            self._write_json(
+                {"error": f"Jev upstream URL rejected: {validation_error}"},
+                HTTPStatus.BAD_GATEWAY,
+            )
+            return
+        try:
+            status, payload, content_type = _forward_jev_request(body, api_key, upstream)
+        except RuntimeError as exc:
+            self._write_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
+            return
+
+        if not 200 <= status < 600:
+            status = HTTPStatus.BAD_GATEWAY
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(payload)))
+        for k, v in _CORS_HEADERS.items():
+            self.send_header(k, v)
+        self.end_headers()
+        self.wfile.write(payload)
 
     def log_message(self, format: str, *args: Any) -> None:
         print(f"[web-server] {self.address_string()} - {format % args}")
@@ -7217,10 +7419,12 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
     """Start standalone web server mode (no Electron dependency).
     启动独立 Web 服务器模式（无 Electron 依赖）。
     
-    Binds to 0.0.0.0 by default for external access.
+    Binds to loopback (127.0.0.1) by default; pass --host 0.0.0.0 to serve
+    externally — prefer an authenticated reverse proxy / VPN (no built-in auth).
     Includes CORS headers for browser-based clients.
     HTTP and WebSocket share the same port (WebSocket via /ws upgrade).
-    默认绑定 0.0.0.0 以允许外部访问。
+    默认绑定回环地址 127.0.0.1；对外服务请传 --host 0.0.0.0——建议前置
+    带认证的反向代理/VPN（本服务无内置认证）。
     包含 CORS 头供浏览器客户端使用。
     HTTP 和 WebSocket 共享同一端口（WebSocket 通过 /ws 路径升级）。
     """
@@ -7261,6 +7465,12 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
     print(f"[web-server] HTTP + WebSocket on {host}:{port} (single-port mode)")
     print(f"[web-server] Session isolation enabled. Each client gets isolated temp directory.")
     print(f"[web-server] No pyFAI-calib2 launcher — server mode only.")
+    if _jev_api_key():
+        print("[web-server] Jev AI forwarding enabled: POST /api/ai/systemone "
+              f"(key from {_JEV_API_KEY_ENV}, shared by all users)")
+    else:
+        print("[web-server] Jev AI forwarding disabled — "
+              f"set {_JEV_API_KEY_ENV} to enable shared AI for all users")
 
     threading.Thread(target=_warm_viewer_runtime, daemon=True).start()
 
