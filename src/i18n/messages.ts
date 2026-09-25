@@ -1427,13 +1427,6 @@ export const messages = {
       ompThreadsHint: '限制 pyFAI/BLAS 的多核占用；修改后需重启 Python 运行时生效',
       restartNote: 'OMP 线程数在 Python 服务启动时读取，更改后需重启应用。',
       saved: '设置已保存'
-    },
-    ai: {
-      title: 'AI 助手（ai-assistant-preview 预览版）',
-      hint: '密钥仅保存在本机浏览器存储中，不会上传到任何服务器',
-      jevKey: 'Jev API Key（可选）',
-      jevKeyHint: '在 console.typesafe.ai 创建；留空时使用规则路由',
-      noKeyNote: '未配置任何密钥：AI 助手将以内置规则模式运行（离线可用）。'
     }
   },
   calibration: {
@@ -1511,50 +1504,6 @@ export const messages = {
       noSession: '校正会话不存在，请重新载入',
       loadFailed: '载入失败',
       refineFailed: '精化失败'
-    }
-  },
-  ai: {
-    bar: {
-      title: 'AI 助手',
-      open: '打开 AI 助手',
-      placeholder: '例如：我想处理一下 WAXS…',
-      send: '发送',
-      thinking: '思考中…',
-      waitHint: '已为你定位到目标位置，请手动完成操作后继续',
-      suggestHint: '请选择要前往的页面：',
-      needPoni: '请先在助手面板选择一个 .poni 文件，以便计算可达 q 范围',
-      jevKeyRejected: 'Jev 拒绝了该 API Key（401/403），本次回退内置规则——请核对设置中的密钥',
-      jevFailed: 'Jev 调用失败，本次回退内置规则：{reason}',
-      provider: '决策引擎',
-      providerJev: 'Jev',
-      providerRules: '内置规则',
-      close: '关闭',
-      clear: '清空对话',
-      restore: '恢复默认位置与大小',
-      poniButton: 'PONI'
-    },
-    template: {
-      applied: '已应用 {name} 模板',
-      reasonLabel: '依据',
-      unitLabel: '积分单位'
-    },
-    guide: {
-      started: '已开始「{name}」逐步教学',
-      stepOf: '第 {current}/{total} 步',
-      stepDone: '✓ 已完成：{title}',
-      done: '本页教学流程已全部完成，祝科研顺利！',
-      exit: '结束教学',
-      skip: '跳过本步',
-      toggle: '教学模式',
-      autoclick: '自动代点',
-      autoclickHint: '高置信时倒计时 3 秒后代你点击按钮，可随时取消',
-      start: '开始教学',
-      startPrompt: '本页支持逐步教学，要开始吗？',
-      noGuide: '该页面暂无教学流程',
-      countingDown: '{seconds} 秒后自动点击，点此取消',
-      cancelled: '已取消自动点击',
-      clicked: '已代你点击',
-      waitNext: '完成本步后我会自动继续'
     }
   },
   },
@@ -2983,13 +2932,6 @@ export const messages = {
       ompThreadsHint: 'Cap pyFAI/BLAS multi-core usage; takes effect after restarting the Python runtime',
       restartNote: 'OpenMP threads are read when the Python service starts — restart the app after changing.',
       saved: 'Settings saved'
-    },
-    ai: {
-      title: 'AI Assistant (ai-assistant-preview)',
-      hint: 'Keys are stored only in this browser profile and never uploaded anywhere',
-      jevKey: 'Jev API Key (optional)',
-      jevKeyHint: 'Create at console.typesafe.ai; falls back to rule-based routing when empty',
-      noKeyNote: 'No keys configured: the assistant runs in built-in rules mode (works offline).'
     }
   },
   calibration: {
@@ -3067,50 +3009,6 @@ export const messages = {
       noSession: 'Calibration session missing — please reload',
       loadFailed: 'Load failed',
       refineFailed: 'Refinement failed'
-    }
-  },
-  ai: {
-    bar: {
-      title: 'AI Assistant',
-      open: 'Open AI assistant',
-      placeholder: 'e.g. I want to process some WAXS…',
-      send: 'Send',
-      thinking: 'Thinking…',
-      waitHint: 'Target located for you — finish the action manually, then continue',
-      suggestHint: 'Choose where to go:',
-      needPoni: 'Pick a .poni file in the assistant panel first so the reachable q range can be computed',
-      jevKeyRejected: 'Jev rejected the API key (401/403); using built-in rules this turn — check the key in Settings',
-      jevFailed: 'Jev call failed; using built-in rules this turn: {reason}',
-      provider: 'Decision engine',
-      providerJev: 'Jev',
-      providerRules: 'Built-in rules',
-      close: 'Close',
-      clear: 'Clear chat',
-      restore: 'Reset position & size',
-      poniButton: 'PONI'
-    },
-    template: {
-      applied: '{name} template applied',
-      reasonLabel: 'Basis',
-      unitLabel: 'Output unit'
-    },
-    guide: {
-      started: 'Guided tour started: {name}',
-      stepOf: 'Step {current}/{total}',
-      stepDone: '✓ Done: {title}',
-      done: 'Tour complete — happy analyzing!',
-      exit: 'End tour',
-      skip: 'Skip step',
-      toggle: 'Teaching mode',
-      autoclick: 'Auto-click',
-      autoclickHint: 'Clicks buttons for you 3s after a high-confidence decision; cancellable',
-      start: 'Start tour',
-      startPrompt: 'This page has a step-by-step tour. Start it?',
-      noGuide: 'No guided tour for this page yet',
-      countingDown: 'Auto-click in {seconds}s — click to cancel',
-      cancelled: 'Auto-click cancelled',
-      clicked: 'Clicked for you',
-      waitNext: "I'll continue automatically once this step is done"
     }
   }
   }

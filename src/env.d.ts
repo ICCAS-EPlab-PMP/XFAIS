@@ -1,12 +1,5 @@
 /// <reference types="vite/client" />
 
-// Build-mode flags / 构建模式标志
-// VITE_JEV_BUILD=1 only in the Jev test build (`vite build --mode jev`);
-// undefined in the main build, so AI code paths are compiled out.
-interface ImportMetaEnv {
-  readonly VITE_JEV_BUILD?: string
-}
-
 declare module '*.vue' {
   import type { DefineComponent } from 'vue'
 
@@ -125,14 +118,6 @@ interface Window {
     }
     settings: {
       setPythonLaunchEnv: (env: { ompThreads?: number }) => Promise<{ ok: boolean; ompThreads: number | null }>
-    }
-    net: {
-      /** CORS-free HTTPS JSON POST via the main process (host-allowlisted). */
-      postJson: (payload: {
-        url: string
-        headers?: Record<string, string>
-        body?: unknown
-      }) => Promise<{ ok: boolean; status: number; data: unknown }>
     }
   }
 }
