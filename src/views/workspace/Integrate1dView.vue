@@ -391,9 +391,54 @@ const toast = useToast()
 const transport = useTransport()
 const settings = useSettings()
 
-// Export completion flag, reported to the workspace-state bridge.
-// 导出完成标志，上报给工作区状态桥。
+// AI assistant template application (Jev test build only dispatches this
+// event; in the main build nothing fires it, so the listener is inert — no AI
+// module is imported here). The event carries concrete field values which the
+// view assigns; Run stays user-controlled (the guided tour may click it after
+// a visible countdown on the user's behalf, never silently).
+// AI 助手模板应用（仅 Jev 测试构建会派发此事件；主线构建无人派发，监听器
+// 保持惰性——此处不导入任何 AI 模块）。事件携带具体字段值，视图仅赋值；
+// 运行仍由用户掌控（教学模式只会在可见倒计时后代点，绝不静默点击）。
+const templateAppliedFlag = ref(false)
 const exportedOnce = ref(false)
+
+function applyAiTemplate(detail: { template?: string; reason?: string; fields?: Record<string, unknown>; advanced?: Record<string, unknown> }): void {
+  // templateDetail() (src/lib/templates.ts) nests values under `advanced`;
+  // `fields` is accepted as an alternative flat shape.
+  // templateDetail()（src/lib/templates.ts）将字段嵌套在 `advanced` 下；
+  // 也兼容 `fields` 平铺形态。
+  const fields = detail.fields ?? detail.advanced ?? {}
+  if (typeof fields.nptRad === 'number') advancedOptions.nptRad = fields.nptRad
+  if (typeof fields.nptAzim === 'number') advancedOptions.nptAzim = fields.nptAzim
+  if (fields.unit === 'q_A' || fields.unit === 'q_nm' || fields.unit === '2th_deg' || fields.unit === '2th_rad') {
+    advancedOptions.unit = fields.unit
+  }
+  if (fields.radialMin === null || typeof fields.radialMin === 'number') {
+    advancedOptions.radialMin = fields.radialMin as number | null
+  }
+  if (fields.radialMax === null || typeof fields.radialMax === 'number') {
+    advancedOptions.radialMax = fields.radialMax as number | null
+  }
+  if (fields.algorithm === 'splitpixel' || fields.algorithm === 'csr' || fields.algorithm === 'lut' || fields.algorithm === 'bbox' || fields.algorithm === 'numpy') {
+    advancedOptions.algorithm = fields.algorithm
+  }
+  if (typeof fields.dropEmptyBins === 'boolean') advancedOptions.dropEmptyBins = fields.dropEmptyBins
+  templateAppliedFlag.value = true
+  toast.push({
+    title: t('ai.template.applied', { name: detail.template === 'saxs' ? 'SAXS' : 'WAXS' }),
+    message: detail.reason ?? '',
+    tone: 'info'
+  })
+}
+
+function onAiTemplateEvent(event: Event): void {
+  applyAiTemplate((event as CustomEvent).detail ?? {})
+}
+
+window.addEventListener('xfaos:ai-apply-template', onAiTemplateEvent)
+onUnmounted(() => {
+  window.removeEventListener('xfaos:ai-apply-template', onAiTemplateEvent)
+})
 
 // === Colormap options / 色图选项 ===
 
@@ -585,12 +630,12 @@ const canRun = computed(() => {
   return files.value.length > 0 && state.value !== 'running'
 })
 
-// Publish progress to the workspace-state bridge so external observers (e.g.
-// the Jev-build guided tour) can watch prerequisites and auto-advance. Inert
-// in the main build — no AI module is imported.
-// 向状态桥上报进度，供外部观测方（如 Jev 构建的教学模式）观测前置条件并推进。
+// Publish progress to the workspace-state bridge so the AI guided tour (Jev
+// build) can observe prerequisites and auto-advance its steps. Inert in the
+// main build — no AI module is imported.
+// 向状态桥上报进度，供教学模式观测前置条件并推进步骤；主线构建中为惰性。
 watch(
-  [files, canRun, state, exportedOnce, () => geometryParams.value.poniPath],
+  [files, canRun, state, templateAppliedFlag, exportedOnce, () => geometryParams.value.poniPath],
   () => {
     reportWorkspace('integrate-1d', {
       filesCount: files.value.length,
@@ -599,6 +644,7 @@ watch(
       phase: state.value,
       extras: {
         poniPath: geometryParams.value.poniPath ?? '',
+        templateApplied: templateAppliedFlag.value,
         exported: exportedOnce.value,
       },
     })

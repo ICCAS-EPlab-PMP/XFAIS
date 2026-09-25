@@ -98,6 +98,19 @@ const desktopApi = {
 
 const desktopApiWithPyfai = {
   ...desktopApi,
+  net: {
+    // CORS-free HTTPS JSON POST via the main process (host-allowlisted there).
+    // Used by the AI assistant's Jev adapter — api.typesafe.ai sends no CORS
+    // headers, so renderer fetch() is always blocked in the desktop app.
+    // 经主进程的免 CORS JSON POST（主进程侧有主机白名单）。供 AI 助手的
+    // Jev 适配器使用——api.typesafe.ai 不发 CORS 头，桌面端渲染层直连必被拦。
+    postJson: (payload: {
+      url: string
+      headers?: Record<string, string>
+      body?: unknown
+    }): Promise<{ ok: boolean; status: number; data: unknown }> =>
+      ipcRenderer.invoke('net:postJson', payload) as Promise<{ ok: boolean; status: number; data: unknown }>
+  },
   settings: {
     // Push launch-env overrides (e.g. OpenMP thread cap) to the main process.
     // Applies on the next Python service start.

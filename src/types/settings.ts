@@ -17,9 +17,16 @@ export interface PerformanceSettings {
   ompThreads: 'auto' | number
 }
 
+export interface AiSettings {
+  /** TypeSafe "Jev" System One Model key (optional) / TypeSafe Jev 密钥（可选） */
+  jevApiKey: string
+}
+
 export interface AppSettings {
   locale: 'zh' | 'en'
   performance: PerformanceSettings
+  /** Only surfaced in the Jev test build / 仅 Jev 测试版展示 */
+  ai?: AiSettings
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -29,5 +36,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
     batchParallel: false,
     batchWorkers: 4,
     ompThreads: 'auto'
+  },
+  ai: {
+    jevApiKey: ''
   }
 }

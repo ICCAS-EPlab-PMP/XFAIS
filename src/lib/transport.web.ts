@@ -50,8 +50,9 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   image_stitch: '/api/image_stitch',
   orientation_analysis: '/api/orientation_analysis',
   lamellar_analysis: '/api/lamellar_analysis',
-  // v0.3.0: built-in calibration wizard / 内置校正向导
-  calibration: '/api/calibration'
+  // v0.3.0: built-in calibration wizard + AI context / 内置校正向导 + AI 上下文
+  calibration: '/api/calibration',
+  ai_context: '/api/ai_context',
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
