@@ -3124,27 +3124,50 @@ async def handle_viewer_config(
         frame_index = max(0, int(payload.get("frame", payload.get("frame_index", 0)) or 0))
         dataset_path = payload.get("dataset") or payload.get("h5_dataset_path")
         h5_channel = payload.get("channel") if payload.get("channel") is not None else payload.get("h5_channel")
+        fname = os.path.basename(fpath)
 
         metadata: dict[str, Any] = {
             "fileType": ext.lstrip("."),
             "frameIndex": frame_index,
         }
 
+        # Open failures must RAISE (→ task_error → 前端 toast)。A plain
+        # {"status": "error"} return also becomes a task_error via the result
+        # adapter, but raising keeps every caller on one loud, explained path —
+        # a corrupt TIFF/H5 must never leave the canvas blank without a message.
+        # 打不开必须抛异常（→ task_error → 前端 toast）。虽然结果适配层会把
+        # status:'error' 转成错误帧，但统一走异常路径可保证每个调用方都得到
+        # 带解释的报错——损坏的 TIFF/H5 绝不能无声地留下空白画布。
         if ext in {".h5", ".hdf5"}:
             if not dataset_path:
                 await send_progress(0.2, "Scanning HDF5 datasets...")
-                datasets = await _run_blocking(H5Handler.find_datasets, fpath)
+                try:
+                    datasets = await _run_blocking(H5Handler.find_datasets, fpath)
+                except Exception as exc:  # noqa: BLE001 — re-raised with a user-facing message
+                    raise IOError(
+                        f"无法读取 H5 文件（文件损坏或不是 HDF5）：{fname} / "
+                        f"Cannot read H5 file (corrupt or not HDF5): {fname}: {exc}"
+                    ) from exc
                 dataset_entries = _serialize_h5_datasets(datasets)
                 dataset_path = H5Handler.pick_default_dataset([item["path"] for item in dataset_entries])
                 if not dataset_path:
-                    return {"status": "error", "message": "No image dataset found"}
+                    raise ValueError(
+                        f"H5 文件中未找到图像数据集：{fname} / "
+                        f"No image dataset found in H5 file: {fname}"
+                    )
             else:
                 dataset_entries = []
 
             await send_progress(0.5, "Reading frame…")
-            data, _dead_mask = await _run_blocking(
-                H5Handler.load_frame, fpath, dataset_path, frame_index, h5_channel,
-            )
+            try:
+                data, _dead_mask = await _run_blocking(
+                    H5Handler.load_frame, fpath, dataset_path, frame_index, h5_channel,
+                )
+            except Exception as exc:  # noqa: BLE001 — re-raised with a user-facing message
+                raise IOError(
+                    f"无法从 H5 文件读取图像数据：{fname} / "
+                    f"Cannot read image data from H5 file: {fname}: {exc}"
+                ) from exc
 
             if dataset_entries:
                 selected_info = next((item for item in dataset_entries if item["path"] == dataset_path), None)
@@ -3161,10 +3184,19 @@ async def handle_viewer_config(
                 metadata["selectedChannel"] = h5_channel
         else:
             await send_progress(0.5, "Reading image data...")
-            probe_meta = await _run_blocking(ImageLoader.probe, fpath)
-            data, _dead_mask, meta = await _run_blocking(ImageLoader.load_frame, fpath, frame_index)
-            if data is None:
-                return {"status": "error", "message": "Failed to load image data"}
+            try:
+                probe_meta = await _run_blocking(ImageLoader.probe, fpath)
+                data, _dead_mask, meta = await _run_blocking(ImageLoader.load_frame, fpath, frame_index)
+            except Exception as exc:  # noqa: BLE001 — re-raised with a user-facing message
+                raise IOError(
+                    f"无法打开图像文件（文件损坏或格式不受支持）：{fname} / "
+                    f"Cannot open image file (corrupt or unsupported format): {fname}: {exc}"
+                ) from exc
+            if data is None or data.ndim < 2 or data.size == 0:
+                raise IOError(
+                    f"无法从文件解码出有效图像数据：{fname} / "
+                    f"No valid image data could be decoded from file: {fname}"
+                )
             metadata.update({
                 "totalFrames": int(probe_meta.get("n_frames", 1) or 1),
                 "nChannels": 0,
@@ -3174,7 +3206,9 @@ async def handle_viewer_config(
             raise asyncio.CancelledError()
 
         if data is None:
-            return {"status": "error", "message": "No image data available"}
+            raise IOError(
+                f"未能加载到图像数据：{fname} / No image data available: {fname}"
+            )
 
         height, width = data.shape
         metadata.update({
@@ -3490,6 +3524,8 @@ async def handle_h5convert(
     import time as _time
     await send_progress(0.0, "Initializing conversion...")
 
+    from services.h5convert import NAMING_MODES
+
     source_dir = payload.get("source_dir", "") or payload.get("sourceDir", "")
     output_dir = validated_output_path_optional(
         payload.get("output_dir", "") or payload.get("outputDir", ""), field="output_dir"
@@ -3497,6 +3533,10 @@ async def handle_h5convert(
     master_suffix = payload.get("master_suffix", "") or payload.get("refSuffix", "_master")
     table_format = payload.get("table_format", "csv") or payload.get("format", "csv")
     image_format = payload.get("image_format", "tiff") or payload.get("imageFormat", "tiff")
+    naming_mode = payload.get("naming_mode", "") or payload.get("namingMode", "") or "parent_folder"
+    if naming_mode not in NAMING_MODES:
+        naming_mode = "parent_folder"
+    flat_output = bool(payload.get("flat_output", False) or payload.get("flatOutput", False))
 
     converter = H5Converter(
         root_dir=source_dir,
@@ -3504,6 +3544,8 @@ async def handle_h5convert(
         master_suffix=master_suffix,
         table_format=table_format,
         image_format=image_format,
+        naming_mode=naming_mode,
+        flat_output=flat_output,
     )
 
     dataset_config = payload.get("dataset_config", {}) or payload.get("datasets", {})
@@ -3531,6 +3573,15 @@ async def handle_h5convert(
     def _run():
         converter.scan()
         converter.inspect_datasets()
+        if dataset_config:
+            # The UI sends its COMPLETE selection: anything unlisted was
+            # deliberately unchecked (e.g. Nexus instrument flatfield / pixel
+            # masks) and must not fall back to inspect()'s default
+            # export=True (regression: unchecked flatfields were converted).
+            # UI 发来的是完整选择：未列出的即被用户取消勾选（如 Nexus 仪器
+            # 平场/像素掩码），不得回退到 inspect() 默认的 export=True
+            # （回归缺陷：未勾选的平场图也被转换了）。
+            converter.set_all_export(False)
         for ds_path, cfg in dataset_config.items():
             channels = cfg.get("channels") if isinstance(cfg, dict) else None
             export = cfg.get("export", True) if isinstance(cfg, dict) else True
@@ -3556,8 +3607,9 @@ async def handle_h5convert_scan(
     cancel_event: asyncio.Event,
 ) -> dict[str, Any]:
     """H5 scan handler: scan directory and inspect datasets. H5扫描处理函数。"""
-    import glob as _glob
     import h5py as _h5py
+
+    from services.h5convert import is_master_file, scan_h5_files
 
     await send_progress(0.0, "Scanning directory...")
     source_dir = payload.get("source_dir", "") or payload.get("sourceDir", "")
@@ -3567,25 +3619,27 @@ async def handle_h5convert_scan(
     if not source_dir or not os.path.isdir(source_dir):
         return {"status": "error", "message": "Invalid source directory."}
 
-    if recursive:
-        all_h5 = _glob.glob(os.path.join(source_dir, "**", "*.h5"), recursive=True)
-    else:
-        all_h5 = []
-        for f in sorted(os.listdir(source_dir)):
-            full = os.path.join(source_dir, f)
-            if os.path.isfile(full) and f.lower().endswith(".h5"):
-                all_h5.append(full)
+    all_h5 = scan_h5_files(source_dir, recursive=recursive)
     if not all_h5:
-        return {"status": "error", "message": "No .h5 files found."}
+        return {
+            "status": "error",
+            "message": "No H5 files found (supported: .h5, .nxs, .hdf5).",
+        }
 
     sfx = master_suffix.strip() or "_master"
-    masters = [f for f in all_h5
-               if os.path.basename(f).lower().endswith(sfx.lower() + ".h5")]
+    masters = [f for f in all_h5 if is_master_file(os.path.basename(f), sfx)]
+    suffix_matched = bool(masters)
     if not masters:
         masters = [all_h5[0]]
 
     ref_file = masters[0]
-    target_count = len(masters)
+    # Honest target count: the converter converts suffix-matched files when any
+    # match, else ALL found files (fallback) — report that, not the fallback
+    # reference count.
+    # 如实报告目标数：转换器有后缀匹配文件时转换匹配者，否则回退转换全部
+    # 扫描到的文件——报告真实数量，而不是回退后的参考文件数。
+    convert_files = masters if suffix_matched else all_h5
+    target_count = len(convert_files)
 
     await send_progress(0.5, "Inspecting datasets...")
 
@@ -3614,6 +3668,7 @@ async def handle_h5convert_scan(
         "datasets": datasets,
         "totalH5": len(all_h5),
         "targetH5": target_count,
+        "suffixMatched": suffix_matched,
         "refFile": os.path.basename(ref_file),
     }
 
@@ -3683,30 +3738,20 @@ async def handle_h5_list_files(
     """Scan directory for H5 files and return file list with metadata.
     扫描目录中的 H5 文件并返回带有元数据的文件列表。"""
     await send_progress(0.0, "扫描 H5 文件...")
-    import glob as _glob
+
+    from services.h5convert import matches_suffix_filter, scan_h5_files
 
     source_dir = payload.get("source_dir", "") or payload.get("sourceDir", "")
-    suffix_filter = (payload.get("suffix_filter", "") or payload.get("suffix", "")).strip().lower()
+    suffix_filter = (payload.get("suffix_filter", "") or payload.get("suffix", "")).strip()
     recursive = bool(payload.get("recursive", True))
 
     if not source_dir or not os.path.isdir(source_dir):
         return {"status": "error", "message": "无效的源目录。"}
 
-    if recursive:
-        all_h5 = _glob.glob(os.path.join(source_dir, "**", "*.h5"), recursive=True)
-    else:
-        all_h5 = []
-        for f in sorted(os.listdir(source_dir)):
-            full = os.path.join(source_dir, f)
-            if os.path.isfile(full) and f.lower().endswith(".h5"):
-                all_h5.append(full)
+    all_h5 = scan_h5_files(source_dir, recursive=recursive)
 
     # Apply suffix filter / 应用后缀过滤
-    if suffix_filter:
-        target_ext = f"{suffix_filter}.h5" if not suffix_filter.endswith(".h5") else suffix_filter
-        filtered = [f for f in all_h5 if os.path.basename(f).lower().endswith(target_ext)]
-    else:
-        filtered = all_h5
+    filtered = [f for f in all_h5 if matches_suffix_filter(os.path.basename(f), suffix_filter)]
 
     # Build file info list / 构建文件信息列表
     files_info: list[dict[str, Any]] = []

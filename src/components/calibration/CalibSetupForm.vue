@@ -4,23 +4,26 @@
     <div class="csf-field">
       <label class="csf-label">{{ t('calibration.setup.imageFile') }}</label>
       <div class="csf-path-row">
+        <!-- Web/server mode: transport.selectFiles opens the browser picker and
+             uploads the file, returning the server-side path — the user never
+             needs to know a server path. / Web 模式下走浏览器选文件并上传，
+             回填服务器路径，用户无需知道服务器上的路径。 -->
         <button
-          v-if="transport.isDesktop()"
           type="button"
           class="csf-btn csf-btn--secondary"
           @click="chooseImage"
         >
-          {{ t('calibration.setup.selectImage') }}
+          {{ transport.isDesktop() ? t('calibration.setup.selectImage') : t('calibration.setup.uploadImage') }}
         </button>
         <input
           v-model="model.imagePath"
           type="text"
           class="csf-input csf-input--mono"
-          :placeholder="transport.isDesktop() ? '—' : 'D:\\data\\calibrant.edf'"
+          :placeholder="transport.isDesktop() ? '—' : 'calibrant_0001.edf'"
           @blur="emitProbed()"
         />
       </div>
-      <p v-if="!transport.isDesktop()" class="csf-hint">{{ webPathHint }}</p>
+      <p v-if="!transport.isDesktop()" class="csf-hint">{{ t('calibration.setup.webUploadHint') }}</p>
     </div>
 
     <!-- Calibrant: registry name or .D file / 校准物：名称或 .D 文件 -->
@@ -43,12 +46,11 @@
       <label class="csf-label csf-label--sub">{{ t('calibration.setup.calibrantName') }}</label>
       <div class="csf-path-row">
         <button
-          v-if="transport.isDesktop()"
           type="button"
           class="csf-btn csf-btn--secondary"
           @click="chooseCalibrantFile"
         >
-          .D
+          {{ transport.isDesktop() ? '.D' : t('calibration.setup.uploadCalibrant') }}
         </button>
         <input
           v-model="model.calibrantPath"
@@ -94,7 +96,6 @@
       <label class="csf-label">{{ maskFileLabel }}</label>
       <div class="csf-path-row">
         <button
-          v-if="transport.isDesktop()"
           type="button"
           class="csf-btn csf-btn--secondary"
           @click="chooseMaskFile"
@@ -105,7 +106,7 @@
           v-model="model.maskPath"
           type="text"
           class="csf-input csf-input--mono"
-          :placeholder="transport.isDesktop() ? '—' : '/data/mask.npy'"
+          :placeholder="transport.isDesktop() ? '—' : 'mask.npy'"
         />
       </div>
       <p class="csf-hint">{{ maskHint }}</p>
@@ -218,6 +219,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTransport } from '@/lib/transport'
+import { useToast } from '@/lib/toast'
 
 /** Editable setup model — owned by the parent (v-model). */
 export interface CalibSetupModel {
@@ -301,9 +303,9 @@ const emit = defineEmits<{
 
 const { t, locale } = useI18n()
 const transport = useTransport()
+const toast = useToast()
 
-// Web-mode hint is intentionally literal — the file must exist on the server.
-const webPathHint = 'server path, e.g. /data/calibrant_0001.edf'
+const isDesktop = transport.isDesktop()
 
 // Mutating helper: spread + emit, matching GeometryForm's v-model idiom.
 // 与 GeometryForm 一致：浅拷贝后整体 emit，保持 v-model 语义。
@@ -386,7 +388,11 @@ const autoDetectLabel = computed(() => (locale.value.startsWith('zh') ? '自动�
 // Mask inputs (REQ 1) — inline bilingual labels, no dedicated i18n keys yet.
 // 掩膜输入（REQ 1）——内联双语文案，暂无 i18n 键。
 const maskFileLabel = computed(() => (isZh.value ? '掩膜文件（可选）' : 'Mask file (optional)'))
-const maskSelectLabel = computed(() => (isZh.value ? '选择掩膜' : 'Select mask'))
+// Web 模式下按钮走浏览器选文件并上传，文案相应改为"上传"。 / Web: pick + upload.
+const maskSelectLabel = computed(() => {
+  if (!isDesktop) return isZh.value ? '上传掩膜' : 'Upload mask'
+  return isZh.value ? '选择掩膜' : 'Select mask'
+})
 const maskHint = computed(() =>
   isZh.value
     ? '支持 .edf / .npy / .tif / .tiff；屏蔽坏点、光阑遮挡与饱和亮斑，防止误拾取'
@@ -434,6 +440,13 @@ const canSubmit = computed(() => {
   return m.wavelengthA > 0 && m.distGuessMm > 0
 })
 
+/** Report a failed pick/upload — cancel resolves null and never lands here.
+ *  选文件/上传失败时提示；用户取消走 resolve(null)，不会进这里。 */
+function reportPickFailure(title: string, error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error)
+  toast.push({ title, message, tone: 'error' })
+}
+
 async function chooseImage(): Promise<void> {
   try {
     const result = await transport.selectFiles({
@@ -446,12 +459,15 @@ async function chooseImage(): Promise<void> {
     const path = Array.isArray(result) ? result[0] : result
     if (path) {
       patch({ imagePath: path })
-      // Trigger detector auto-recognition for the freshly picked image.
-      // 触发对新选图像的探测器自动识别。
+      // An explicit dialog pick is a deliberate (re)load request: bypass the
+      // dedupe so re-picking the same path retries a previously failed load.
+      // 对话框显式选图是明确的（重新）加载请求：绕过去重，使重复选择同一路径
+      // 可以重试此前失败的加载。
+      lastProbedPath = ''
       emitProbed(path)
     }
-  } catch {
-    // User cancelled the dialog / 用户取消对话框
+  } catch (error) {
+    reportPickFailure(t('calibration.setup.uploadImage'), error)
   }
 }
 
@@ -466,12 +482,12 @@ async function chooseCalibrantFile(): Promise<void> {
     })
     const path = Array.isArray(result) ? result[0] : result
     if (path) patch({ calibrantPath: path })
-  } catch {
-    // User cancelled the dialog / 用户取消对话框
+  } catch (error) {
+    reportPickFailure(t('calibration.setup.uploadCalibrant'), error)
   }
 }
 
-/** Desktop dialog for the mask file (.edf/.npy/.tif/.tiff) — REQ 1. */
+/** Mask file pick (.edf/.npy/.tif/.tiff) — REQ 1. Web mode uploads it. */
 async function chooseMaskFile(): Promise<void> {
   try {
     const result = await transport.selectFiles({
@@ -483,8 +499,8 @@ async function chooseMaskFile(): Promise<void> {
     })
     const path = Array.isArray(result) ? result[0] : result
     if (path) patch({ maskPath: path })
-  } catch {
-    // User cancelled the dialog / 用户取消对话框
+  } catch (error) {
+    reportPickFailure(maskSelectLabel.value, error)
   }
 }
 
@@ -496,8 +512,8 @@ async function seedFromPoni(): Promise<void> {
     })
     const path = Array.isArray(result) ? result[0] : result
     if (path) emit('seed', path)
-  } catch {
-    // User cancelled the dialog / 用户取消对话框
+  } catch (error) {
+    reportPickFailure(t('calibration.setup.seedFromPoni'), error)
   }
 }
 

@@ -42,6 +42,8 @@ Only headless dependencies are used (numpy / pyFAI / silx) — no GUI.
 from __future__ import annotations
 
 import asyncio
+import io
+import locale as _locale
 import logging
 import math
 import time
@@ -554,18 +556,29 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
     )
 
     # -- detector / 探测器像素 ---------------------------------------------
+    # The resolved Detector INSTANCE is kept in the session so the exported
+    # .poni carries the registry identity (Detector: Eiger2_4M + full
+    # Detector_config incl. sensor), matching pyFAI-calib2's export; with only
+    # pixel sizes the export degrades to an anonymous generic "Detector".
+    # 解析出的 Detector 实例保留进会话：导出 .poni 时携带注册表身份
+    # （Detector: Eiger2_4M + 完整 Detector_config 含传感器），与 calib2 一致；
+    # 只传像素尺寸时导出会退化为匿名的通用 "Detector"。
     pixel_size_um = _as_float(payload.get("pixelSizeUm"))
     pixel1 = pixel2 = None
     detector_name = payload.get("detectorName") or payload.get("detector")
+    detector_obj = None
     if detector_name:
         try:
             from pyFAI.detectors import detector_factory
             det = detector_factory(str(detector_name))
             pixel1 = _as_float(getattr(det, "pixel1", None))
             pixel2 = _as_float(getattr(det, "pixel2", None))
+            if pixel1 and pixel2 and pixel1 > 0 and pixel2 > 0:
+                detector_obj = det
         except Exception as exc:  # noqa: BLE001 — fall back to pixelSizeUm
             logger.warning("detector_factory(%r) failed: %s", detector_name, exc)
             pixel1 = pixel2 = None
+            detector_obj = None
     if (pixel1 is None or pixel2 is None or pixel1 <= 0 or pixel2 <= 0):
         if pixel_size_um is None or pixel_size_um <= 0:
             return _err(
@@ -592,6 +605,19 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
             "peaks": [],
             "gr": None,
             "mask": session_mask,
+            # Provenance for the .poni export: registry detector instance +
+            # names echoed into the file's comments (calib2-style).
+            # 供 .poni 导出的溯源信息：注册表探测器实例 + 写入文件注释的名称
+            # （calib2 风格）。
+            "detector": detector_obj,
+            "detector_name": str(detector_name) if detector_obj is not None else None,
+            "calibrant_name": calibrant_name,
+            "image_path": str(file_path),
+            # Rotation parameters the user has actually engaged (enabled for
+            # refinement); see _build_refinement / _write_poni_sync.
+            # 用户真正启用过（放开精修）的旋转参数；见 _build_refinement /
+            # _write_poni_sync。
+            "engaged_rot": set(),
             # PERFORMANCE (大图响应过慢): picking caches die with the frame.
             # setup is the ONLY path that can change the image or the mask,
             # so resetting here covers every invalidation case.
@@ -830,6 +856,14 @@ def _build_refinement(session: Dict[str, Any], ys: np.ndarray, xs: np.ndarray,
         "dist": gr_prev.dist if gr_prev is not None else session["dist0"],
         "pixel1": session["pixel1"],
         "pixel2": session["pixel2"],
+        # Registry detector (when the user picked one) → gr.save() writes
+        # Detector: <name> + full Detector_config. pixel1/pixel2 stay passed:
+        # pyFAI overwrites the detector's pixel sizes with them, and they were
+        # derived from this very detector in setup, so identity + sizes agree.
+        # 注册表探测器（用户选了探测器时）→ gr.save() 写出 Detector: <名称> +
+        # 完整 Detector_config。pixel1/pixel2 仍传：pyFAI 会用它们覆盖探测器的
+        # 像素尺寸，而它们本就在 setup 时取自该探测器，身份与尺寸一致。
+        "detector": session.get("detector"),
         "wavelength": session["wavelength"],
     }
     if gr_prev is not None:
@@ -843,7 +877,46 @@ def _build_refinement(session: Dict[str, Any], ys: np.ndarray, xs: np.ndarray,
     # innermost ring (centroid / ellipse), exactly like pyFAI-calib2.
     # 否则省略 poni1/poni2 → 构造器 guess_poni() 用最内环质心/椭圆拟合，
     # 与 pyFAI-calib2 行为一致。
-    return GeometryRefinement(**kwargs)
+    gr = GeometryRefinement(**kwargs)
+    if gr_prev is None:
+        # guess_poni()'s innermost-ring ellipse fit silently seeds rot1/rot2
+        # with a tilt estimate. Rotations the user never ENGAGED (enabled for
+        # refinement) are pinned back to exactly 0, so the refinement fits
+        # dist/poni under — and the exported .poni carries — the same
+        # rot=0 geometry (用户反馈：未开 rot1/rot2 却在导出中出现 rot 数据)。
+        # The PRE-pin ellipse estimate is kept in the session: when the user
+        # engages a rotation for the first time, refine starts from it (not
+        # from 0) — pyFAI-calib2's convergence for genuinely tilted detectors.
+        # guess_poni() 的最内环椭圆拟合会悄悄给 rot1/rot2 一个倾角估计。用户
+        # 从未启用（未放开精修）的旋转角在此钉回恰好 0，使精修在该 rot=0 几何
+        # 下拟合 dist/poni，导出的 .poni 也与之自洽。钉零前的椭圆估计保留进
+        # 会话：用户首次放开某旋转角时精修从该估计（而非 0）起步——对真有
+        # 倾角的探测器保持 calib2 的收敛质量。
+        session["guess_rot"] = (float(gr.rot1), float(gr.rot2), float(gr.rot3))
+        engaged = session.get("engaged_rot") or set()
+        for name in ("rot1", "rot2", "rot3"):
+            if name not in engaged:
+                setattr(gr, name, 0.0)
+    return gr
+
+
+def _seed_newly_engaged_rots(session: Dict[str, Any], free: Dict[str, bool],
+                             previously_engaged: set) -> None:
+    """First-time engagement of a rotation: start the refine from the
+    guess_poni() ellipse estimate instead of 0 (never clobbering a value that
+    is no longer exactly 0, i.e. already refined or otherwise set).
+    用户首次放开某旋转角时，精修从 guess_poni() 的椭圆估计值（而非 0）起步；
+    当前值已不是恰好 0（已被精修或另行设置）时绝不覆盖。
+    """
+    guess_rot = session.get("guess_rot")
+    if not guess_rot:
+        return
+    gr = session.get("gr")
+    if gr is None:
+        return
+    for i, name in enumerate(("rot1", "rot2", "rot3")):
+        if free.get(name) and name not in previously_engaged and getattr(gr, name) == 0.0:
+            setattr(gr, name, float(guess_rot[i]))
 
 
 async def _action_update_peaks(
@@ -1045,6 +1118,20 @@ async def _action_refine(
         if name in free_raw:
             free[name] = bool(free_raw[name])
     fix = [name for name in _PARAM_ORDER if not free[name]]
+    # Remember which rotations the user actually engaged — never-engaged ones
+    # are pinned to exactly 0 by _build_refinement and exported as 0.0.
+    # 记录用户真正放开过的旋转角——未启用者由 _build_refinement 钉为恰好 0，
+    # 导出时写 0.0。
+    engaged = session.setdefault("engaged_rot", set())
+    previously_engaged = set(engaged)
+    for name in ("rot1", "rot2", "rot3"):
+        if free[name]:
+            engaged.add(name)
+    # First-time engagement seeds the refine from the guess_poni() ellipse
+    # estimate (calib2-like start for tilted detectors) instead of 0.
+    # 首次放开的旋转角从椭圆估计值起步（倾斜探测器的 calib2 式起点），
+    # 而非从 0 起步。
+    _seed_newly_engaged_rots(session, free, previously_engaged)
 
     passes = int(_as_float(payload.get("passes"), 2.0) or 2.0)
     passes = min(max(passes, 1), 3)
@@ -1289,6 +1376,63 @@ async def _action_integrate_preview(
     return {"status": "ok", **result}
 
 
+def _write_poni_sync(gr: Any, out_path: Path, session: Dict[str, Any]) -> str:
+    """Serialize the refined geometry to ``out_path`` (truncating write).
+    将精修几何序列化写入 out_path（覆盖写）。
+
+    Written by hand instead of calling ``Geometry.save``:
+      * pyFAI's save opens the file in APPEND mode — re-exporting to the same
+        path stacks poni blocks and every reader (pyFAI included) picks the
+        STALE first block, so the file no longer matched what the user asked
+        for; here the file is always replaced.
+      * Calibrant / Image provenance comments are appended, calib2-style.
+
+    Rot1-3 are always written (calib2 format). Rotations the user never
+    enabled hold exactly 0.0 — ``_build_refinement`` pins back the tilt that
+    guess_poni()'s innermost-ring ellipse fit silently seeds, so the file
+    shows ``Rot: 0.0`` instead of a stray fitted number (用户反馈：没开
+    rot1/rot2，结果却不是 0).
+    改为自行写出而非调用 ``Geometry.save``：
+      * pyFAI 的 save 以追加模式打开文件——向同一路径重复导出会堆叠多个 poni
+        块，所有读取方（含 pyFAI）都取陈旧的第一个块，文件内容与用户所请不符；
+        此处一律整体覆盖。
+      * 末尾追加标样/图像溯源注释（calib2 风格）。
+    Rot1-3 始终写出（calib2 格式）。用户从未启用的旋转角严格保持 0.0——
+    ``_build_refinement`` 会把 guess_poni() 椭圆拟合悄悄塞入的倾角钉回 0，
+    文件中呈现为 ``Rot: 0.0`` 而非来路不明的拟合数。
+    """
+    from pyFAI.io.ponifile import PoniFile
+
+    comments: List[str] = []
+    calibrant_name = session.get("calibrant_name")
+    if calibrant_name:
+        comments.append(f"Calibrant: {calibrant_name}")
+    image_path = session.get("image_path")
+    if image_path:
+        comments.append(f"Image: {image_path}")
+
+    buf = io.StringIO()
+    PoniFile(data=gr).write(buf, comments=comments or None)
+    text = buf.getvalue()
+
+    # pyFAI's own loader opens .poni with the locale's default encoding (see
+    # PoniParser.read_from_file), so mirror calib2's write side: locale
+    # encoding first, UTF-8 only when the comments cannot be encoded in it.
+    # Geometry data lines are pure ASCII and unaffected either way.
+    # pyFAI 自身的加载器按本地默认编码打开 .poni（见 PoniParser.read_from_file），
+    # 故与 calib2 的写侧一致：优先本地编码，注释无法编码时才退 UTF-8。
+    # 几何数据行是纯 ASCII，不受影响。
+    preferred = _locale.getpreferredencoding(False) or "utf-8"
+    try:
+        text.encode(preferred)
+        encoding = preferred
+    except UnicodeEncodeError:
+        encoding = "utf-8"
+    with open(out_path, "w", encoding=encoding) as f:
+        f.write(text)
+    return str(out_path)
+
+
 async def _action_export_poni(
     session: Dict[str, Any], payload: dict, send_progress, cancel_event,
 ) -> dict:
@@ -1297,7 +1441,10 @@ async def _action_export_poni(
 
     Payload keys / 载荷键：
       sessionId (str, required)
-      savePath  (str, optional) explicit destination / 显式保存路径
+      savePath  (str, optional) explicit destination; a missing ``.poni``
+                extension is appended so the file lands under the name the
+                user typed / 显式保存路径；缺 .poni 后缀时自动补齐，确保按
+                用户输入的命名落盘
       autoSave  (bool, optional) with no savePath, write to the OS temp dir
                 (unique name) and return the path — the backend half of the
                 wizard's 去积分 auto-import (frontend then routes to
@@ -1322,13 +1469,17 @@ async def _action_export_poni(
     if not save_path:
         return _err("savePath is required / 必须提供 savePath")
     out = Path(str(save_path))
+    if out.suffix.lower() != ".poni":
+        out = out.with_name(out.name + ".poni")
+    if out.is_dir():
+        return _err(f"savePath is a directory: {out}", f"保存路径是目录：{out}")
     try:
         out.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         return _err(f"Cannot create output directory: {exc}", f"无法创建输出目录：{exc}")
 
     try:
-        await _run_blocking(gr.save, str(out))
+        await _run_blocking(_write_poni_sync, gr, out, session)
     except Exception as exc:  # noqa: BLE001 — surfaced to the frontend
         return _err(f"PONI export failed: {exc}", f"PONI 导出失败：{exc}")
     _check_cancel(cancel_event)
