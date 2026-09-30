@@ -513,6 +513,177 @@ def test_refine_fixed_dist_and_wavelength(synthetic_edf: str, tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# Export: detector identity, naming, rot lines, truncation / 导出行为
+# ---------------------------------------------------------------------------
+
+#: Registry detector whose pixel size matches the ground truth (172 µm) so the
+#: whole flow converges with detectorName set. / 像素尺寸与真值一致的注册表
+#: 探测器，使设置探测器后全流程仍可收敛。
+_EXPORT_DETECTOR = "Pilatus1M"
+
+
+def test_export_poni_detector_naming_and_rot_lines(synthetic_edf: str, tmp_path: Path):
+    """export_poni contract (用户反馈 2026-09-29):
+    1. the file lands under the name the user typed (.poni appended when
+       missing) — never an auto-generated name;
+    2. the registry detector identity is written (Detector: <name> +
+       Detector_config), like pyFAI-calib2's export, not an anonymous
+       "Detector" with bare pixel sizes;
+    3. rotations the user never enabled are written as EXACTLY 0.0 — the tilt
+       that guess_poni()'s innermost-ring ellipse fit silently seeds must not
+       leak into the file (calib2 format: "Rot: 0.0"); an enabled non-zero rot
+       is kept;
+    4. re-exporting to the same path replaces the file (pyFAI's save appends
+       and readers would pick the stale first block).
+    导出契约：①按用户输入命名落盘（缺 .poni 自动补齐），绝不用自动名；
+    ②写出注册表探测器身份（与 calib2 一致），而非只有像素尺寸的匿名
+    "Detector"；③用户未启用的旋转角在文件中严格为 0.0（calib2 格式），启用过
+    的非零 rot 保留；
+    ④同路径重复导出为覆盖写（pyFAI save 是追加模式，读取方会取陈旧首块）。
+    """
+    from pyFAI.integrator.azimuthal import AzimuthalIntegrator
+
+    from python.services import calibration as calib_mod
+
+    setup = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "detectorName": _EXPORT_DETECTOR,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))
+    sid = setup["sessionId"]
+    np.random.seed(RNG_SEED)
+    peaks = _ok(_run({"action": "detect_peaks", "sessionId": sid}))["peaks"]
+    _ok(_run({
+        "action": "update_peaks", "sessionId": sid,
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in peaks],
+    }))
+    # Default refine (rotations never enabled): guess_poni()'s ellipse fit
+    # must NOT leak a tilt into the working geometry — dist/poni are fitted
+    # under rot=0, which is exactly what the export then contains.
+    # 默认精修（从未启用旋转角）：guess_poni() 的椭圆拟合不得把倾角漏进工作
+    # 几何——dist/poni 在 rot=0 下拟合，导出内容与此完全一致。
+    _ok(_run({"action": "refine", "sessionId": sid, "passes": 2}))
+    gr = calib_mod._SESSIONS[sid]["gr"]
+    assert gr.rot1 == 0.0 and gr.rot2 == 0.0 and gr.rot3 == 0.0
+
+    # -- 1) user-typed name without extension / 用户输入的名字缺后缀 -----------
+    exported = _ok(_run({
+        "action": "export_poni",
+        "sessionId": sid,
+        "savePath": str(tmp_path / "my-calib"),
+    }))
+    poni_path = Path(exported["savePath"])
+    assert poni_path == tmp_path / "my-calib.poni"
+    text = poni_path.read_text(encoding="utf-8")
+
+    # -- 2) detector identity + provenance comments / 探测器身份 + 溯源注释 -----
+    assert f"Detector: {_EXPORT_DETECTOR}" in text, text
+    assert "Detector_config:" in text, text
+    assert '"pixel1"' in text and '"orientation"' in text, text
+    assert f"# Calibrant: {CALIBRANT_NAME}" in text, text
+    assert "# Image: " in text, text
+
+    # -- 3) never-enabled rotations read exactly 0.0 / 未启用的旋转角严格为 0 ---
+    assert "Rot1: 0.0" in text, text
+    assert "Rot2: 0.0" in text, text
+    assert "Rot3: 0.0" in text, text
+
+    # -- 3b) an enabled non-zero rot survives / 启用过的非零 rot 保留 -----------
+    calib_mod._SESSIONS[sid]["gr"].rot1 = 0.01
+    _ok(_run({"action": "export_poni", "sessionId": sid, "savePath": str(poni_path)}))
+    text2 = poni_path.read_text(encoding="utf-8")
+    assert "Rot1: 0.01" in text2, text2
+    assert "Rot2: 0.0" in text2 and "Rot3: 0.0" in text2, text2
+
+    # -- 4) re-export truncates / 重复导出为覆盖写 ------------------------------
+    assert text2.count("poni_version:") == 1, "append-mode block stacking"
+
+    # -- loads everywhere / 各读取方均可加载 ------------------------------------
+    ai = AzimuthalIntegrator()
+    ai.load(str(poni_path))
+    assert ai.detector.__class__.__name__ == _EXPORT_DETECTOR
+    assert ai.rot1 == pytest.approx(0.01, abs=1e-12)
+    assert ai.rot2 == 0.0 and ai.rot3 == 0.0
+    seeded = _ok(_run({"action": "seed_from_poni", "filePath": str(poni_path)}))
+    assert seeded["seed"]["pixel_size_um"] == pytest.approx(PIXEL_UM, rel=1e-6)
+    assert seeded["seed"]["rot1_deg"] == pytest.approx(0.01 * 180.0 / math.pi, abs=1e-9)
+    assert seeded["seed"]["rot2_deg"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_engaged_rot_seeded_from_guess_and_exported(synthetic_edf: str, tmp_path: Path):
+    """Rotations the user enables must NOT start the refine from 0: the
+    pre-pin guess_poni() ellipse estimate is kept in the session and seeds
+    first-time engagement (calib2-like start for genuinely tilted detectors).
+    An already-set (non-zero) value is never clobbered, and the engaged rot's
+    refined value lands in both the geometry summary and the exported file.
+    用户放开的旋转角不得从 0 起步：钉零前的椭圆估计保留在会话中，首次启用时
+    作为精修起点（真倾斜探测器的 calib2 式起步）。已被设置的非零值绝不覆盖，
+    且启用 rot 精修后的值同时落在几何摘要与导出文件中。
+    """
+    from python.services import calibration as calib_mod
+
+    setup = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))
+    sid = setup["sessionId"]
+    np.random.seed(RNG_SEED)
+    peaks = _ok(_run({"action": "detect_peaks", "sessionId": sid}))["peaks"]
+    _ok(_run({
+        "action": "update_peaks", "sessionId": sid,
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in peaks],
+    }))
+
+    # Pinned working geometry, pre-pin ellipse estimate preserved.
+    # 工作几何已钉零，钉零前的椭圆估计已保留。
+    session = calib_mod._SESSIONS[sid]
+    gr = session["gr"]
+    assert gr.rot1 == 0.0 and gr.rot2 == 0.0 and gr.rot3 == 0.0
+    guess = session["guess_rot"]
+    assert len(guess) == 3 and all(isinstance(v, float) and math.isfinite(v) for v in guess)
+
+    # First-time engagement seeds rot1 from the estimate, leaves the others.
+    # 首次启用：rot1 从估计值起步，其余不动。
+    free = {"rot1": True, "rot2": False, "rot3": False}
+    calib_mod._seed_newly_engaged_rots(session, free, set())
+    assert gr.rot1 == guess[0]
+    assert gr.rot2 == 0.0 and gr.rot3 == 0.0
+
+    # An already-set (non-zero) value is never clobbered by re-seeding.
+    # 已被设置的非零值绝不被重新播种覆盖。
+    gr.rot1 = 0.05
+    calib_mod._seed_newly_engaged_rots(session, free, set())
+    assert gr.rot1 == 0.05
+
+    # Refine with rot1 engaged, then export: summary and file agree on rad.
+    # 放开 rot1 精修后导出：几何摘要与文件中的弧度值一致。
+    gr.rot1 = 0.0  # reset to the seeded-start condition / 复位到播种前状态
+    calib_mod._seed_newly_engaged_rots(session, free, set())
+    refined = _ok(_run({
+        "action": "refine", "sessionId": sid, "passes": 2, "free": free,
+    }))
+    assert math.isfinite(refined["geometry"]["rot1_deg"])
+    exported = _ok(_run({
+        "action": "export_poni", "sessionId": sid,
+        "savePath": str(tmp_path / "engaged.poni"),
+    }))
+    text = Path(exported["savePath"]).read_text(encoding="utf-8")
+    rot1_line = next(l for l in text.splitlines() if l.startswith("Rot1:"))
+    rot1_file_rad = float(rot1_line.split(":", 1)[1])
+    assert rot1_file_rad * 180.0 / math.pi == pytest.approx(
+        refined["geometry"]["rot1_deg"], rel=1e-9,
+    )
+    assert "Rot2: 0.0" in text and "Rot3: 0.0" in text, text
+
+
+# ---------------------------------------------------------------------------
 # Custom X-FAIS calibrants (Y2O3 / polypropylene) / 补充标样
 # ---------------------------------------------------------------------------
 

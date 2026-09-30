@@ -25,7 +25,61 @@ from .paths import validated_output_path_optional
 OVERFLOW_THRESHOLD = 4.25e9
 OVERFLOW_VALUE = -1.0
 
+# HDF5 container extensions: Nexus (.nxs) and plain .hdf5 are HDF5 files too.
+# HDF5 容器扩展名：Nexus（.nxs）与 .hdf5 本质都是 HDF5 文件。
+H5_FILE_EXTENSIONS = (".h5", ".nxs", ".hdf5")
+
+# Output naming modes: which first-level folder under output_dir receives a
+# source file's image exports.
+# 输出命名模式：源文件的图像导出落到输出目录下哪一层第一级子文件夹。
+NAMING_MODES = ("parent_folder", "file_name", "dataset")
+
 log = logging.getLogger(__name__)
+
+
+def is_h5_file(name: str) -> bool:
+    """True if a filename carries a supported HDF5 extension. 文件名是否为受支持的 HDF5 扩展名。"""
+    return name.lower().endswith(H5_FILE_EXTENSIONS)
+
+
+def is_master_file(name: str, suffix: str) -> bool:
+    """True if a filename matches '<suffix><ext>' for any supported extension.
+    文件名是否匹配 '<后缀><受支持扩展名>'。"""
+    sfx = (suffix or "").lower()
+    if not sfx:
+        return False
+    return name.lower().endswith(tuple(f"{sfx}{ext}" for ext in H5_FILE_EXTENSIONS))
+
+
+def matches_suffix_filter(name: str, suffix_filter: str) -> bool:
+    """Suffix filter match for the extract/file-list handlers: '<filter><ext>',
+    or the filter itself already ends with a full extension.
+    提取/文件列表的后缀过滤匹配：'<过滤词><扩展名>'，或过滤词本身已带完整扩展名。"""
+    sfx = (suffix_filter or "").strip().lower()
+    if not sfx:
+        return True
+    if sfx.endswith(H5_FILE_EXTENSIONS):
+        return name.lower().endswith(sfx)
+    return is_master_file(name, sfx)
+
+
+def scan_h5_files(root_dir: str, recursive: bool = True) -> list[str]:
+    """List supported H5/Nexus files under root_dir (sorted, deduplicated).
+    列出 root_dir 下所有受支持的 H5/Nexus 文件（排序、去重）。"""
+    root = str(root_dir)
+    if not recursive:
+        return sorted(
+            os.path.join(root, f)
+            for f in os.listdir(root)
+            if os.path.isfile(os.path.join(root, f)) and is_h5_file(f)
+        )
+    # Single os.walk pass covers all supported extensions — one directory-tree
+    # traversal instead of one recursive glob walk per extension.
+    # 单次 os.walk 覆盖全部受支持扩展名——一遍目录树，代替每个扩展名一遍递归 glob。
+    found: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(root):
+        found.extend(os.path.join(dirpath, f) for f in filenames if is_h5_file(f))
+    return sorted(found)
 
 
 def _is_image_like(shape: tuple) -> bool:
@@ -56,6 +110,29 @@ def _apply_overflow(arr: np.ndarray) -> np.ndarray:
     return arr
 
 
+def _require_vds_sources_present(ds: "h5py.Dataset", h5_path: str) -> None:
+    """A virtual dataset whose source files are missing silently reads back
+    fill values (blank images). Refuse to export that as data.
+    虚拟数据集的源文件缺失时会静默读回填充值（空白图）；拒绝将其当数据导出。"""
+    if not getattr(ds, "is_virtual", False):
+        return
+    sources = ds.virtual_sources
+    if callable(sources):
+        sources = sources()
+    base = os.path.dirname(os.path.abspath(h5_path))
+    missing: list[str] = []
+    for vs in sources:
+        ref = vs.file_name
+        path = ref if os.path.isabs(ref) else os.path.join(base, ref)
+        if not os.path.isfile(path):
+            missing.append(ref)
+    if missing:
+        raise ValueError(
+            f"VDS source file(s) missing for '{ds.name}': {missing[0]}"
+            f"{' …' if len(missing) > 1 else ''} (extracted master without its data files?)"
+        )
+
+
 def save_tiff(data: np.ndarray, path: str) -> None:
     """Save 2D array as TIFF via fabio. 通过fabio将2D数组保存为TIFF。"""
     import fabio
@@ -84,6 +161,8 @@ class H5Converter:
         master_suffix: str = "_master",
         table_format: str = "csv",
         image_format: str = "tiff",
+        naming_mode: str = "parent_folder",
+        flat_output: bool = False,
     ):
         self.root_dir = str(root_dir)
         # v0.3.0 hardening: all converted outputs are written under this
@@ -93,28 +172,34 @@ class H5Converter:
         self.master_suffix = master_suffix
         self.table_format = table_format
         self.image_format = image_format
+        self.naming_mode = naming_mode if naming_mode in NAMING_MODES else "parent_folder"
+        # Flat export: image files go straight into output_dir with the
+        # folder components folded into the file name (no subfolders).
+        # 扁平导出：图像文件直接落在输出目录，文件夹组并入文件名（不建子文件夹）。
+        self.flat_output = bool(flat_output)
         self._all_h5: list[str] = []
         self._master_h5: Optional[str] = None
         self._ds_cfg: dict[str, dict] = {}
 
     def scan(self) -> list[str]:
-        """Scan root_dir for all .h5 files. 扫描根目录所有H5文件。"""
-        import glob
-        self._all_h5 = glob.glob(
-            os.path.join(self.root_dir, "**", "*.h5"), recursive=True
+        """Scan root_dir for all supported H5/Nexus files. 扫描根目录所有受支持的 H5/Nexus 文件。"""
+        self._all_h5 = scan_h5_files(self.root_dir, recursive=True)
+        self._master_h5 = next(
+            (f for f in self._all_h5 if is_master_file(os.path.basename(f), self.master_suffix)),
+            None,
         )
-        sfx = self.master_suffix
-        masters = [f for f in self._all_h5
-                   if os.path.basename(f).lower().endswith(sfx.lower() + ".h5")]
-        self._master_h5 = masters[0] if masters else None
         return self._all_h5
 
     def inspect_datasets(self) -> dict[str, dict]:
-        """Inspect datasets from master H5. 从参考H5检查数据集。"""
-        if not self._master_h5:
-            raise FileNotFoundError("No master H5 file found. Call scan() first.")
+        """Inspect datasets from the reference H5 (master if any, else the
+        first scanned file — mirrors the scan handler's fallback).
+        从参考 H5 检查数据集（有 master 用 master，否则取第一个扫描文件，
+        与扫描端回退语义一致）。"""
+        ref = self._master_h5 or (self._all_h5[0] if self._all_h5 else None)
+        if not ref:
+            raise FileNotFoundError("No H5 file found. Call scan() first.")
         self._ds_cfg.clear()
-        with h5py.File(self._master_h5, "r") as f:
+        with h5py.File(ref, "r") as f:
             def _visit(name: str, obj: Any) -> None:
                 if not isinstance(obj, h5py.Dataset):
                     return
@@ -136,6 +221,17 @@ class H5Converter:
             self._ds_cfg[ds_path]["export"] = export
             if channels is not None:
                 self._ds_cfg[ds_path]["channels"] = channels
+
+    def set_all_export(self, export: bool = True) -> None:
+        """Set the export flag on every inspected dataset. The convert handler
+        passes False before applying the UI selection: the UI's dataset list
+        is the COMPLETE selection, so anything unlisted (e.g. Nexus instrument
+        flatfields / pixel masks) must not keep inspect()'s default True.
+        设置所有已检查数据集的导出标记。转换 handler 在套用 UI 选择前先全置
+        False：UI 的数据集列表是完整选择，未列出的（如 Nexus 仪器平场/像素
+        掩码）不得保留 inspect() 的默认 True。"""
+        for cfg in self._ds_cfg.values():
+            cfg["export"] = export
 
     def convert(
         self,
@@ -162,20 +258,26 @@ class H5Converter:
 
         sfx = self.master_suffix
         data_h5 = [f for f in self._all_h5
-                    if os.path.basename(f).lower().endswith(sfx.lower() + ".h5")]
+                   if is_master_file(os.path.basename(f), sfx)]
         if not data_h5:
-            data_h5 = [self._master_h5] if self._master_h5 else []
+            # No '<suffix><ext>' files: convert everything found, matching the
+            # scan handler's fallback (reference file = first file).
+            # 没有 '<后缀><扩展名>' 文件时转换全部扫描到的文件——与扫描端
+            # （参考文件取第一个）的回退语义一致。
+            data_h5 = list(self._all_h5)
 
-        ds_dirs: dict[str, str] = {}
-        for ds_path, cfg in selected.items():
-            if "image" in cfg["kind"]:
-                nd = len(cfg["shape"])
-                if nd != 4:
-                    folder = os.path.join(self.output_dir, _safe_folder_name(ds_path))
-                    os.makedirs(folder, exist_ok=True)
-                    ds_dirs[ds_path] = folder
-                else:
-                    ds_dirs[ds_path] = os.path.join(self.output_dir, _safe_folder_name(ds_path))
+        def _image_folders(h5_path: str, ds_path: str) -> list[str]:
+            """Folder components for one (file, dataset) image export; the
+            naming mode decides the first-level folder (flat_output folds
+            them into the file name instead — see _export_image).
+            命名模式决定第一层子文件夹；扁平导出时这些组件并入文件名。"""
+            if self.naming_mode == "parent_folder":
+                top = _safe_folder_name(Path(h5_path).parent.name)
+            elif self.naming_mode == "file_name":
+                top = _safe_folder_name(Path(h5_path).stem)
+            else:  # dataset: legacy layout, dataset folder at output root / 旧版布局
+                top = ""
+            return [p for p in (top, _safe_folder_name(ds_path)) if p]
 
         scalar_acc: dict = {}
         stats = {"files_processed": 0, "images_exported": 0, "errors": 0}
@@ -192,8 +294,11 @@ class H5Converter:
                         if ds_path not in f:
                             continue
                         ds = f[ds_path]
+                        _require_vds_sources_present(ds, h5_path)
                         if "image" in cfg["kind"]:
-                            n = self._export_image(ds, ds_path, cfg, ds_dirs[ds_path], file_stem)
+                            n = self._export_image(
+                                ds, ds_path, cfg, _image_folders(h5_path, ds_path), file_stem
+                            )
                             stats["images_exported"] += n
                         else:
                             self._accumulate_scalar(ds, ds_path, file_stem, scalar_acc)
@@ -217,42 +322,50 @@ class H5Converter:
         return stats
 
     def _export_image(self, ds: h5py.Dataset, ds_path: str, cfg: dict,
-                      out_dir: str, file_stem: str) -> int:
+                      folders: list[str], file_stem: str) -> int:
         shape = ds.shape
         nd = len(shape)
         count = 0
         ext = ".edf" if self.image_format == "edf" else ".tif"
         _save = save_edf if self.image_format == "edf" else save_tiff
 
+        def _out(more_folders: list[str], name: str) -> str:
+            # flat_output: no subfolders — the folder components fold into the
+            # file name (user option 2026-09-30). 扁平导出：不建子文件夹，
+            # 文件夹组并入文件名。
+            if self.flat_output:
+                return os.path.join(self.output_dir, "_".join([*more_folders, name]))
+            out_dir = os.path.join(self.output_dir, *more_folders)
+            os.makedirs(out_dir, exist_ok=True)
+            return os.path.join(out_dir, name)
+
         if nd == 2:
             data = _apply_overflow(ds[()])
-            path = os.path.join(out_dir, f"{file_stem}{ext}")
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            _save(data, path)
+            _save(data, _out(folders, f"{file_stem}{ext}"))
             count = 1
         elif nd == 3:
             n_frames = shape[0]
-            os.makedirs(out_dir, exist_ok=True)
             data = ds[()]
             for fi in range(n_frames):
                 frame = _apply_overflow(data[fi])
-                path = os.path.join(out_dir, f"{file_stem}_frame{fi:04d}{ext}")
-                _save(frame, path)
+                _save(frame, _out(folders, f"{file_stem}_frame{fi:04d}{ext}"))
             count = n_frames
         elif nd == 4:
-            channels = cfg.get("channels") or list(range(shape[1]))
+            # channels=[] is a deliberate "none selected", not "all" — only
+            # a missing key falls back to every channel.
+            # channels=[] 是用户明确全不选；仅缺省时才回退为全部通道。
+            channels = cfg.get("channels")
+            if channels is None:
+                channels = list(range(shape[1]))
             n_frames = shape[0]
             data = ds[()]
             for ci in channels:
                 if ci >= shape[1]:
                     continue
-                ch_dir = os.path.join(out_dir, f"CH{ci}")
-                os.makedirs(ch_dir, exist_ok=True)
                 for fi in range(n_frames):
                     slice2d = _apply_overflow(data[fi, ci, :, :])
                     frame_tag = f"_frame{fi:04d}" if n_frames > 1 else ""
-                    path = os.path.join(ch_dir, f"{file_stem}{frame_tag}{ext}")
-                    _save(slice2d, path)
+                    _save(slice2d, _out([*folders, f"CH{ci}"], f"{file_stem}{frame_tag}{ext}"))
             count = n_frames * len(channels)
         return count
 

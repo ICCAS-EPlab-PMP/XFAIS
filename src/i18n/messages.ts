@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.0'
+      version: 'v0.3.2'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.3.0',
+      kicker: '桌面集成版 v0.3.2',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -703,7 +703,7 @@ export const messages = {
     },
     h5toolkit: {
       title: 'H5 格式处理',
-      subtitle: 'H5 数据集格式转换与文件提取汇总，一站式处理 HDF5 文件。',
+      subtitle: 'H5 数据集格式转换与文件提取汇总，支持 .h5 / .nxs / .hdf5 文件。',
       sourceSection: '源目录',
       sourceDir: '源目录（包含 H5 文件）',
       recursive: '递归扫描子文件夹',
@@ -718,11 +718,21 @@ export const messages = {
         scanBtn: '扫描并加载',
         scanning: '扫描中...',
         scanResult: '共 {total} 个 H5 | 目标文件：{target} | 参考：{ref}',
+        scanResultAll: '共 {total} 个 H5 | ⚠ 无文件匹配参考后缀，将转换全部 {target} 个文件 | 参考：{ref}',
         scanFailed: '扫描失败，请检查目录和后缀。',
+        scanResultError: '扫描失败：{message}',
         selectAll: '全选',
         deselectAll: '全不选',
         imageFormat: '图像数据导出格式',
         tableFormat: '非图像数据导出格式',
+        namingMode: '输出文件夹命名',
+        namingByFolder: '按源文件所在文件夹（默认）',
+        namingByFile: '按源文件名（nxs）',
+        namingByDataset: '按数据集路径（旧行为）',
+        namingHint: '决定输出目录下第一层子文件夹的命名方式',
+        flatOutput: '扁平导出（不建子文件夹，文件夹名并入文件名）',
+        estimate: '预计输出：约 {count} 个图像文件（当前勾选 × {files} 个目标文件）',
+        estimateTable: '；另含 1 个非图像数据表格文件',
         startExport: '开始导出',
         kindScalar: '标量',
         kind1d: '1维',
@@ -749,7 +759,7 @@ export const messages = {
         targetDir: '输出目录',
         suffixFilter: '后缀过滤',
         suffixPlaceholder: '_master',
-        suffixHint: '（例如 "_master"，留空则提取所有 .h5）',
+        suffixHint: '（例如 "_master"，留空则提取所有 H5 文件，支持 .h5 / .nxs / .hdf5）',
         prependFolder: '文件名前附加所在父文件夹名称（推荐，避免同名覆盖）',
         prefix: '文件名前缀',
         prefixPlaceholder: '可选前缀...',
@@ -1427,13 +1437,6 @@ export const messages = {
       ompThreadsHint: '限制 pyFAI/BLAS 的多核占用；修改后需重启 Python 运行时生效',
       restartNote: 'OMP 线程数在 Python 服务启动时读取，更改后需重启应用。',
       saved: '设置已保存'
-    },
-    ai: {
-      title: 'AI 助手（ai-assistant-preview 预览版）',
-      hint: '密钥仅保存在本机浏览器存储中，不会上传到任何服务器',
-      jevKey: 'Jev API Key（可选）',
-      jevKeyHint: '在 console.typesafe.ai 创建；留空时使用规则路由',
-      noKeyNote: '未配置任何密钥：AI 助手将以内置规则模式运行（离线可用）。'
     }
   },
   calibration: {
@@ -1442,6 +1445,9 @@ export const messages = {
     setup: {
       imageFile: '校正图像',
       selectImage: '选择图像',
+      uploadImage: '上传图像',
+      uploadCalibrant: '上传 .D',
+      webUploadHint: '服务器模式：点击"上传图像"从本机选择并上传文件（也可直接填已上传文件的服务器路径）',
       calibrant: '标样',
       calibrantFile: '标样 .D 文件（可选，覆盖内置标样）',
       calibrantName: '内置标样',
@@ -1513,55 +1519,11 @@ export const messages = {
       refineFailed: '精化失败'
     }
   },
-  ai: {
-    bar: {
-      title: 'AI 助手',
-      open: '打开 AI 助手',
-      placeholder: '例如：我想处理一下 WAXS…',
-      send: '发送',
-      thinking: '思考中…',
-      waitHint: '已为你定位到目标位置，请手动完成操作后继续',
-      suggestHint: '请选择要前往的页面：',
-      needPoni: '请先在助手面板选择一个 .poni 文件，以便计算可达 q 范围',
-      jevKeyRejected: 'Jev 拒绝了该 API Key（401/403），本次回退内置规则——请核对设置中的密钥',
-      jevFailed: 'Jev 调用失败，本次回退内置规则：{reason}',
-      provider: '决策引擎',
-      providerJev: 'Jev',
-      providerRules: '内置规则',
-      close: '关闭',
-      clear: '清空对话',
-      restore: '恢复默认位置与大小',
-      poniButton: 'PONI'
-    },
-    template: {
-      applied: '已应用 {name} 模板',
-      reasonLabel: '依据',
-      unitLabel: '积分单位'
-    },
-    guide: {
-      started: '已开始「{name}」逐步教学',
-      stepOf: '第 {current}/{total} 步',
-      stepDone: '✓ 已完成：{title}',
-      done: '本页教学流程已全部完成，祝科研顺利！',
-      exit: '结束教学',
-      skip: '跳过本步',
-      toggle: '教学模式',
-      autoclick: '自动代点',
-      autoclickHint: '高置信时倒计时 3 秒后代你点击按钮，可随时取消',
-      start: '开始教学',
-      startPrompt: '本页支持逐步教学，要开始吗？',
-      noGuide: '该页面暂无教学流程',
-      countingDown: '{seconds} 秒后自动点击，点此取消',
-      cancelled: '已取消自动点击',
-      clicked: '已代你点击',
-      waitNext: '完成本步后我会自动继续'
-    }
-  },
   },
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.0'
+      version: 'v0.3.2'
     },
     shell: {
       sections: {
@@ -1595,7 +1557,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.3.0',
+      kicker: 'Desktop Edition v0.3.2',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -2260,7 +2222,7 @@ export const messages = {
     },
     h5toolkit: {
       title: 'H5 Format Toolkit',
-      subtitle: 'H5 dataset format conversion and file extraction, all-in-one HDF5 handling.',
+      subtitle: 'H5 dataset format conversion and file extraction, all-in-one HDF5 handling. Supports .h5 / .nxs / .hdf5 files.',
       sourceSection: 'Source Directory',
       sourceDir: 'Source Directory (containing H5 files)',
       recursive: 'Recursive Subfolder Scan',
@@ -2275,11 +2237,21 @@ export const messages = {
         scanBtn: 'Scan & Load',
         scanning: 'Scanning...',
         scanResult: '{total} H5 files | Target: {target} | Reference: {ref}',
+        scanResultAll: '{total} H5 files | ⚠ No file matches the reference suffix — all {target} files will be converted | Reference: {ref}',
         scanFailed: 'Scan failed. Please check the directory and suffix.',
+        scanResultError: 'Scan failed: {message}',
         selectAll: 'Select All',
         deselectAll: 'Deselect All',
         imageFormat: 'Image Data Export Format',
         tableFormat: 'Non-image Data Export Format',
+        namingMode: 'Output Folder Naming',
+        namingByFolder: 'By source folder (default)',
+        namingByFile: 'By source file name (nxs)',
+        namingByDataset: 'By dataset path (legacy)',
+        namingHint: 'Chooses how the first-level subfolder under the output directory is named',
+        flatOutput: 'Flat export (no subfolders; folder names folded into the file name)',
+        estimate: 'Estimated output: ~{count} image files (current selection × {files} target files)',
+        estimateTable: '; plus 1 non-image data table file',
         startExport: 'Start Export',
         kindScalar: 'Scalar',
         kind1d: '1D',
@@ -2306,7 +2278,7 @@ export const messages = {
         targetDir: 'Output Directory',
         suffixFilter: 'Suffix Filter',
         suffixPlaceholder: '_master',
-        suffixHint: '(e.g. "_master"; leave empty to extract all .h5)',
+        suffixHint: '(e.g. "_master"; leave empty to extract all H5 files, supports .h5 / .nxs / .hdf5)',
         prependFolder: 'Prepend parent folder name to filename (recommended to avoid overwrites)',
         prefix: 'Filename Prefix',
         prefixPlaceholder: 'Optional prefix...',
@@ -2983,13 +2955,6 @@ export const messages = {
       ompThreadsHint: 'Cap pyFAI/BLAS multi-core usage; takes effect after restarting the Python runtime',
       restartNote: 'OpenMP threads are read when the Python service starts — restart the app after changing.',
       saved: 'Settings saved'
-    },
-    ai: {
-      title: 'AI Assistant (ai-assistant-preview)',
-      hint: 'Keys are stored only in this browser profile and never uploaded anywhere',
-      jevKey: 'Jev API Key (optional)',
-      jevKeyHint: 'Create at console.typesafe.ai; falls back to rule-based routing when empty',
-      noKeyNote: 'No keys configured: the assistant runs in built-in rules mode (works offline).'
     }
   },
   calibration: {
@@ -2998,6 +2963,9 @@ export const messages = {
     setup: {
       imageFile: 'Calibration image',
       selectImage: 'Select image',
+      uploadImage: 'Upload image',
+      uploadCalibrant: 'Upload .D',
+      webUploadHint: 'Server mode: click "Upload image" to pick and upload a file from your computer (a server path to an already-uploaded file also works)',
       calibrant: 'Calibrant',
       calibrantFile: 'Calibrant .D file (optional, overrides built-in)',
       calibrantName: 'Built-in calibrant',
@@ -3067,50 +3035,6 @@ export const messages = {
       noSession: 'Calibration session missing — please reload',
       loadFailed: 'Load failed',
       refineFailed: 'Refinement failed'
-    }
-  },
-  ai: {
-    bar: {
-      title: 'AI Assistant',
-      open: 'Open AI assistant',
-      placeholder: 'e.g. I want to process some WAXS…',
-      send: 'Send',
-      thinking: 'Thinking…',
-      waitHint: 'Target located for you — finish the action manually, then continue',
-      suggestHint: 'Choose where to go:',
-      needPoni: 'Pick a .poni file in the assistant panel first so the reachable q range can be computed',
-      jevKeyRejected: 'Jev rejected the API key (401/403); using built-in rules this turn — check the key in Settings',
-      jevFailed: 'Jev call failed; using built-in rules this turn: {reason}',
-      provider: 'Decision engine',
-      providerJev: 'Jev',
-      providerRules: 'Built-in rules',
-      close: 'Close',
-      clear: 'Clear chat',
-      restore: 'Reset position & size',
-      poniButton: 'PONI'
-    },
-    template: {
-      applied: '{name} template applied',
-      reasonLabel: 'Basis',
-      unitLabel: 'Output unit'
-    },
-    guide: {
-      started: 'Guided tour started: {name}',
-      stepOf: 'Step {current}/{total}',
-      stepDone: '✓ Done: {title}',
-      done: 'Tour complete — happy analyzing!',
-      exit: 'End tour',
-      skip: 'Skip step',
-      toggle: 'Teaching mode',
-      autoclick: 'Auto-click',
-      autoclickHint: 'Clicks buttons for you 3s after a high-confidence decision; cancellable',
-      start: 'Start tour',
-      startPrompt: 'This page has a step-by-step tour. Start it?',
-      noGuide: 'No guided tour for this page yet',
-      countingDown: 'Auto-click in {seconds}s — click to cancel',
-      cancelled: 'Auto-click cancelled',
-      clicked: 'Clicked for you',
-      waitNext: "I'll continue automatically once this step is done"
     }
   }
   }

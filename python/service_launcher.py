@@ -11,7 +11,6 @@ import argparse
 import asyncio
 import base64
 import hashlib
-import ipaddress
 import math
 import importlib
 import importlib.metadata
@@ -23,9 +22,6 @@ import shutil
 import socket
 import struct
 import tempfile
-import urllib.error
-import urllib.parse
-import urllib.request
 from pathlib import Path
 import sys
 import threading
@@ -86,7 +82,6 @@ API_ROUTES: list[str] = [
     "/api/install_pyfai",
     "/api/export_bat_pyfai",
     "/api/calibration",
-    "/api/ai_context",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -3129,27 +3124,50 @@ async def handle_viewer_config(
         frame_index = max(0, int(payload.get("frame", payload.get("frame_index", 0)) or 0))
         dataset_path = payload.get("dataset") or payload.get("h5_dataset_path")
         h5_channel = payload.get("channel") if payload.get("channel") is not None else payload.get("h5_channel")
+        fname = os.path.basename(fpath)
 
         metadata: dict[str, Any] = {
             "fileType": ext.lstrip("."),
             "frameIndex": frame_index,
         }
 
+        # Open failures must RAISE (→ task_error → 前端 toast)。A plain
+        # {"status": "error"} return also becomes a task_error via the result
+        # adapter, but raising keeps every caller on one loud, explained path —
+        # a corrupt TIFF/H5 must never leave the canvas blank without a message.
+        # 打不开必须抛异常（→ task_error → 前端 toast）。虽然结果适配层会把
+        # status:'error' 转成错误帧，但统一走异常路径可保证每个调用方都得到
+        # 带解释的报错——损坏的 TIFF/H5 绝不能无声地留下空白画布。
         if ext in {".h5", ".hdf5"}:
             if not dataset_path:
                 await send_progress(0.2, "Scanning HDF5 datasets...")
-                datasets = await _run_blocking(H5Handler.find_datasets, fpath)
+                try:
+                    datasets = await _run_blocking(H5Handler.find_datasets, fpath)
+                except Exception as exc:  # noqa: BLE001 — re-raised with a user-facing message
+                    raise IOError(
+                        f"无法读取 H5 文件（文件损坏或不是 HDF5）：{fname} / "
+                        f"Cannot read H5 file (corrupt or not HDF5): {fname}: {exc}"
+                    ) from exc
                 dataset_entries = _serialize_h5_datasets(datasets)
                 dataset_path = H5Handler.pick_default_dataset([item["path"] for item in dataset_entries])
                 if not dataset_path:
-                    return {"status": "error", "message": "No image dataset found"}
+                    raise ValueError(
+                        f"H5 文件中未找到图像数据集：{fname} / "
+                        f"No image dataset found in H5 file: {fname}"
+                    )
             else:
                 dataset_entries = []
 
             await send_progress(0.5, "Reading frame…")
-            data, _dead_mask = await _run_blocking(
-                H5Handler.load_frame, fpath, dataset_path, frame_index, h5_channel,
-            )
+            try:
+                data, _dead_mask = await _run_blocking(
+                    H5Handler.load_frame, fpath, dataset_path, frame_index, h5_channel,
+                )
+            except Exception as exc:  # noqa: BLE001 — re-raised with a user-facing message
+                raise IOError(
+                    f"无法从 H5 文件读取图像数据：{fname} / "
+                    f"Cannot read image data from H5 file: {fname}: {exc}"
+                ) from exc
 
             if dataset_entries:
                 selected_info = next((item for item in dataset_entries if item["path"] == dataset_path), None)
@@ -3166,10 +3184,19 @@ async def handle_viewer_config(
                 metadata["selectedChannel"] = h5_channel
         else:
             await send_progress(0.5, "Reading image data...")
-            probe_meta = await _run_blocking(ImageLoader.probe, fpath)
-            data, _dead_mask, meta = await _run_blocking(ImageLoader.load_frame, fpath, frame_index)
-            if data is None:
-                return {"status": "error", "message": "Failed to load image data"}
+            try:
+                probe_meta = await _run_blocking(ImageLoader.probe, fpath)
+                data, _dead_mask, meta = await _run_blocking(ImageLoader.load_frame, fpath, frame_index)
+            except Exception as exc:  # noqa: BLE001 — re-raised with a user-facing message
+                raise IOError(
+                    f"无法打开图像文件（文件损坏或格式不受支持）：{fname} / "
+                    f"Cannot open image file (corrupt or unsupported format): {fname}: {exc}"
+                ) from exc
+            if data is None or data.ndim < 2 or data.size == 0:
+                raise IOError(
+                    f"无法从文件解码出有效图像数据：{fname} / "
+                    f"No valid image data could be decoded from file: {fname}"
+                )
             metadata.update({
                 "totalFrames": int(probe_meta.get("n_frames", 1) or 1),
                 "nChannels": 0,
@@ -3179,7 +3206,9 @@ async def handle_viewer_config(
             raise asyncio.CancelledError()
 
         if data is None:
-            return {"status": "error", "message": "No image data available"}
+            raise IOError(
+                f"未能加载到图像数据：{fname} / No image data available: {fname}"
+            )
 
         height, width = data.shape
         metadata.update({
@@ -3495,6 +3524,8 @@ async def handle_h5convert(
     import time as _time
     await send_progress(0.0, "Initializing conversion...")
 
+    from services.h5convert import NAMING_MODES
+
     source_dir = payload.get("source_dir", "") or payload.get("sourceDir", "")
     output_dir = validated_output_path_optional(
         payload.get("output_dir", "") or payload.get("outputDir", ""), field="output_dir"
@@ -3502,6 +3533,10 @@ async def handle_h5convert(
     master_suffix = payload.get("master_suffix", "") or payload.get("refSuffix", "_master")
     table_format = payload.get("table_format", "csv") or payload.get("format", "csv")
     image_format = payload.get("image_format", "tiff") or payload.get("imageFormat", "tiff")
+    naming_mode = payload.get("naming_mode", "") or payload.get("namingMode", "") or "parent_folder"
+    if naming_mode not in NAMING_MODES:
+        naming_mode = "parent_folder"
+    flat_output = bool(payload.get("flat_output", False) or payload.get("flatOutput", False))
 
     converter = H5Converter(
         root_dir=source_dir,
@@ -3509,6 +3544,8 @@ async def handle_h5convert(
         master_suffix=master_suffix,
         table_format=table_format,
         image_format=image_format,
+        naming_mode=naming_mode,
+        flat_output=flat_output,
     )
 
     dataset_config = payload.get("dataset_config", {}) or payload.get("datasets", {})
@@ -3536,6 +3573,15 @@ async def handle_h5convert(
     def _run():
         converter.scan()
         converter.inspect_datasets()
+        if dataset_config:
+            # The UI sends its COMPLETE selection: anything unlisted was
+            # deliberately unchecked (e.g. Nexus instrument flatfield / pixel
+            # masks) and must not fall back to inspect()'s default
+            # export=True (regression: unchecked flatfields were converted).
+            # UI 发来的是完整选择：未列出的即被用户取消勾选（如 Nexus 仪器
+            # 平场/像素掩码），不得回退到 inspect() 默认的 export=True
+            # （回归缺陷：未勾选的平场图也被转换了）。
+            converter.set_all_export(False)
         for ds_path, cfg in dataset_config.items():
             channels = cfg.get("channels") if isinstance(cfg, dict) else None
             export = cfg.get("export", True) if isinstance(cfg, dict) else True
@@ -3561,8 +3607,9 @@ async def handle_h5convert_scan(
     cancel_event: asyncio.Event,
 ) -> dict[str, Any]:
     """H5 scan handler: scan directory and inspect datasets. H5扫描处理函数。"""
-    import glob as _glob
     import h5py as _h5py
+
+    from services.h5convert import is_master_file, scan_h5_files
 
     await send_progress(0.0, "Scanning directory...")
     source_dir = payload.get("source_dir", "") or payload.get("sourceDir", "")
@@ -3572,25 +3619,27 @@ async def handle_h5convert_scan(
     if not source_dir or not os.path.isdir(source_dir):
         return {"status": "error", "message": "Invalid source directory."}
 
-    if recursive:
-        all_h5 = _glob.glob(os.path.join(source_dir, "**", "*.h5"), recursive=True)
-    else:
-        all_h5 = []
-        for f in sorted(os.listdir(source_dir)):
-            full = os.path.join(source_dir, f)
-            if os.path.isfile(full) and f.lower().endswith(".h5"):
-                all_h5.append(full)
+    all_h5 = scan_h5_files(source_dir, recursive=recursive)
     if not all_h5:
-        return {"status": "error", "message": "No .h5 files found."}
+        return {
+            "status": "error",
+            "message": "No H5 files found (supported: .h5, .nxs, .hdf5).",
+        }
 
     sfx = master_suffix.strip() or "_master"
-    masters = [f for f in all_h5
-               if os.path.basename(f).lower().endswith(sfx.lower() + ".h5")]
+    masters = [f for f in all_h5 if is_master_file(os.path.basename(f), sfx)]
+    suffix_matched = bool(masters)
     if not masters:
         masters = [all_h5[0]]
 
     ref_file = masters[0]
-    target_count = len(masters)
+    # Honest target count: the converter converts suffix-matched files when any
+    # match, else ALL found files (fallback) — report that, not the fallback
+    # reference count.
+    # 如实报告目标数：转换器有后缀匹配文件时转换匹配者，否则回退转换全部
+    # 扫描到的文件——报告真实数量，而不是回退后的参考文件数。
+    convert_files = masters if suffix_matched else all_h5
+    target_count = len(convert_files)
 
     await send_progress(0.5, "Inspecting datasets...")
 
@@ -3619,6 +3668,7 @@ async def handle_h5convert_scan(
         "datasets": datasets,
         "totalH5": len(all_h5),
         "targetH5": target_count,
+        "suffixMatched": suffix_matched,
         "refFile": os.path.basename(ref_file),
     }
 
@@ -3688,30 +3738,20 @@ async def handle_h5_list_files(
     """Scan directory for H5 files and return file list with metadata.
     扫描目录中的 H5 文件并返回带有元数据的文件列表。"""
     await send_progress(0.0, "扫描 H5 文件...")
-    import glob as _glob
+
+    from services.h5convert import matches_suffix_filter, scan_h5_files
 
     source_dir = payload.get("source_dir", "") or payload.get("sourceDir", "")
-    suffix_filter = (payload.get("suffix_filter", "") or payload.get("suffix", "")).strip().lower()
+    suffix_filter = (payload.get("suffix_filter", "") or payload.get("suffix", "")).strip()
     recursive = bool(payload.get("recursive", True))
 
     if not source_dir or not os.path.isdir(source_dir):
         return {"status": "error", "message": "无效的源目录。"}
 
-    if recursive:
-        all_h5 = _glob.glob(os.path.join(source_dir, "**", "*.h5"), recursive=True)
-    else:
-        all_h5 = []
-        for f in sorted(os.listdir(source_dir)):
-            full = os.path.join(source_dir, f)
-            if os.path.isfile(full) and f.lower().endswith(".h5"):
-                all_h5.append(full)
+    all_h5 = scan_h5_files(source_dir, recursive=recursive)
 
     # Apply suffix filter / 应用后缀过滤
-    if suffix_filter:
-        target_ext = f"{suffix_filter}.h5" if not suffix_filter.endswith(".h5") else suffix_filter
-        filtered = [f for f in all_h5 if os.path.basename(f).lower().endswith(target_ext)]
-    else:
-        filtered = all_h5
+    filtered = [f for f in all_h5 if matches_suffix_filter(os.path.basename(f), suffix_filter)]
 
     # Build file info list / 构建文件信息列表
     files_info: list[dict[str, Any]] = []
@@ -6362,23 +6402,6 @@ async def handle_calibration(
     return await _run(payload, send_progress, cancel_event)
 
 
-async def handle_ai_context(
-    payload: dict[str, Any],
-    send_progress: Callable[[float, str], Awaitable[None]],
-    cancel_event: asyncio.Event,
-) -> dict[str, Any]:
-    """Deterministic context computation for the AI assistant (v0.3.0).
-
-    'poni_summary': parse a .poni and derive the reachable q range — the
-    numbers the assistant's template decision is based on. Pure math, no AI.
-    AI 助手的确定性上下文计算（v0.3.0）。'poni_summary'：解析 .poni 并推导
-    可达 q 范围——模板决策所依据的数字。纯计算，无 AI 参与。
-    """
-    from services.ai_context import handle_ai_context as _run
-
-    return await _run(payload, send_progress, cancel_event)
-
-
 # Route → handler mapping / 路由→处理函数映射
 ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/integrate1d": handle_integrate1d,
@@ -6407,7 +6430,6 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/install_pyfai": handle_install_pyfai,
     "/api/export_bat_pyfai": handle_export_bat_pyfai,
     "/api/calibration": handle_calibration,
-    "/api/ai_context": handle_ai_context,
 }
 
 
@@ -6653,161 +6675,6 @@ _CORS_HEADERS = {
     "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Session-Id",
     "Access-Control-Max-Age": "86400",
 }
-
-
-# ---------------------------------------------------------------------------
-# Jev (TypeSafe AI) forwarding for web deployments — admin-configured key
-# Jev（TypeSafe AI）Web 部署转发 — 管理员配置的共享 Key
-#
-# api.typesafe.ai sends no CORS headers, so a browser can never call it
-# directly. In serve_web mode the ADMIN decides whether AI is available: set
-# XFAIS_JEV_API_KEY in the server environment and every client shares it via
-# POST /api/ai/systemone (same-origin, no CORS involved). Without the env var
-# the endpoint answers 501 and the frontend silently falls back to the
-# built-in rules router. A personal key from Settings stays desktop-only.
-# api.typesafe.ai 不返回 CORS 头，浏览器永远无法直连。serve_web 模式下由
-# 管理员决定是否启用 AI：在服务器环境设置 XFAIS_JEV_API_KEY，所有客户端经
-# POST /api/ai/systemone 共享同一 Key（同源，无 CORS 问题）。未设置时端点
-# 返回 501，前端静默回退到内置规则路由。设置页里的个人 Key 仅桌面版可用。
-# ---------------------------------------------------------------------------
-
-_JEV_API_KEY_ENV = "XFAIS_JEV_API_KEY"
-_JEV_API_URL_ENV = "XFAIS_JEV_API_URL"
-_JEV_ALLOWED_CIDRS_ENV = "XFAIS_JEV_ALLOWED_CIDRS"
-_JEV_DEFAULT_UPSTREAM = "https://api.typesafe.ai/v1/systemone"
-_JEV_MAX_BODY_BYTES = 1_000_000
-_JEV_MAX_RESPONSE_BYTES = 2_000_000
-
-# Only HTTP clients send request BODIES here — the upstream URL itself comes
-# from operator-controlled env config, never from the network request. Still,
-# before any request we validate scheme + host + every resolved IP (public
-# only), refuse redirects (so a 3xx cannot hop to an internal target), and cap
-# body/response sizes. Validation runs immediately before the fetch to shrink
-# the DNS-rebinding window; the remaining trust in the operator env matches
-# the operator's existing power to bind --host 0.0.0.0.
-# 只有 HTTP 客户端能提交请求体——上游 URL 本身来自运维环境变量，绝不来自网
-# 络请求。尽管如此，每次请求前仍校验协议+主机+全部解析 IP（仅公网）、拒绝
-# 重定向（防止 3xx 跳向内网目标），并限制请求/响应体大小；校验紧贴抓取执行
-# 以缩小 DNS 重绑定窗口；对运维环境变量的残余信任与运维者绑定 --host
-# 0.0.0.0 的既有权限一致。
-
-
-def _jev_api_key() -> str:
-    return os.environ.get(_JEV_API_KEY_ENV, "").strip()
-
-
-def _jev_client_allowed(client_address: tuple[Any, ...]) -> bool:
-    """Whether this client may use the shared key. Unset / empty
-    XFAIS_JEV_ALLOWED_CIDRS = allow everyone (the documented default); set =
-    comma-separated CIDRs or single IPs, and a malformed entry fails CLOSED
-    (500) so a typo never silently widens the gate. The source is the socket
-    peer address — X-Forwarded-For is deliberately not trusted (spoofable);
-    behind a reverse proxy all clients appear as the proxy, so restrict at
-    the proxy or include its address range.
-    客户端是否可用共享 Key。XFAIS_JEV_ALLOWED_CIDRS 未设置/为空 = 对所有
-    人开放（默认）；设置为逗号分隔的 CIDR 或单个 IP，配置错误一律封死
-    （500），绝不让笔误悄悄放宽门槛。判定依据是套接字对端地址——刻意不
-    信任可伪造的 X-Forwarded-For；反向代理后所有客户端都呈现为代理地址，
-    需在代理层限制或把代理网段并入白名单。
-    """
-    raw = os.environ.get(_JEV_ALLOWED_CIDRS_ENV, "").strip()
-    if not raw:
-        return True
-    networks = []
-    try:
-        for part in raw.split(","):
-            part = part.strip()
-            if part:
-                networks.append(ipaddress.ip_network(part, strict=False))
-    except ValueError as exc:
-        raise RuntimeError(f"invalid {_JEV_ALLOWED_CIDRS_ENV}: {exc}") from exc
-    if not networks:
-        return True
-    try:
-        client = ipaddress.ip_address(str(client_address[0]).split("%", 1)[0])
-    except ValueError:
-        return False
-    return any(client.version == net.version and client in net for net in networks)
-
-
-def _validate_public_http_url(url: str) -> str | None:
-    """SSRF guard for the admin-configured upstream: http/https only, and every
-    resolved address must be public (loopback / private / reserved rejected).
-    Returns an error string, or None when the URL is safe to request.
-    管理员可配置上游的 SSRF 防护：仅 http/https，且解析出的所有地址必须是
-    公网地址（拒绝环回/私网/保留地址）。返回错误信息；安全则返回 None。"""
-    try:
-        parsed = urllib.parse.urlsplit(url)
-        scheme = parsed.scheme
-        host = parsed.hostname
-        port = parsed.port or (443 if scheme == "https" else 80)
-    except ValueError as exc:
-        return f"unparseable URL: {exc}"
-    if scheme not in ("http", "https"):
-        return f"scheme must be http or https, got {scheme!r}"
-    if not host:
-        return "URL has no host"
-    try:
-        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        return f"cannot resolve {host!r}: {exc}"
-    for info in infos:
-        raw_addr = info[4][0]
-        addr = raw_addr.split("%", 1)[0]  # strip IPv6 scope id
-        try:
-            ip = ipaddress.ip_address(addr)
-        except ValueError:
-            return f"unrecognized address {raw_addr!r} for {host!r}"
-        if not ip.is_global:
-            return f"{host!r} resolves to non-public address {raw_addr!r}"
-    return None
-
-
-class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Refuse redirects so an upstream 3xx can never re-target the fetch to an
-    internal address the pre-flight validation never saw.
-    拒绝重定向：上游 3xx 不得把抓取重定向到预校验未覆盖的内网地址。"""
-
-    def redirect_request(self, req: Any, fp: Any, code: Any, msg: Any,  # noqa: N802
-                         headers: Any, newurl: Any) -> None:
-        return None  # urlopen then raises HTTPError for the 3xx itself
-
-
-_JEV_OPENER = urllib.request.build_opener(_NoRedirectHandler)
-
-
-def _forward_jev_request(
-    body: bytes, api_key: str, url: str, timeout: float = 20.0
-) -> tuple[int, bytes, str]:
-    """POST body to the Jev upstream with the admin key (redirects refused).
-    Returns (status, body, content_type); upstream error statuses pass through.
-    用管理员 Key 将 body POST 到 Jev 上游（拒绝重定向）。返回
-    (状态码, 响应体, 类型)；上游的错误状态码原样透传。"""
-    request = urllib.request.Request(
-        url,
-        data=body,
-        method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-            "User-Agent": "X-FAIS-serve-web/jev-forward",
-        },
-    )
-    try:
-        with _JEV_OPENER.open(request, timeout=timeout) as response:
-            payload = response.read(_JEV_MAX_RESPONSE_BYTES + 1)
-            return response.status, payload, response.headers.get("Content-Type", "application/json")
-    except urllib.error.HTTPError as exc:
-        try:
-            payload = exc.read(_JEV_MAX_RESPONSE_BYTES + 1) or b"{}"
-        except Exception:
-            payload = b"{}"
-        headers = exc.headers
-        content_type = headers.get("Content-Type", "application/json") if headers else "application/json"
-        return exc.code, payload, content_type
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        raise RuntimeError(f"Jev upstream request failed: {exc}") from exc
-
 
 
 class WebHealthHandler(BaseHTTPRequestHandler):
@@ -7174,8 +7041,6 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             if self.ws_port is not None:
                 report["ws_port"] = self.ws_port
             report["mode"] = "web_server"
-            # Whether the admin configured a shared Jev key (never the key itself)
-            report["jev_api"] = bool(_jev_api_key())
             self._write_json(report)
             return
 
@@ -7192,9 +7057,6 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             else:
                 self._write_json({"error": "Service not ready"}, HTTPStatus.SERVICE_UNAVAILABLE)
             return
-        if self.path == "/api/ai/systemone":
-            self._handle_ai_forward()
-            return
         if self.path == "/shutdown":
             self._write_json({"ok": True})
             if _ws_service is not None:
@@ -7202,75 +7064,6 @@ class WebHealthHandler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         self._write_json({"error": "not-found"}, HTTPStatus.NOT_FOUND)
-
-    def _handle_ai_forward(self) -> None:
-        """POST /api/ai/systemone — forward to the admin-configured Jev upstream.
-
-        The API key never reaches the browser: the admin sets it in the server
-        environment and every client of this deployment shares it.
-        Key 未配置 → 501（前端静默回退规则路由）。
-        """
-        api_key = _jev_api_key()
-        if not api_key:
-            self._write_json({
-                "error": "Jev API key is not configured on this server",
-                "hint": f"set {_JEV_API_KEY_ENV} in the server environment to enable shared AI for all users",
-            }, HTTPStatus.NOT_IMPLEMENTED)
-            return
-        try:
-            if not _jev_client_allowed(self.client_address):
-                self._write_json(
-                    {"error": "Jev access restricted on this server"},
-                    HTTPStatus.FORBIDDEN,
-                )
-                return
-        except RuntimeError as exc:
-            self._write_json({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
-            return
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
-            length = 0
-        if length <= 0:
-            self._write_json({"error": "Missing request body"}, HTTPStatus.BAD_REQUEST)
-            return
-        if length > _JEV_MAX_BODY_BYTES:
-            self.close_connection = True  # body deliberately left unread
-            self._write_json({"error": "Request body too large"}, HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
-            return
-        body = self.rfile.read(length)
-        try:
-            parsed = json.loads(body)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            self._write_json({"error": "Request body must be valid JSON"}, HTTPStatus.BAD_REQUEST)
-            return
-        if not isinstance(parsed, dict):
-            self._write_json({"error": "Request body must be a JSON object"}, HTTPStatus.BAD_REQUEST)
-            return
-
-        upstream = os.environ.get(_JEV_API_URL_ENV, "").strip() or _JEV_DEFAULT_UPSTREAM
-        validation_error = _validate_public_http_url(upstream)
-        if validation_error is not None:
-            self._write_json(
-                {"error": f"Jev upstream URL rejected: {validation_error}"},
-                HTTPStatus.BAD_GATEWAY,
-            )
-            return
-        try:
-            status, payload, content_type = _forward_jev_request(body, api_key, upstream)
-        except RuntimeError as exc:
-            self._write_json({"error": str(exc)}, HTTPStatus.BAD_GATEWAY)
-            return
-
-        if not 200 <= status < 600:
-            status = HTTPStatus.BAD_GATEWAY
-        self.send_response(status)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(payload)))
-        for k, v in _CORS_HEADERS.items():
-            self.send_header(k, v)
-        self.end_headers()
-        self.wfile.write(payload)
 
     def log_message(self, format: str, *args: Any) -> None:
         # flush=True keeps request logs visible promptly under redirected
@@ -7517,14 +7310,6 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
     print(f"[web-server] HTTP + WebSocket on {host}:{port} (single-port mode)", flush=True)
     print(f"[web-server] Session isolation enabled. Each client gets isolated temp directory.", flush=True)
     print(f"[web-server] No pyFAI-calib2 launcher — server mode only.", flush=True)
-    if _jev_api_key():
-        cidrs = os.environ.get(_JEV_ALLOWED_CIDRS_ENV, "").strip()
-        scope = f", clients restricted to {cidrs}" if cidrs else ", shared by all users"
-        print("[web-server] Jev AI forwarding enabled: POST /api/ai/systemone "
-              f"(key from {_JEV_API_KEY_ENV}{scope})", flush=True)
-    else:
-        print("[web-server] Jev AI forwarding disabled — "
-              f"set {_JEV_API_KEY_ENV} to enable shared AI for all users", flush=True)
 
     threading.Thread(target=_warm_viewer_runtime, daemon=True).start()
 

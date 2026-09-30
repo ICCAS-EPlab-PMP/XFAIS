@@ -178,6 +178,30 @@
             <option value="edf">EDF</option>
           </select>
         </div>
+        <div v-if="hasImageDatasets" class="h5t-format-row">
+          <span class="h5t-format-label">{{ t('h5toolkit.convert.namingMode') }}</span>
+          <select
+            v-model="namingMode"
+            class="h5t-select"
+            :data-testid="testIds.h5convertNamingMode"
+          >
+            <option value="parent_folder">{{ t('h5toolkit.convert.namingByFolder') }}</option>
+            <option value="file_name">{{ t('h5toolkit.convert.namingByFile') }}</option>
+            <option value="dataset">{{ t('h5toolkit.convert.namingByDataset') }}</option>
+          </select>
+          <span class="h5t-hint">{{ t('h5toolkit.convert.namingHint') }}</span>
+        </div>
+        <label v-if="hasImageDatasets" class="h5t-checkbox-label">
+          <input
+            v-model="flatOutput"
+            type="checkbox"
+            :data-testid="testIds.h5convertFlatOutput"
+          />
+          {{ t('h5toolkit.convert.flatOutput') }}
+        </label>
+        <p v-if="convertEstimateText" class="h5t-info" :data-testid="testIds.h5convertEstimate">
+          {{ convertEstimateText }}
+        </p>
         <div v-if="hasNonImageDatasets" class="h5t-format-row">
           <span class="h5t-format-label">{{ t('h5toolkit.convert.tableFormat') }}</span>
           <select v-model="tableFormat" class="h5t-select">
@@ -383,6 +407,7 @@ import ResultSummary from '@/components/business/ResultSummary.vue'
 import type { ResultSummaryData } from '@/components/business/ResultSummary.vue'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
+import { useToast } from '@/lib/toast'
 
 interface DatasetEntry {
   path: string
@@ -407,6 +432,7 @@ const EXTRACT_PAGE_SIZE = 20
 
 const { t } = useI18n()
 const transport = useTransport()
+const toast = useToast()
 
 // ── Shared state / 共享状态 ─────────────────────────────────────────────
 const sourceDir = ref<string | null>(null)
@@ -433,6 +459,12 @@ const datasets = ref<DatasetEntry[]>([])
 
 const imageFormat = ref<'tiff' | 'edf'>('tiff')
 const tableFormat = ref<'csv' | 'dat'>('csv')
+/** Image export first-level folder naming / 图像导出第一层文件夹命名 */
+const namingMode = ref<'parent_folder' | 'file_name' | 'dataset'>('parent_folder')
+/** Flat export: no subfolders, folder names fold into the file name / 扁平导出：不建子文件夹，文件夹名并入文件名 */
+const flatOutput = ref(false)
+/** Files the converter will process (honest count from scan) / 转换器将处理的文件数 */
+const scanTargetH5 = ref(0)
 const convertTaskId = ref<string | null>(null)
 const convertProgress = ref(0)
 const convertProgressMessage = ref<string | null>(null)
@@ -457,6 +489,38 @@ const datasetGroups = computed(() => {
   return Array.from(groups.entries())
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, items]) => ({ key, items }))
+})
+
+/** Nexus convention: entry/instrument/** holds detector metadata (pixel
+ * masks, flatfield tables) — never the science data; never auto-select it.
+ * Nexus 约定：entry/instrument/** 存放探测器元数据（像素掩码、平场表），
+ * 不是科学数据；默认绝不勾选。 */
+function isInstrumentMetadata(path: string): boolean {
+  return path.split('/').includes('instrument')
+}
+
+/** Estimated output file count for the current selection / 按当前勾选估算产出文件数 */
+const convertEstimateText = computed(() => {
+  if (datasets.value.length === 0 || scanTargetH5.value === 0) return ''
+  let images = 0
+  let hasTable = false
+  for (const ds of datasets.value) {
+    if (!ds.export) continue
+    if (ds.ndim < 2) {
+      hasTable = true
+      continue
+    }
+    const dims = ds.shape.replace(/[()\s]/g, '').split(',').map(s => parseInt(s, 10) || 0)
+    if (ds.ndim === 2) {
+      images += 1
+    } else if (ds.ndim === 3) {
+      images += dims[0]
+    } else if (ds.ndim === 4) {
+      images += (dims[0] || 0) * ds.selectedChannels.filter(c => c < (dims[1] || 0)).length
+    }
+  }
+  const base = t('h5toolkit.convert.estimate', { count: images * scanTargetH5.value, files: scanTargetH5.value })
+  return hasTable ? `${base}${t('h5toolkit.convert.estimateTable')}` : base
 })
 
 const canStartConvert = computed(() => {
@@ -562,6 +626,8 @@ async function handleConvertScan(): Promise<void> {
 
     const unsubResult = transport.onTaskResult(result.taskId, (payload) => {
       const data = payload.data as {
+        status?: string
+        message?: string
         datasets: Array<{
           path: string
           shape: string
@@ -571,7 +637,23 @@ async function handleConvertScan(): Promise<void> {
         }>
         totalH5: number
         targetH5: number
+        suffixMatched?: boolean
         refFile: string
+      }
+
+      // Backend signals a failed scan (no files / bad dir) inside an OK task
+      // result — show the reason instead of a misleading "0 files" summary.
+      // 后端在正常任务结果内用 status:'error' 表示扫描失败——显示原因，
+      // 而不是误导性的「共 0 个」摘要。
+      if (data.status === 'error') {
+        datasets.value = []
+        scannedFiles.value = []
+        scanTargetH5.value = 0
+        scanInfo.value = data.message
+          ? t('h5toolkit.convert.scanResultError', { message: data.message })
+          : t('h5toolkit.convert.scanFailed')
+        scanning.value = false
+        return
       }
 
       datasets.value = data.datasets.map(ds => ({
@@ -584,14 +666,26 @@ async function handleConvertScan(): Promise<void> {
         selectedChannels: ds.ndim === 4
           ? Array.from({ length: parseInt(ds.shape.split(',')[1]?.trim() || '0', 10) }, (_, i) => i)
           : [],
-        export: true,
+        // Default to image-like science data only: Nexus instrument metadata
+        // (pixel masks, flatfields) and 1D logs/scalars stay unchecked;
+        // 全选 button still selects everything explicitly.
+        // 默认只勾选图像类科学数据：Nexus 仪器元数据（像素掩码、平场）与
+        // 1D 日志/标量不勾；需要时可用「全选」或手动勾选。
+        export: ds.ndim >= 2 && !isInstrumentMetadata(ds.path),
       }))
 
-      scanInfo.value = t('h5toolkit.convert.scanResult', {
-        total: data.totalH5,
-        target: data.targetH5,
-        ref: data.refFile,
-      })
+      scanTargetH5.value = data.targetH5
+      scanInfo.value = data.suffixMatched === false
+        ? t('h5toolkit.convert.scanResultAll', {
+            total: data.totalH5,
+            target: data.targetH5,
+            ref: data.refFile,
+          })
+        : t('h5toolkit.convert.scanResult', {
+            total: data.totalH5,
+            target: data.targetH5,
+            ref: data.refFile,
+          })
       scanning.value = false
     })
 
@@ -643,7 +737,11 @@ async function handleStartConvert(): Promise<void> {
     .filter(ds => ds.export)
     .map(ds => ({
       path: ds.path,
-      channels: ds.ndim === 4 ? ds.selectedChannels : undefined,
+      // Array.from copies out of the reactive Proxy: Electron IPC structured
+      // clone rejects Proxy objects ("An object could not be cloned").
+      // Array.from 把响应式 Proxy 数组拷成普通数组：Electron IPC 结构化克隆
+      // 拒绝 Proxy 对象（"An object could not be cloned"）。
+      channels: ds.ndim === 4 ? Array.from(ds.selectedChannels) : undefined,
     }))
 
   if (selected.length === 0) return
@@ -652,23 +750,35 @@ async function handleStartConvert(): Promise<void> {
   convertProgress.value = 0
   convertProgressMessage.value = null
 
-  const result = await transport.submitTask('h5convert', {
-    sourceDir: sourceDir.value,
-    outputDir: outputDir.value,
-    refSuffix: refSuffix.value || '_master',
-    imageFormat: imageFormat.value,
-    tableFormat: tableFormat.value,
-    datasets: selected,
-  })
+  let submit: { taskId: string }
+  try {
+    submit = await transport.submitTask('h5convert', {
+      sourceDir: sourceDir.value,
+      outputDir: outputDir.value,
+      refSuffix: refSuffix.value || '_master',
+      imageFormat: imageFormat.value,
+      tableFormat: tableFormat.value,
+      namingMode: namingMode.value,
+      flatOutput: flatOutput.value,
+      datasets: selected,
+    })
+  } catch (error) {
+    toast.push({
+      title: t('h5toolkit.convert.startExport'),
+      message: error instanceof Error ? error.message : String(error),
+      tone: 'error',
+    })
+    return
+  }
 
-  convertTaskId.value = result.taskId
+  convertTaskId.value = submit.taskId
 
-  const unsubProgress = transport.onTaskProgress(result.taskId, (payload) => {
+  const unsubProgress = transport.onTaskProgress(submit.taskId, (payload) => {
     convertProgress.value = payload.progress
     convertProgressMessage.value = payload.message ?? null
   })
 
-  const unsubResult = transport.onTaskResult(result.taskId, (payload) => {
+  const unsubResult = transport.onTaskResult(submit.taskId, (payload) => {
     const data = payload.data as {
       total: number
       success: number
@@ -684,7 +794,7 @@ async function handleStartConvert(): Promise<void> {
     convertTaskId.value = null
   })
 
-  const unsubError = transport.onTaskError(result.taskId, (payload) => {
+  const unsubError = transport.onTaskError(submit.taskId, (payload) => {
     convertProgressMessage.value = payload.error
     convertTaskId.value = null
   })
@@ -740,23 +850,33 @@ async function handleStartExtract(): Promise<void> {
   extractProgress.value = 0
   extractProgressMessage.value = null
 
-  const result = await transport.submitTask('h5_extract', {
-    sourceDir: sourceDir.value,
-    targetDir: extractTargetDir.value,
-    suffix: extractSuffixFilter.value || null,
-    prependFolder: extractPrependFolder.value,
-    prefix: extractPrefix.value || null,
-    conflictPolicy: extractConflictPolicy.value,
-  })
+  let submit: { taskId: string }
+  try {
+    submit = await transport.submitTask('h5_extract', {
+      sourceDir: sourceDir.value,
+      targetDir: extractTargetDir.value,
+      suffix: extractSuffixFilter.value || null,
+      prependFolder: extractPrependFolder.value,
+      prefix: extractPrefix.value || null,
+      conflictPolicy: extractConflictPolicy.value,
+    })
+  } catch (error) {
+    toast.push({
+      title: t('h5toolkit.extract.startExtract'),
+      message: error instanceof Error ? error.message : String(error),
+      tone: 'error',
+    })
+    return
+  }
 
-  extractTaskId.value = result.taskId
+  extractTaskId.value = submit.taskId
 
-  const unsubProgress = transport.onTaskProgress(result.taskId, (payload) => {
+  const unsubProgress = transport.onTaskProgress(submit.taskId, (payload) => {
     extractProgress.value = payload.progress
     extractProgressMessage.value = payload.message ?? null
   })
 
-  const unsubResult = transport.onTaskResult(result.taskId, (payload) => {
+  const unsubResult = transport.onTaskResult(submit.taskId, (payload) => {
     const data = payload.data as {
       total: number
       success: number
@@ -772,7 +892,7 @@ async function handleStartExtract(): Promise<void> {
     extractTaskId.value = null
   })
 
-  const unsubError = transport.onTaskError(result.taskId, (payload) => {
+  const unsubError = transport.onTaskError(submit.taskId, (payload) => {
     extractProgressMessage.value = payload.error
     extractTaskId.value = null
   })
@@ -791,26 +911,17 @@ async function handleCancelExtract(): Promise<void> {
 }
 
 // ── Watchers / 监听器 ───────────────────────────────────────────────────
-// When source dir changes, reset both tabs' results / 源目录变更时重置两个 Tab 的结果
-watch(sourceDir, (newVal) => {
-  if (newVal) {
-    if (activeTab.value === 'convert') handleConvertScan()
-    else handleScanExtractFiles()
-  } else {
-    datasets.value = []
-    scannedFiles.value = []
-    extractFiles.value = []
-  }
-})
-
-// Auto-scan on tab switch if source is set but results empty / 切换 Tab 时若已有源目录则自动扫描
-watch(activeTab, (tab) => {
-  if (!sourceDir.value) return
-  if (tab === 'convert' && datasets.value.length === 0 && scannedFiles.value.length === 0) {
-    handleConvertScan()
-  } else if (tab === 'extract' && extractFiles.value.length === 0) {
-    handleScanExtractFiles()
-  }
+// Source dir change only CLEARS previous results — scanning happens
+// exclusively via the explicit scan buttons (user request 2026-09-29).
+// 源目录变更只清空旧结果——扫描仅由用户点击扫描按钮触发（2026-09-29 用户指令）。
+watch(sourceDir, () => {
+  datasets.value = []
+  scannedFiles.value = []
+  fileListPage.value = 1
+  scanInfo.value = null
+  scanTargetH5.value = 0
+  extractFiles.value = []
+  extractPage.value = 1
 })
 </script>
 

@@ -65,27 +65,6 @@
         </label>
         <p class="settings-note">{{ t('settings.performance.restartNote') }}</p>
       </div>
-
-      <!-- AI (Jev test build only) / AI（仅 Jev 测试构建） -->
-      <div v-if="isJevBuild()" class="settings-section">
-        <h2>{{ t('settings.ai.title') }}</h2>
-        <p class="settings-hint">{{ t('settings.ai.hint') }}</p>
-
-        <label class="settings-field">
-          <span class="settings-label">{{ t('settings.ai.jevKey') }}</span>
-          <input
-            v-model="aiSettings.jevApiKey"
-            type="password"
-            class="settings-input"
-            autocomplete="off"
-            placeholder="apikey_…"
-            data-testid="settings-jev-key"
-          />
-          <small class="settings-hint">{{ t('settings.ai.jevKeyHint') }}</small>
-        </label>
-
-        <p v-if="noKeys" class="settings-note">{{ t('settings.ai.noKeyNote') }}</p>
-      </div>
     </section>
   </div>
 </template>
@@ -93,14 +72,13 @@
 <script setup lang="ts">
 /**
  * SettingsView.vue — 应用设置页
- * Language / performance (default method, batch parallelism, OpenMP) / AI keys
- * (Jev test build only). All changes persist immediately via useSettings().
- * 语言 / 性能（默认算法、批处理并行、OpenMP）/ AI 密钥（仅 Jev 测试构建）。
- * 所有修改经 useSettings() 即时持久化。
+ * Language / performance (default method, batch parallelism, OpenMP).
+ * All changes persist immediately via useSettings().
+ * 语言 / 性能（默认算法、批处理并行、OpenMP）。所有修改经 useSettings() 即时持久化。
  */
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useSettings, isJevBuild } from '@/lib/settings'
+import { useSettings } from '@/lib/settings'
 import { useToast } from '@/lib/toast'
 
 const { t, locale } = useI18n()
@@ -124,15 +102,6 @@ const ompProxy = computed<string>({
     settings.performance.ompThreads = value === 'auto' ? 'auto' : Number(value)
   }
 })
-
-const aiSettings = computed({
-  get: () => settings.ai ?? { jevApiKey: '' },
-  set: (value) => {
-    settings.ai = value
-  }
-})
-
-const noKeys = computed(() => !aiSettings.value.jevApiKey)
 </script>
 
 <style scoped>

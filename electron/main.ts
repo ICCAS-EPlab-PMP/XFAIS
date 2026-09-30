@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { execSync, spawn, type SpawnOptions } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -131,55 +131,6 @@ const registerAppMeta = (): void => {
       pythonLaunchOverrides.ompThreads =
         typeof omp === 'number' && Number.isFinite(omp) && omp > 0 ? Math.floor(omp) : undefined
       return { ok: true, ompThreads: pythonLaunchOverrides.ompThreads ?? null }
-    }
-  )
-  // CORS-free HTTPS JSON POST proxy. The sandboxed renderer (webSecurity on)
-  // cannot POST cross-origin when the remote API sends no CORS headers —
-  // api.typesafe.ai (Jev) does not, so a renderer fetch() always fails and the
-  // assistant silently degraded to rules. The main process is not subject to
-  // CORS. Strict host allowlist; nothing in the MAIN build ever invokes this —
-  // only the AI-assistant preview's AssistantBar does (same inert-listener
-  // pattern as xfaos:ai-apply-template).
-  // 无 CORS 限制的 JSON POST 代理：api.typesafe.ai 不返回 CORS 头，渲染层
-  // fetch 必被拦，助手只能静默降级。严格主机白名单；主线构建从不调用
-  // （仅 AI 预览版的 AssistantBar 使用，与 xfaos:ai-apply-template 惰性
-  // 监听器同一模式）。
-  ipcMain.handle(
-    'net:postJson',
-    async (
-      _event: Electron.IpcMainInvokeEvent,
-      payload: { url?: unknown; headers?: unknown; body?: unknown }
-    ): Promise<{ ok: boolean; status: number; data: unknown }> => {
-      const url = typeof payload?.url === 'string' ? payload.url : ''
-      if (!url.startsWith('https://api.typesafe.ai/')) {
-        return { ok: false, status: 0, data: { error: 'URL not in proxy allowlist.' } }
-      }
-      const headers =
-        payload.headers && typeof payload.headers === 'object' && !Array.isArray(payload.headers)
-          ? (payload.headers as Record<string, string>)
-          : {}
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 15_000)
-      try {
-        const response = await net.fetch(url, {
-          method: 'POST',
-          signal: controller.signal,
-          headers: { 'Content-Type': 'application/json', ...headers },
-          body: JSON.stringify(payload.body ?? {}),
-        })
-        const text = await response.text()
-        let data: unknown = text
-        try {
-          data = JSON.parse(text)
-        } catch {
-          /* keep raw text */
-        }
-        return { ok: response.ok, status: response.status, data }
-      } catch (err) {
-        return { ok: false, status: 0, data: { error: err instanceof Error ? err.message : String(err) } }
-      } finally {
-        clearTimeout(timer)
-      }
     }
   )
 }
@@ -932,8 +883,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   orientation_analysis: '/api/orientation_analysis',
   lamellar_analysis: '/api/lamellar_analysis',
   poni_importer: '/api/poni_importer',
-  calibration: '/api/calibration',
-  ai_context: '/api/ai_context'
+  calibration: '/api/calibration'
 }
 
 

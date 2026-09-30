@@ -411,6 +411,7 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         master_suffix: asString(params.refSuffix) ?? asString(params.master_suffix) ?? '_master',
         image_format: asString(params.imageFormat) ?? asString(params.image_format) ?? 'tiff',
         table_format: asString(params.tableFormat) ?? asString(params.table_format) ?? 'csv',
+        naming_mode: asString(params.namingMode) ?? asString(params.naming_mode) ?? 'parent_folder',
         dataset_config: datasetConfig,
         datasets: datasetsRaw,
       }
@@ -792,6 +793,13 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
       return {
         kind: 'result',
         data: {
+          // Backend signals a failed scan with status:'error' inside an OK
+          // task result; pass it through so the view can show the real reason
+          // instead of a misleading "0 files" summary.
+          // 后端用结果内的 status:'error' 表示扫描失败；透传给视图显示真实
+          // 原因，而不是误导性的「共 0 个」摘要。
+          status: asString(result.status) ?? 'ok',
+          message: asString(result.message),
           datasets: datasets.map((entry: unknown) => {
             const item = asRecord(entry)
             return {
@@ -804,6 +812,7 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
           }),
           totalH5: typeof result.totalH5 === 'number' ? result.totalH5 : 0,
           targetH5: typeof result.targetH5 === 'number' ? result.targetH5 : 0,
+          suffixMatched: typeof result.suffixMatched === 'boolean' ? result.suffixMatched : true,
           refFile: asString(result.refFile) ?? '',
         }
       }
