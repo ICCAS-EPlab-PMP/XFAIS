@@ -175,6 +175,12 @@ def _cached_disk_probe(
     缓存 EDF/TIFF 文件的轻量帧数/形状元数据。"""
     with fabio.open(normalized_path) as img:
         raw = img.data
+        # fabio opens some truncated/corrupt TIFFs but decodes no array —
+        # fail with a clear message instead of an AttributeError downstream.
+        # fabio 能打开部分截断/损坏的 TIFF 却解不出数组——直接给出明确报错，
+        # 避免下游出现莫名的 AttributeError。
+        if raw is None:
+            raise IOError(f"fabio decoded no image data from {normalized_path}")
         n_frames = max(int(getattr(img, "nframes", 1) or 1), 1)
         if raw.ndim > 2:
             raw = raw[0]
@@ -199,6 +205,8 @@ def _cached_disk_frame(
             raw = img.getframe(idx).data.copy()
         else:
             raw = img.data
+        if raw is None:
+            raise IOError(f"fabio decoded no image data from {normalized_path}")
         if raw.ndim > 2:
             raw = raw[0]
     return raw.astype(np.float32)

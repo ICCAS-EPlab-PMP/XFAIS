@@ -503,7 +503,13 @@ const jsonPreview = computed(() => {
  * 从当前 UI 状态构建导出就绪的模板
  */
 function buildExportTemplate(): Record<string, unknown> {
-  return {
+  // Deep-plain copy: `template` is reactive(), and Electron IPC structured
+  // clone rejects Proxy objects — e.g. h5.datasets filled by a previous scan
+  // would crash submitTask with "An object could not be cloned".
+  // 深拷贝成普通对象：template 是 reactive()，Electron IPC 结构化克隆拒绝
+  // Proxy 对象——例如上次扫描填入的 h5.datasets 会让 submitTask 报
+  // "An object could not be cloned"。
+  return JSON.parse(JSON.stringify({
     colormap: template.colormap,
     use_log: template.use_log,
     clim_mode: template.clim_mode,
@@ -515,7 +521,7 @@ function buildExportTemplate(): Record<string, unknown> {
     h5: { ...template.h5 },
     tiff: { ...template.tiff },
     edf: { ...template.edf },
-  }
+  }))
 }
 
 /**

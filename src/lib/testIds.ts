@@ -199,6 +199,9 @@ export const testIds = {
   h5convertDatasetTable: 'h5convert-dataset-table',
   h5convertDatasetCheck: 'h5convert-dataset-check',
   h5convertFormat: 'h5convert-format',
+  h5convertNamingMode: 'h5convert-naming-mode',
+  h5convertFlatOutput: 'h5convert-flat-output',
+  h5convertEstimate: 'h5convert-estimate',
   h5convertStartBtn: 'h5convert-start-btn',
 
   // H5 Extract page / H5 文件提取页

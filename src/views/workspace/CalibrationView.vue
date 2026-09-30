@@ -851,19 +851,26 @@ async function handleProbed(imagePath: string): Promise<void> {
   if (detectors.value.length === 0) void loadDetectors()
   // Auto-load on image pick: show the picture from the moment of selection —
   // no need to click 载入并开始 first (that button only creates the session).
+  // Re-picking the SAME path must also (re)load: after a failed load
+  // displayFilePath already points at it, and skipping the retry left the
+  // canvas blank forever with no way to recover.
   // 选图即显示：无需先点“载入并开始”（该按钮仅创建标定会话）。
-  if (displayFilePath.value !== path) {
-    imageFileName.value = path.split(/[/\\]/).pop() ?? path
-    // Fresh file → reset display caches so its auto-contrast seeds the clim bar.
-    // 新文件 → 重置显示缓存，使自动对比度作为 clim 初值。
-    climInitialized.value = false
-    autoContrast.value = null
-    origImageSize.value = null
-    void loadDisplayImage(path).catch(() => {
-      // Render failures surface via the onTaskError toast; the wizard continues.
-      // 渲染失败已由 onTaskError 提示；向导仍可继续。
-    })
-  }
+  // 重复选择同一路径也必须（重新）加载：加载失败后 displayFilePath 已指向
+  // 该文件，跳过重试会让画布永远空白且无法恢复。
+  imageFileName.value = path.split(/[/\\]/).pop() ?? path
+  // Fresh pick → reset display caches so its auto-contrast seeds the clim bar.
+  // 重新选图 → 重置显示缓存，使自动对比度作为 clim 初值。
+  climInitialized.value = false
+  autoContrast.value = null
+  origImageSize.value = null
+  void loadDisplayImage(path).catch((err) => {
+    // Task-level failures surface via the onTaskError toast; this catch covers
+    // submitTask itself rejecting (e.g. the Python service is not running) —
+    // previously swallowed, leaving a blank canvas with no feedback.
+    // 任务级失败由 onTaskError 提示；此处兜底 submitTask 本身被拒（如 Python
+    // 服务未运行）——此前被静默吞掉，画布空白且无任何提示。
+    toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
+  })
   probing.value = true
   try {
     const data = await submitAndWait('calibration', { action: 'probe_image', filePath: path })
@@ -1044,6 +1051,17 @@ function cleanupDisplayListeners(): void {
 async function loadDisplayImage(filePath: string): Promise<void> {
   cleanupDisplayListeners()
 
+  // A NEW file replaces whatever is on screen: once its load is accepted, drop
+  // the previous picture — and if the load FAILS, drop it as well, so the
+  // canvas never keeps showing the old file under the new file's name.
+  // 换新文件即替换屏幕上的旧图：加载被接受后先清旧图；加载失败同样清掉，
+  // 画布绝不能顶着新文件名继续显示旧文件。
+  const isNewFile = displayFilePath.value !== filePath
+  const dropDisplayedPicture = (): void => {
+    if (imageSrc.value?.startsWith('blob:')) URL.revokeObjectURL(imageSrc.value)
+    imageSrc.value = null
+  }
+
   const { taskId } = await transport.submitTask('mask_maker', {
     action: 'load_preview',
     filePath,
@@ -1051,6 +1069,7 @@ async function loadDisplayImage(filePath: string): Promise<void> {
     settings: buildRenderSettings(),
   })
   displayFilePath.value = filePath
+  if (isNewFile) dropDisplayedPicture()
 
   // Receive PNG image as binary data (desktop binary WebSocket frame).
   // 通过二进制数据通道接收 PNG 图像（桌面端二进制 WebSocket 帧）。
@@ -1121,6 +1140,7 @@ async function loadDisplayImage(filePath: string): Promise<void> {
   })
 
   cleanupDisplayError = transport.onTaskError(taskId, (p) => {
+    if (isNewFile) dropDisplayedPicture()
     toast.push({ title: t('calibration.title'), message: p.error, tone: 'error' })
   })
 }
@@ -1143,7 +1163,9 @@ function onRenderChange(field: RenderField, value: number | boolean | string): v
     climMax.value = useLog.value ? autoContrast.value.logMax : autoContrast.value.autoMax
   }
   if (displayFilePath.value) {
-    void loadDisplayImage(displayFilePath.value)
+    void loadDisplayImage(displayFilePath.value).catch((err) => {
+      toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
+    })
   }
 }
 
@@ -1158,7 +1180,11 @@ function onClimInput(bound: 'min' | 'max', e: Event): void {
 
 /** Apply button: re-render the current image with the pending settings. */
 function reloadDisplay(): void {
-  if (displayFilePath.value) void loadDisplayImage(displayFilePath.value)
+  if (displayFilePath.value) {
+    void loadDisplayImage(displayFilePath.value).catch((err) => {
+      toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
+    })
+  }
 }
 
 // No existing i18n key for an "Apply" action — bilingual inline for now.
@@ -1809,7 +1835,11 @@ async function handleExportPoni(savePath: string): Promise<void> {
   try {
     const data = await submitAndWait('calibration', sessionPayload('export_poni', { savePath }))
     exportResult.value = {
-      path: stringOrNull(data.path) ?? stringOrNull(data.saved_path) ?? savePath,
+      // savePath first: the backend appends a missing .poni extension, so the
+      // echoed path is where the file ACTUALLY landed, not the raw input.
+      // savePath 优先：后端会补全缺失的 .poni 后缀，回显路径是文件真实落盘
+      // 位置，而非原始输入。
+      path: stringOrNull(data.savePath) ?? stringOrNull(data.path) ?? stringOrNull(data.saved_path) ?? savePath,
       citation: normalizeCitation(data.citation),
     }
     toast.push({
@@ -1826,15 +1856,12 @@ async function handleExportPoni(savePath: string): Promise<void> {
 
 /**
  * 去积分 (step 4, both the card button and the export-dialog footer):
- * auto-save the refined .poni into the OS temp dir (export_poni autoSave —
- * the backend picks a unique temp path and returns it), then route to
- * /workspace/integrate-1d?poni=<encoded path>; Integrate1dView imports it
- * into geometryParams.poniPath on mount. Falls back to a plain navigation
- * (no query) when there is nothing refined or the auto-save fails.
- * 去积分（第 4 步）：先把精修 .poni 自动存入系统临时目录（export_poni 的
- * autoSave 由后端生成唯一临时路径并返回），再跳转
- * /workspace/integrate-1d?poni=<编码路径>；Integrate1dView 挂载时导入
- * geometryParams.poniPath。无精修结果或自动保存失败时退回普通跳转。
+ * route to /workspace/integrate-1d?poni=<encoded path> with a freshly
+ * exported .poni. When the user already exported under their own name, that
+ * SAME path is re-exported (backend truncates, so it holds the current
+ * geometry) — the produced poni keeps the user's naming. Only a never-named
+ * session falls back to export_poni autoSave (unique temp file).
+ * 无精修结果或自动保存失败时退回普通跳转。
  */
 async function goIntegrate(): Promise<void> {
   if (!sessionActive.value || geometry.value == null || exporting.value) {
@@ -1843,7 +1870,14 @@ async function goIntegrate(): Promise<void> {
   }
   exporting.value = true
   try {
-    const data = await submitAndWait('calibration', sessionPayload('export_poni', { autoSave: true }))
+    const namedPath = stringOrNull(exportResult.value?.path)
+    const data = await submitAndWait(
+      'calibration',
+      sessionPayload(
+        'export_poni',
+        namedPath ? { savePath: namedPath } : { autoSave: true },
+      ),
+    )
     const poniPath = stringOrNull(data.savePath) ?? stringOrNull(data.path)
     void router.push(poniPath
       ? `/workspace/integrate-1d?poni=${encodeURIComponent(poniPath)}`
