@@ -1357,6 +1357,11 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  /* Grid/flex items default to min-width:auto — without 0 a long PONI path
+     stretches this column and text-overflow:ellipsis downstream never kicks
+     in. / grid/flex 子项默认 min-width:auto——不设 0 时长 PONI 路径会把该列
+     撑宽，下游的 text-overflow:ellipsis 永不生效。 */
+  min-width: 0;
 }
 
 /* Main area / 主区域 */

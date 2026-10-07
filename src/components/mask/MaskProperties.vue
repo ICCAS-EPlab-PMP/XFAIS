@@ -83,22 +83,20 @@
         <template v-if="climMode === 'manual'">
           <label class="field-label">
             {{ t('maskMaker.display.contrastMin') }}
-            <input
-              :value="climMin"
-              type="number"
+            <NumberField
+              :model-value="climMin"
               class="field-input"
               step="any"
-              @input="$emit('update:climMin', Number(($event.target as HTMLInputElement).value))"
+              @update:model-value="$emit('update:climMin', $event ?? 0)"
             />
           </label>
           <label class="field-label">
             {{ t('maskMaker.display.contrastMax') }}
-            <input
-              :value="climMax"
-              type="number"
+            <NumberField
+              :model-value="climMax"
               class="field-input"
               step="any"
-              @input="$emit('update:climMax', Number(($event.target as HTMLInputElement).value))"
+              @update:model-value="$emit('update:climMax', $event ?? 0)"
             />
           </label>
         </template>
@@ -111,22 +109,22 @@
       <div class="threshold-form">
         <label class="field-label">
           {{ t('maskMaker.properties.thresholdMin') }}
-          <input
-            v-model.number="localThreshold.min"
-            type="number"
+          <NumberField
+            :model-value="localThreshold.min"
             class="field-input"
             :disabled="!imageLoaded"
             step="any"
+            @update:model-value="(v) => { if (v != null) localThreshold.min = v }"
           />
         </label>
         <label class="field-label">
           {{ t('maskMaker.properties.thresholdMax') }}
-          <input
-            v-model.number="localThreshold.max"
-            type="number"
+          <NumberField
+            :model-value="localThreshold.max"
             class="field-input"
             :disabled="!imageLoaded"
             step="any"
+            @update:model-value="(v) => { if (v != null) localThreshold.max = v }"
           />
         </label>
         <div class="threshold-actions">
@@ -172,6 +170,7 @@
 import { reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
+import NumberField from '@/components/common/NumberField.vue'
 import type { MaskImageInfo, MaskStats, ThresholdMode } from '@/types/mask'
 
 const { t } = useI18n()

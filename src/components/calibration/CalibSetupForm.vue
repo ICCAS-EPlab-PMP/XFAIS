@@ -1,5 +1,28 @@
 <template>
   <div class="calib-setup-form">
+    <!-- Mode selector: 标样校正 (calibrant, default) vs 内标定标 (internal
+         standard). The two modes are MUTUALLY EXCLUSIVE — the parent resets
+         the whole wizard on a switch, so the user must 载入并开始 again.
+         模式选择：标样校正（默认）vs 内标定标。两种模式互斥——切换时父组件
+         重置整个向导，需重新「载入并开始」。 -->
+    <div class="csf-field">
+      <label class="csf-label">{{ t('calibration.mode.label') }}</label>
+      <div class="csf-unit-toggle csf-mode-toggle" role="group" :aria-label="t('calibration.mode.label')">
+        <button
+          type="button"
+          :class="['csf-unit-btn', { 'csf-unit-btn--active': model.mode === 'calibrant' }]"
+          data-ai-id="calibration:mode-calibrant"
+          @click="patch({ mode: 'calibrant' })"
+        >{{ t('calibration.mode.calibrant') }}</button>
+        <button
+          type="button"
+          :class="['csf-unit-btn', { 'csf-unit-btn--active': model.mode === 'internal' }]"
+          data-ai-id="calibration:mode-internal"
+          @click="patch({ mode: 'internal' })"
+        >{{ t('calibration.mode.internal') }}</button>
+      </div>
+    </div>
+
     <!-- Image file / 标定图像 -->
     <div class="csf-field">
       <label class="csf-label">{{ t('calibration.setup.imageFile') }}</label>
@@ -26,40 +49,86 @@
       <p v-if="!transport.isDesktop()" class="csf-hint">{{ t('calibration.setup.webUploadHint') }}</p>
     </div>
 
-    <!-- Calibrant: registry name or .D file / 校准物：名称或 .D 文件 -->
-    <div class="csf-field">
-      <label class="csf-label">{{ t('calibration.setup.calibrant') }}</label>
-      <select
-        :value="model.calibrant"
-        class="csf-select"
-        :disabled="!!model.calibrantPath"
-        @change="patch({ calibrant: ($event.target as HTMLSelectElement).value })"
-      >
-        <option value="">—</option>
-        <option v-for="name in calibrants" :key="name" :value="name">{{ name }}</option>
-      </select>
-      <!-- Registry list unavailable (fetch error) → hint via the built-in-calibrant
-           label; the .D file below remains fully usable.
-           内置标样列表不可用（拉取失败）→ 以内置标样标签提示；下方 .D 文件仍可用。 -->
-      <p v-if="calibrants.length === 0" class="csf-hint">{{ t('calibration.setup.calibrantName') }}: —</p>
-
-      <label class="csf-label csf-label--sub">{{ t('calibration.setup.calibrantName') }}</label>
-      <div class="csf-path-row">
+    <!-- Calibrant source: ONE selector, mutually exclusive built-in vs local .D —
+         same segmented-toggle pattern as the mode switch above. / 标样来源：
+         内置标样与本地 .D 文件互斥的分段开关，与上方模式开关同款。
+         GREYED OUT in internal-standard mode: that mode needs no calibrant at
+         all (the geometry comes from ring_standard). / 内标模式下整块灰度
+         禁用：该模式不需要标样（几何由 ring_standard 算出）。 -->
+    <div class="csf-field" :class="{ 'csf-field--disabled': isInternal }">
+      <label class="csf-label">{{ t('calibration.setup.calibrantSource') }}</label>
+      <div class="csf-unit-toggle csf-mode-toggle" role="group" :aria-label="t('calibration.setup.calibrantSource')">
         <button
           type="button"
-          class="csf-btn csf-btn--secondary"
+          :class="['csf-unit-btn', { 'csf-unit-btn--active': calibrantSource === 'builtin' }]"
+          :disabled="isInternal"
+          @click="setCalibrantSource('builtin')"
+        >{{ t('calibration.setup.calibrantBuiltin') }}</button>
+        <button
+          type="button"
+          :class="['csf-unit-btn', { 'csf-unit-btn--active': calibrantSource === 'file' }]"
+          :disabled="isInternal"
+          @click="setCalibrantSource('file')"
+        >{{ t('calibration.setup.calibrantLocalFile') }}</button>
+      </div>
+
+      <!-- Built-in: exactly ONE control. Registry list loaded → <select>; list
+           unavailable → free text + datalist fallback (keeps the empty-list bug
+           fix). / 内置标样：仅一个控件。列表已拉到用下拉；拉不到退化为自由文本
+           + datalist（保留空列表场景的修复）。 -->
+      <template v-if="calibrantSource === 'builtin'">
+        <select
+          v-if="calibrants.length > 0"
+          :value="model.calibrant"
+          class="csf-select"
+          :disabled="isInternal"
+          @change="onBuiltinSelect"
+        >
+          <option value="">—</option>
+          <option v-for="name in calibrants" :key="name" :value="name">{{ name }}</option>
+        </select>
+        <template v-else>
+          <input
+            :value="model.calibrant"
+            type="text"
+            class="csf-input csf-input--mono"
+            list="calib-calibrant-names"
+            :placeholder="isZh ? '内置标样名，如 LaB6' : 'Built-in name, e.g. LaB6'"
+            :disabled="isInternal"
+            @input="onCalibrantTextInput"
+          />
+          <datalist id="calib-calibrant-names">
+            <option v-for="name in calibrants" :key="name" :value="name" />
+          </datalist>
+        </template>
+      </template>
+
+      <!-- Local .D: a single browse button — NO path text input. The chosen file
+           name is echoed as a hint; a small link routes to the calibrant
+           generator. / 本地 .D：仅一个选文件按钮——无路径输入框。已选文件名以
+           小字回显；小字链接跳转校正标样生成器。 -->
+      <template v-else>
+        <button
+          type="button"
+          class="csf-btn csf-btn--secondary csf-btn--block"
+          :disabled="isInternal"
           @click="chooseCalibrantFile"
         >
-          {{ transport.isDesktop() ? '.D' : t('calibration.setup.uploadCalibrant') }}
+          {{ transport.isDesktop() ? t('calibration.setup.selectCalibrantFile') : t('calibration.setup.uploadCalibrant') }}
         </button>
-        <input
-          v-model="model.calibrantPath"
-          type="text"
-          class="csf-input csf-input--mono"
-          placeholder="AgBh.D / LaB6.D"
-        />
-      </div>
-      <label class="csf-label csf-label--sub">{{ t('calibration.setup.calibrantFile') }}</label>
+        <p v-if="model.calibrantPath.trim()" class="csf-hint">
+          {{ t('calibration.setup.selectedFile') }}: {{ calibrantFileName }}
+        </p>
+        <p class="csf-hint csf-hint--link">
+          {{ t('calibration.setup.noCalibrantFileHint') }}
+          <a
+            role="link"
+            tabindex="0"
+            @click="goGenerator"
+            @keydown.enter.prevent="goGenerator"
+          >{{ t('calibration.setup.goGenerator') }} →</a>
+        </p>
+      </template>
     </div>
 
     <!-- Detector dropdown (auto-recognized from the image) / 探测器下拉（从图像自动识别） -->
@@ -81,13 +150,12 @@
     <!-- Pixel size in µm (only when no detector name) / 像素尺寸 µm（无探测器时显示） -->
     <div v-show="!hasDetector" class="csf-field">
       <label class="csf-label">{{ t('calibration.setup.pixelSize') }} (µm)</label>
-      <input
-        :value="model.pixelSizeUm"
-        type="number"
+      <NumberField
+        :model-value="model.pixelSizeUm"
         class="csf-input"
         step="any"
         min="1"
-        @input="onNumberInput('pixelSizeUm', $event)"
+        @update:model-value="onNumberInput('pixelSizeUm', $event)"
       />
     </div>
 
@@ -117,24 +185,22 @@
     <div class="csf-field csf-field--pair">
       <label class="csf-field-pair-item">
         <span class="csf-label">{{ maskMinLabel }}</span>
-        <input
-          :value="model.maskMin == null ? '' : model.maskMin"
-          type="number"
+        <NumberField
+          :model-value="model.maskMin"
           class="csf-input"
           step="any"
           :placeholder="emptyPlaceholder"
-          @input="onNullableNumberInput('maskMin', $event)"
+          @update:model-value="onNullableNumberInput('maskMin', $event)"
         />
       </label>
       <label class="csf-field-pair-item">
         <span class="csf-label">{{ maskMaxLabel }}</span>
-        <input
-          :value="model.maskMax == null ? '' : model.maskMax"
-          type="number"
+        <NumberField
+          :model-value="model.maskMax"
           class="csf-input"
           step="any"
           :placeholder="emptyPlaceholder"
-          @input="onNullableNumberInput('maskMax', $event)"
+          @update:model-value="onNullableNumberInput('maskMax', $event)"
         />
       </label>
     </div>
@@ -160,27 +226,32 @@
           >keV</button>
         </div>
       </div>
-      <input
-        :value="wlDisplay"
-        type="number"
+      <NumberField
+        :model-value="wlNumber"
         class="csf-input"
         step="any"
         min="0"
-        @input="onWavelengthInput"
+        @update:model-value="onWavelengthInput"
       />
       <p class="csf-hint">{{ t('calibration.setup.wavelengthHint') }}</p>
     </div>
 
-    <!-- Initial distance guess / 初始距离猜测 -->
-    <div class="csf-field">
+    <!-- Initial distance guess / 初始距离猜测
+         Hidden in internal-standard mode: that mode derives the distance (SD)
+         from the standard ring in step 2, so the guess is not needed. The
+         value is still forwarded with the payload (the backend setup contract
+         requires distGuessMm > 0) — it just stays at whatever the form holds.
+         内标模式下隐藏：该模式的样品-探测器距离由第 2 步的标准环算出，无需
+         猜测值。数值仍随载荷下发（后端 setup 契约要求 distGuessMm > 0），
+         只是不再作为表单项出现。 -->
+    <div v-if="!isInternal" class="csf-field">
       <label class="csf-label">{{ t('calibration.setup.distGuess') }} (mm)</label>
-      <input
-        :value="model.distGuessMm"
-        type="number"
+      <NumberField
+        :model-value="model.distGuessMm"
         class="csf-input"
         step="any"
         min="0"
-        @input="onNumberInput('distGuessMm', $event)"
+        @update:model-value="onNumberInput('distGuessMm', $event)"
       />
       <p class="csf-hint">{{ t('calibration.setup.distHint') }}</p>
     </div>
@@ -218,11 +289,21 @@
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { useTransport } from '@/lib/transport'
 import { useToast } from '@/lib/toast'
+import NumberField from '@/components/common/NumberField.vue'
+
+/** Wizard mode: 'calibrant' = classic 标样校正; 'internal' = 内标定标 (one
+ *  known ring computes the geometry, no calibrant / no refinement).
+ *  向导模式：calibrant = 标样校正；internal = 内标定标（单个已知环直接算
+ *  几何，无标样、无精修）。 */
+export type CalibMode = 'calibrant' | 'internal'
 
 /** Editable setup model — owned by the parent (v-model). */
 export interface CalibSetupModel {
+  /** Mutual-exclusion mode switch (default 'calibrant'). / 互斥模式开关。 */
+  mode: CalibMode
   /** Calibrant image path on the backend host. */
   imagePath: string
   /** Calibrant registry name (e.g. 'AgBh'), empty when unset. */
@@ -243,6 +324,17 @@ export interface CalibSetupModel {
   maskMin: number | null
   /** Optional mask intensity upper bound (data > max is masked); null = off. */
   maskMax: number | null
+  /**
+   * Beam-centre seed in image pixels (x = column) — filled from a .poni
+   * (seed_from_poni) and forwarded with the setup payload as the backend's
+   * first-guess centre (poni1/poni2), ahead of guess_poni()'s ellipse fit.
+   * null = unset. / 束流中心种子（图像像素，x = 列）——由 .poni 初始化
+   * （seed_from_poni）填入，随 setup 载荷下发为后端首猜中心（poni1/poni2），
+   * 优先于 guess_poni() 的椭圆估计。null = 未设置。
+   */
+  centerXPx: number | null
+  /** Beam-centre seed in image pixels (y = row). / 束流中心种子（y = 行）。 */
+  centerYPx: number | null
 }
 
 /** Payload emitted with 'submit' — forwarded to the backend 'setup' action. */
@@ -259,6 +351,14 @@ export interface CalibSetupPayload {
   /** Mask intensity bounds (null = that bound is off). / 强度上下限（null = 关）。 */
   maskMin: number | null
   maskMax: number | null
+  /**
+   * Beam-centre seed in px (null = not supplied) — the backend stores it as
+   * the session's first-guess centre (poni1/poni2) for integration and
+   * refinement. / 束流中心种子（像素，null = 未提供）——后端存为会话首猜
+   * 中心（poni1/poni2），供积分与精修使用。
+   */
+  centerX: number | null
+  centerY: number | null
 }
 
 /**
@@ -304,6 +404,7 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 const transport = useTransport()
 const toast = useToast()
+const router = useRouter()
 
 const isDesktop = transport.isDesktop()
 
@@ -318,10 +419,8 @@ function patch(fields: Partial<CalibSetupModel>): void {
   emit('update:modelValue', { ...props.modelValue, ...fields })
 }
 
-function onNumberInput(field: 'pixelSizeUm' | 'distGuessMm', e: Event): void {
-  const raw = (e.target as HTMLInputElement).value
-  const num = parseFloat(raw)
-  if (Number.isFinite(num)) patch({ [field]: num } as Partial<CalibSetupModel>)
+function onNumberInput(field: 'pixelSizeUm' | 'distGuessMm', value: number | null): void {
+  if (value != null && Number.isFinite(value)) patch({ [field]: value } as Partial<CalibSetupModel>)
 }
 
 // ── Wavelength ↔ energy (REQ 波长和能量可以切换) ────────────────────────────
@@ -335,33 +434,80 @@ const KEV_ANGSTROM = 12.398419843320026
 
 const wlUnit = ref<'A' | 'keV'>('A')
 
-const wlDisplay = computed<string>(() => {
+const wlNumber = computed<number | null>(() => {
   const wl = props.modelValue.wavelengthA
-  if (wlUnit.value === 'A') return String(wl)
-  if (!Number.isFinite(wl) || wl <= 0) return ''
-  return String(Number((KEV_ANGSTROM / wl).toPrecision(7)))
+  if (wlUnit.value === 'A') return wl
+  if (!Number.isFinite(wl) || wl <= 0) return null
+  return Number((KEV_ANGSTROM / wl).toPrecision(7))
 })
 
-function onWavelengthInput(e: Event): void {
-  const raw = (e.target as HTMLInputElement).value
-  const num = parseFloat(raw)
-  if (!Number.isFinite(num) || num <= 0) return
-  patch({ wavelengthA: wlUnit.value === 'A' ? num : KEV_ANGSTROM / num })
+function onWavelengthInput(value: number | null): void {
+  if (value == null || !Number.isFinite(value) || value <= 0) return
+  patch({ wavelengthA: wlUnit.value === 'A' ? value : KEV_ANGSTROM / value })
 }
 
-/** Nullable numeric input (mask bounds): empty string → null (bound off).
- *  可空数字输入（掩膜上下限）：空串 → null（该界限关闭）。 */
-function onNullableNumberInput(field: 'maskMin' | 'maskMax', e: Event): void {
-  const raw = (e.target as HTMLInputElement).value.trim()
-  if (!raw) {
-    patch({ [field]: null } as Partial<CalibSetupModel>)
-    return
-  }
-  const num = parseFloat(raw)
-  if (Number.isFinite(num)) patch({ [field]: num } as Partial<CalibSetupModel>)
+/** Nullable numeric input (mask bounds): empty field → null (bound off).
+ *  可空数字输入（掩膜上下限）：空输入 → null（该界限关闭）。 */
+function onNullableNumberInput(field: 'maskMin' | 'maskMax', value: number | null): void {
+  patch({ [field]: value } as Partial<CalibSetupModel>)
 }
 
 const hasDetector = computed(() => props.modelValue.detector.trim().length > 0)
+
+/** Internal-standard mode is active → the calibrant block is irrelevant
+ *  (greyed out) and must not gate submission.
+ *  内标模式激活 → 标样区无关（灰度禁用），且不参与提交校验。 */
+const isInternal = computed(() => props.modelValue.mode === 'internal')
+
+/** Calibrant source segment: 'builtin' (registry name) vs 'file' (.D) —
+ *  mutually exclusive like the wizard mode switch; switching clears the
+ *  other side so exactly one source can be active. / 标样来源分段：内置
+ *  名称 vs 本地 .D，与模式开关同款互斥；切换即清空另一侧，任一时刻只有
+ *  一个来源生效。 */
+const calibrantSource = ref<'builtin' | 'file'>('builtin')
+
+function setCalibrantSource(s: 'builtin' | 'file'): void {
+  if (calibrantSource.value === s) return
+  calibrantSource.value = s
+  // Mutual exclusion: entering a side clears the other side's value.
+  // 互斥：进入一侧即清空另一侧的值。
+  patch(s === 'builtin' ? { calibrantPath: '' } : { calibrant: '' })
+}
+
+function onBuiltinSelect(e: Event): void {
+  patch({ calibrant: (e.target as HTMLSelectElement).value, calibrantPath: '' })
+}
+
+/** Chosen .D file name for the hint (path may be long). / 回显用文件名。 */
+const calibrantFileName = computed(() =>
+  props.modelValue.calibrantPath.trim().split(/[/\\]/).pop() || props.modelValue.calibrantPath.trim(),
+)
+
+/** Cross-view link to the calibrant generator (makes a .D from a known
+ *  standard). / 跳转校正标样生成器（由已知标样生成 .D 文件）。 */
+function goGenerator(): void {
+  void router.push('/workspace/cell-calibrant-generator')
+}
+
+/** External calibrantPath patches (e.g. the parent seeding state) auto-switch
+ *  the segment to the file side; the reverse is unnecessary — clearing the
+ *  path should not silently jump back to built-in.
+ *  外部 patch 了 calibrantPath（如父组件回填）时自动切到本地文件分支；反向
+ *  不需要——清空路径不应悄悄跳回内置标样。 */
+watch(() => props.modelValue.calibrantPath, (p) => {
+  if (p.trim() && calibrantSource.value !== 'file') calibrantSource.value = 'file'
+})
+
+/** Free-text built-in calibrant name: the SAME model field the <select> reads,
+ *  so a typed registry name updates the select and a select change refills the
+ *  text — one source of truth. Non-registry text is kept verbatim (the backend
+ *  reports an unknown calibrant rather than the UI silently clamping it).
+ *  内置标样自由文本：写的是 <select> 读的同一模型字段，输入注册名即更新
+ *  select、select 变化即回填文本——单一数据源。非注册名的文本原样保留
+ *  （由后端报未知标样，而非界面静默改写）。 */
+function onCalibrantTextInput(e: Event): void {
+  patch({ calibrant: (e.target as HTMLInputElement).value.trim() })
+}
 
 // ── Detector dropdown + probe auto-recognition / 探测器下拉与自动识别 ─────────
 
@@ -435,9 +581,21 @@ function emitProbed(path?: string): void {
 const canSubmit = computed(() => {
   const m = props.modelValue
   if (!m.imagePath.trim()) return false
-  if (!m.calibrantPath.trim() && !m.calibrant) return false
+  // Internal-standard mode skips the calibrant requirement — the geometry is
+  // computed from one known ring instead. Otherwise exactly ONE source must
+  // be filled, per the selected segment. / 内标模式跳过标样必填；其余按所选
+  // 来源分段二选一必填。
+  if (!isInternal.value && calibrantSource.value === 'builtin' && !m.calibrant) return false
+  if (!isInternal.value && calibrantSource.value === 'file' && !m.calibrantPath.trim()) return false
   if (!hasDetector.value && !(m.pixelSizeUm > 0)) return false
-  return m.wavelengthA > 0 && m.distGuessMm > 0
+  if (!(m.wavelengthA > 0)) return false
+  // The initial distance guess is a CALIBRANT-mode input (hidden in internal
+  // mode, whose SD comes from ring_standard); the payload still carries the
+  // form's current value, so the backend contract is unchanged.
+  // 初始距离猜测是标样模式的输入（内标模式隐藏，其 SD 由 ring_standard
+  // 算出）；载荷仍携带表单当前值，后端契约不变。
+  if (!isInternal.value && !(m.distGuessMm > 0)) return false
+  return true
 })
 
 /** Report a failed pick/upload — cancel resolves null and never lands here.
@@ -481,7 +639,9 @@ async function chooseCalibrantFile(): Promise<void> {
       ],
     })
     const path = Array.isArray(result) ? result[0] : result
-    if (path) patch({ calibrantPath: path })
+    // Picking a file also clears the built-in name — mutual exclusion.
+    // 选定文件同时清空内置名——保证互斥。
+    if (path) patch({ calibrantPath: path, calibrant: '' })
   } catch (error) {
     reportPickFailure(t('calibration.setup.uploadCalibrant'), error)
   }
@@ -520,10 +680,16 @@ async function seedFromPoni(): Promise<void> {
 function submit(): void {
   if (!canSubmit.value) return
   const m = props.modelValue
+  // Internal mode ALWAYS sends no calibrant (whatever the greyed-out inputs
+  // still hold) — the backend opens an internal-standard session off that.
+  // Otherwise the payload follows the selected source segment: exactly one of
+  // name / .D file is sent. / 内标模式一律不下发标样（无论灰度输入框里残留
+  // 什么）——后端据此建立内标会话；其余按来源分段二选一下发。
+  const internal = m.mode === 'internal'
   emit('submit', {
     filePath: m.imagePath.trim(),
-    calibrant: m.calibrantPath.trim() ? null : (m.calibrant || null),
-    calibrantFile: m.calibrantPath.trim() || null,
+    calibrant: internal || calibrantSource.value === 'file' ? null : (m.calibrant || null),
+    calibrantFile: internal || calibrantSource.value === 'builtin' ? null : (m.calibrantPath.trim() || null),
     detector: m.detector.trim() || null,
     pixelSizeUm: hasDetector.value ? null : m.pixelSizeUm,
     wavelengthA: m.wavelengthA,
@@ -531,6 +697,10 @@ function submit(): void {
     maskPath: m.maskPath.trim() || null,
     maskMin: m.maskMin,
     maskMax: m.maskMax,
+    // Beam-centre seed (ring fit / manual) — both null unless set.
+    // 束流中心种子（圆环拟合/手填）——未设置时两者皆为 null。
+    centerX: m.centerXPx,
+    centerY: m.centerYPx,
   })
 }
 </script>
@@ -597,6 +767,31 @@ function submit(): void {
 .csf-unit-btn--active {
   background: var(--primary);
   color: var(--text-inverse);
+}
+
+/* Full-width two-way mode switch / 通栏双向模式开关 */
+.csf-mode-toggle {
+  width: 100%;
+}
+
+.csf-mode-toggle .csf-unit-btn {
+  flex: 1;
+  padding: 6px 10px;
+  font-family: inherit;
+  font-size: 0.78rem;
+}
+
+/* Internal-standard mode: the calibrant block is irrelevant — greyed out.
+   内标模式：标样区无关——整块灰度禁用。 */
+.csf-field--disabled {
+  opacity: 0.45;
+  filter: grayscale(0.4);
+}
+
+.csf-field--disabled .csf-btn,
+.csf-field--disabled .csf-input,
+.csf-field--disabled .csf-select {
+  cursor: not-allowed;
 }
 
 .csf-hint {
@@ -721,5 +916,17 @@ function submit(): void {
 
 .csf-btn--primary:hover:not(:disabled) {
   opacity: 0.9;
+}
+
+/* Full-width .D browse button / 通栏 .D 选文件按钮 */
+.csf-btn--block {
+  width: 100%;
+}
+
+/* Inline link inside a hint line / 小字提示行内的行内链接 */
+.csf-hint--link a {
+  color: var(--primary);
+  cursor: pointer;
+  text-decoration: underline;
 }
 </style>

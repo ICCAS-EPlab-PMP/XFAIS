@@ -81,16 +81,16 @@
                   @click="currentSampleIndex = idx"
                 >
                   <span class="bgs-file-list-name" :title="fp">{{ extractFileName(fp) }}</span>
-                  <input
+                  <NumberField
                     v-if="transmissionSource === 'per-file'"
-                    v-model.number="perFileTransmissions[fp]"
-                    type="number"
+                    :model-value="perFileTransmissions[fp]"
                     class="bgs-input bgs-input-tiny"
                     min="0"
                     max="100"
                     step="0.1"
                     placeholder="%"
                     @click.stop
+                    @update:model-value="(v) => { if (v != null) perFileTransmissions[fp] = v }"
                   />
                   <button
                     type="button"
@@ -170,13 +170,13 @@
           <!-- Manual transmission / 手动透射率 -->
           <div v-if="transmissionSource === 'manual'" class="bgs-field">
             <label class="bgs-label">{{ t('bgSubtract.transmissionValue') }} (%)</label>
-            <input
-              v-model.number="manualTransmission"
-              type="number"
+            <NumberField
+              :model-value="manualTransmission"
               class="bgs-input"
               min="0"
               max="100"
               step="0.1"
+              @update:model-value="(v) => { if (v != null) manualTransmission = v }"
             />
           </div>
 
@@ -404,11 +404,21 @@
             <template v-if="climMode === 'manual'">
               <div class="bgs-field">
                 <label class="bgs-label">Min</label>
-                <input v-model.number="climMin" type="number" class="bgs-input bgs-input-sm" step="any" />
+                <NumberField
+                  :model-value="climMin"
+                  class="bgs-input bgs-input-sm"
+                  step="any"
+                  @update:model-value="climMin = $event ?? 0"
+                />
               </div>
               <div class="bgs-field">
                 <label class="bgs-label">Max</label>
-                <input v-model.number="climMax" type="number" class="bgs-input bgs-input-sm" step="any" />
+                <NumberField
+                  :model-value="climMax"
+                  class="bgs-input bgs-input-sm"
+                  step="any"
+                  @update:model-value="climMax = $event ?? 0"
+                />
               </div>
             </template>
           </div>
@@ -503,6 +513,7 @@ import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import ResultSummary from '@/components/business/ResultSummary.vue'
 import type { ResultSummaryData } from '@/components/business/ResultSummary.vue'
 import ThumbnailStrip from '@/components/business/ThumbnailStrip.vue'

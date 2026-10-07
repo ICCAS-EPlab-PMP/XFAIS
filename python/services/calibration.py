@@ -30,6 +30,16 @@ Implements the full powder-diffraction calibration workflow on top of pyFAI:
                            写入系统临时目录并返回路径——去积分自动导入用）
   9. ``seed_from_poni``  — parse an existing .poni back into seed parameters
                            / 解析已有 .poni 作为初始参数
+ 10. ``ring_standard``   — internal-standard mode: one ring with a KNOWN value
+                           (q / d / 2θ / SD in several units) → circle fit →
+                           full geometry, no calibrant needed. The value is
+                           OPTIONAL: omitted → the distance defaults to the
+                           session's initial guess (internal mode: 200 mm) and
+                           only the beam centre is ring-calibrated.
+                           / 内标定标：已知数值的单个环（q / d / 2θ / SD 多种
+                           单位）→ 圆拟合 → 完整几何，无需标样。数值可选：
+                           省略时距离取会话初始猜测（内标模式默认 200 mm），
+                           仅束流中心经圆环标定。
 
 All heavy compute (massif, refine, contours) runs in the default
 ``ThreadPoolExecutor`` so the asyncio event loop is never blocked.
@@ -191,6 +201,21 @@ def _err(message_en: str, message_zh: str = "") -> Dict[str, str]:
     return {"status": "error", "message": msg}
 
 
+#: Bilingual refusal for calibrant-dependent actions (update_peaks / refine /
+#: ring_overlay) on an internal-standard session — those need a calibrant's
+#: theoretical ring list, which such a session deliberately does not have.
+#: 依赖标样的动作（update_peaks / refine / ring_overlay）在内标会话上的双语
+#: 拒绝理由——它们需要标样的理论环列表，而内标会话刻意不含标样。
+_INTERNAL_MODE_ERR_EN = "Not available in internal-standard mode; use calibrant mode"
+_INTERNAL_MODE_ERR_ZH = "内标定标模式下不可用，请使用标样模式"
+
+
+def _internal_mode_error() -> Dict[str, str]:
+    """Bilingual refusal payload for the internal-standard guard.
+    内标模式守卫的双语拒绝返回。"""
+    return _err(_INTERNAL_MODE_ERR_EN, _INTERNAL_MODE_ERR_ZH)
+
+
 def _check_cancel(cancel_event: Optional[asyncio.Event]) -> None:
     """Raise asyncio.CancelledError if the caller requested cancellation.
     若调用方请求取消则抛出 asyncio.CancelledError。"""
@@ -333,6 +358,35 @@ def _downsample_mask_grid(mask: np.ndarray, max_dim: int = 256) -> Dict[str, Any
     }
 
 
+def _fit_circle(ys: np.ndarray, xs: np.ndarray) -> tuple:
+    """Kåsa algebraic least-squares circle fit through pixel points.
+
+    Minimizes ``a·x²+y² + b·x + c·y + d`` via the linear normal equations
+    ``x²+y² = a·x + b·y + c``; center = (a/2, b/2). Extracted from
+    ``ring_pick``'s harvest so the internal-standard action and the ring
+    extraction share ONE fit implementation (behaviour unchanged).
+    像素点上的 Kåsa 代数最小二乘圆拟合：解线性正规方程 x²+y² = a·x+b·y+c，
+    圆心 = (a/2, b/2)。由 ring_pick 的收峰逻辑抽出，使内标定标动作与环选
+    共享同一份拟合实现（行为不变）。
+
+    Returns / 返回：(cy, cx, radius_px)
+    """
+    A = np.column_stack([xs, ys, np.ones_like(xs)])
+    bb = xs ** 2 + ys ** 2
+    sol, *_ = np.linalg.lstsq(A, bb, rcond=None)
+    cx, cy = sol[0] / 2.0, sol[1] / 2.0
+    radius = math.sqrt(max(sol[2] + cx * cx + cy * cy, 0.0))
+    return cy, cx, radius
+
+
+def _circle_rms_px(ys: np.ndarray, xs: np.ndarray, cy: float, cx: float,
+                   radius: float) -> float:
+    """Fit RMS in px: mean of |distance_i − radius|. / 拟合 RMS（px）：各点到
+    圆心的距离与半径之差的绝对值均值。"""
+    dist = np.hypot(ys - cy, xs - cx)
+    return float(np.mean(np.abs(dist - radius)))
+
+
 def _geometry_summary(gr: Any, pixel1: float, pixel2: float) -> Dict[str, Any]:
     """Export a refined geometry in UI-friendly units. / 以界面友好单位导出几何。"""
     return {
@@ -435,12 +489,22 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
     Payload keys / 载荷键：
       filePath       (str, required)  image path / 图像路径
       frame          (int, optional)  HDF5 frame index / HDF5 帧序号
-      calibrantName  (str, optional)  pyFAI factory name / pyFAI 标样名
+      calibrantName  (str, optional)  pyFAI factory name / pyFAI 标样名;
+                     omit BOTH calibrantName and calibrantFile to open an
+                     INTERNAL-STANDARD session (``ring_standard`` computes the
+                     geometry directly, no calibrant needed)
+                     / 同时省略 calibrantName 与 calibrantFile 即建立「内标
+                     定标」会话（由 ring_standard 直接算几何，无需标样）
       calibrantFile  (str, optional)  path to a .D d-spacing file / .D 文件路径
       detectorName   (str, optional)  pyFAI registry detector / pyFAI 注册探测器
       pixelSizeUm    (float, optional) fallback pixel size / 兜底像素尺寸（微米）
       wavelengthA    (float, required) wavelength in Å / 波长（埃）
       distGuessMm    (float, required) initial distance guess / 初始距离猜测（毫米）
+      centerX        (float, optional) beam-centre seed in pixels (column, x),
+                     from a ring fitted on the image / 束流中心种子（列 x，像素），
+                     由图上圆环拟合得到
+      centerY        (float, optional) beam-centre seed in pixels (row, y) /
+                     束流中心种子（行 y，像素）
       sessionId      (str, optional)  reuse an existing session / 复用已有会话
       maskPath       (str, optional)  mask file (.edf/.npy/.tif/.tiff/.npz)
                                        loaded via MaskBuilder / 掩膜文件
@@ -476,13 +540,33 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
     # Accept both spellings: the canonical `calibrantName` and the frontend's
     # short `calibrant` / `detector` (CalibrationView payload style).
     # 同时接受两种拼写：规范名 calibrantName 与前端简写 calibrant/detector。
-    try:
-        calibrant, calibrant_name = _resolve_calibrant(
-            payload.get("calibrantName") or payload.get("calibrant"),
-            payload.get("calibrantFile"), wavelength_m,
-        )
-    except (KeyError, ValueError, FileNotFoundError) as exc:
-        return _err(str(exc))
+    #
+    # INTERNAL-STANDARD MODE (内标定标模式): when NEITHER a calibrant name nor
+    # a .D file is supplied, the session opens WITHOUT a calibrant instead of
+    # erroring — the frontend's 内标定标 branch sums a known ring's value into
+    # the geometry via ``ring_standard``. An EMPTY ``Calibrant()`` sentinel is
+    # stored so every direct ``session["calibrant"]`` consumer (notably
+    # ``_build_refinement``'s constructor argument) keeps working; the
+    # calibrant-dependent actions (update_peaks / refine / ring_overlay) refuse
+    # this session explicitly.
+    # 当标样名与 .D 文件都未提供时，会话在无标样下建立而非报错——前端
+    # 「内标定标」分支用 ring_standard 由已知环数值直接算几何。会话存放空的
+    # ``Calibrant()`` 哨兵，保证所有直接读取 ``session["calibrant"]`` 的路径
+    # （尤其是 _build_refinement 的构造参数）不炸；依赖标样的动作
+    # （update_peaks / refine / ring_overlay）则显式拒绝该会话。
+    calibrant_sel = payload.get("calibrantName") or payload.get("calibrant")
+    calibrant_file = payload.get("calibrantFile")
+    internal_standard = not calibrant_sel and not calibrant_file
+    if internal_standard:
+        calibrant = _pyfai_calibrant_module().Calibrant()
+        calibrant_name = None
+    else:
+        try:
+            calibrant, calibrant_name = _resolve_calibrant(
+                calibrant_sel, calibrant_file, wavelength_m,
+            )
+        except (KeyError, ValueError, FileNotFoundError) as exc:
+            return _err(str(exc))
 
     await _progress(send_progress, 0.25, "Loading image / 正在加载图像")
     _check_cancel(cancel_event)
@@ -588,6 +672,23 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
         pixel1 = pixel2 = pixel_size_um * 1e-6
     pixel_size_um = 0.5 * (pixel1 + pixel2) * 1e6
 
+    # -- beam-centre seed / 束流中心种子 --------------------------------------
+    # Optional user-supplied centre (px) — typically a circle fitted through
+    # ≥3 points the user clicked on ONE diffraction ring, so no internal
+    # standard is needed. Stored in pyFAI's metre convention for the session
+    # geometry: poni1 runs along rows (y), poni2 along columns (x) — the
+    # inverse of _geometry_summary's pixel conversion. No frame-bounds check:
+    # the beam centre may legitimately sit outside the image.
+    # 可选用户中心（像素）——通常由用户在某一衍射环上点选 ≥3 点拟合圆得到，
+    # 无需内标。以 pyFAI 的米制约定存入会话几何：poni1 沿行（y）、poni2 沿列
+    # （x），与 _geometry_summary 的像素换算互为逆变换。不做画幅边界校验：
+    # 束流中心可以合法地位于图像之外。
+    center_x = _as_float(payload.get("centerX"))
+    center_y = _as_float(payload.get("centerY"))
+    center0: Optional[tuple] = None
+    if center_x is not None and center_y is not None:
+        center0 = (center_y * float(pixel1), center_x * float(pixel2))
+
     # -- session / 会话 ------------------------------------------------------
     session_id = payload.get("sessionId")
     session = _get_session(session_id)
@@ -602,6 +703,13 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
             "shape": shape,
             "wavelength": wavelength_m,
             "dist0": dist_guess_m,
+            # Beam-centre seed (metres, poni1=y·pixel1 / poni2=x·pixel2) or
+            # None — consumed by _guess_integrator and _build_refinement as the
+            # FIRST-GUESS centre, ahead of guess_poni()'s ellipse estimate.
+            # 束流中心种子（米制，poni1=y·pixel1 / poni2=x·pixel2）或 None——
+            # 由 _guess_integrator 与 _build_refinement 作为首猜中心消费，
+            # 优先于 guess_poni() 的椭圆拟合估计。
+            "center0": center0,
             "peaks": [],
             "gr": None,
             "mask": session_mask,
@@ -612,6 +720,18 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
             "detector": detector_obj,
             "detector_name": str(detector_name) if detector_obj is not None else None,
             "calibrant_name": calibrant_name,
+            # Internal-standard session flag: True when the session was opened
+            # WITHOUT a calibrant (ring_standard path). Guards the
+            # calibrant-dependent actions; also reported in ring_standard's
+            # response so the UI can label the wizard mode.
+            # 内标会话标志：无标样建立（ring_standard 路径）时为 True。
+            # 用于拦截依赖标样的动作，并在 ring_standard 响应中回带供界面标注。
+            "internal_standard": internal_standard,
+            # Last ring_standard result (UI echo: centre / radius / unit /
+            # value) — informational only, process restart clears it with the
+            # session. / 最近一次 ring_standard 结果（回显用），仅信息性字段，
+            # 随进程内会话消亡。
+            "ring_standard": None,
             "image_path": str(file_path),
             # Rotation parameters the user has actually engaged (enabled for
             # refinement); see _build_refinement / _write_poni_sync.
@@ -639,6 +759,12 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
         "distMm": dist_guess_mm,
         "maskStats": mask_stats,
         "maskOverlay": mask_overlay,
+        # Echo of the accepted centre seed (px) — null when not supplied /
+        # partially supplied. 已接受的中心种子回显（像素）；未提供或只提供
+        # 一半时为 null。
+        "seededCenterPx": (
+            {"x": center_x, "y": center_y} if center0 is not None else None
+        ),
     }
 
 
@@ -659,6 +785,13 @@ async def _action_detect_peaks(
       * keep            = 60 + 340 * sensitivity
         — total control points retained (with dmin = 10 px de-duplication).
         控制点总数上限（配合 dmin = 10 px 去重）。
+
+    Internal-standard sessions are deliberately NOT refused here (unlike
+    update_peaks / refine / ring_overlay): this action has no calibrant
+    dependency, the internal-standard wizard never reaches it, and leaving it
+    callable keeps the API orthogonal. / 内标会话在此故意不拦（与
+    update_peaks / refine / ring_overlay 不同）：本动作无标样依赖，内标向导
+    也不会走到它，放开可保持 API 正交。
     """
     await _progress(send_progress, 0.0, "Detecting peaks / 正在自动寻峰")
     _check_cancel(cancel_event)
@@ -735,9 +868,11 @@ async def _action_detect_peaks(
 
 
 def _guess_integrator(session: Dict[str, Any]):
-    """AzimuthalIntegrator for the CURRENT geometry (refined if available,
-    else the image-centre first guess). rows=y → poni1, cols=x → poni2.
-    以当前几何（有精修结果则用之，否则图像中心初值）构建积分器。"""
+    """AzimuthalIntegrator for the CURRENT geometry (refined if available, else
+    the first guess centre: the user's ring-fitted ``center0`` when a seed was
+    supplied, otherwise the image centre). rows=y → poni1, cols=x → poni2.
+    以当前几何（有精修结果则用之，否则首猜中心：用户给了圆环拟合的
+    ``center0`` 就用它，否则取图像中心）构建积分器。"""
     from pyFAI.integrator.azimuthal import AzimuthalIntegrator
 
     gr = session.get("gr")
@@ -748,10 +883,18 @@ def _guess_integrator(session: Dict[str, Any]):
             pixel1=session["pixel1"], pixel2=session["pixel2"],
             wavelength=session["wavelength"],
         )
+    # User seed priority: centre0 (poni1, poni2) > image centre.
+    # 用户种子优先：center0（poni1, poni2）优先于图像中心。
+    center0 = session.get("center0")
+    if center0 is not None:
+        poni1, poni2 = float(center0[0]), float(center0[1])
+    else:
+        poni1 = 0.5 * session["shape"][0] * session["pixel1"]
+        poni2 = 0.5 * session["shape"][1] * session["pixel2"]
     return AzimuthalIntegrator(
         dist=session["dist0"],
-        poni1=0.5 * session["shape"][0] * session["pixel1"],
-        poni2=0.5 * session["shape"][1] * session["pixel2"],
+        poni1=poni1,
+        poni2=poni2,
         pixel1=session["pixel1"], pixel2=session["pixel2"],
         wavelength=session["wavelength"],
     )
@@ -897,6 +1040,16 @@ def _build_refinement(session: Dict[str, Any], ys: np.ndarray, xs: np.ndarray,
         for name in ("rot1", "rot2", "rot3"):
             if name not in engaged:
                 setattr(gr, name, 0.0)
+        # User-supplied beam centre wins over the guess_poni() ellipse fit:
+        # when the frontend sent a circle-fitted centre in the setup payload
+        # (no internal standard needed), it seeds poni1/poni2 directly; the
+        # ellipse fit still supplies dist and the pre-pin rot estimate above.
+        # 用户给定的中心优先于 guess_poni() 椭圆拟合：前端在 setup 载荷中
+        # 带来圆环拟合中心（无需内标）时直接作为 poni1/poni2 初值；椭圆拟合
+        # 仍提供 dist 与上面保留的钉零前 rot 估计。
+        center0 = session.get("center0")
+        if center0 is not None:
+            gr.poni1, gr.poni2 = float(center0[0]), float(center0[1])
     return gr
 
 
@@ -942,6 +1095,11 @@ async def _action_update_peaks(
     ``suspect`` (peak beyond the midpoint toward a neighbouring ring).
     返回的每个峰除 ``ring`` 外还带 ``dtheta_deg`` 与 ``suspect`` 自检字段。
     """
+    # Ring assignment needs a calibrant's theoretical rings — internal-
+    # standard sessions have none. / 环号分配需要标样的理论环列表，内标会话没有。
+    if session.get("internal_standard"):
+        return _internal_mode_error()
+
     await _progress(send_progress, 0.0, "Assigning rings to peaks / 正在为峰分配环号")
     _check_cancel(cancel_event)
 
@@ -1101,6 +1259,12 @@ async def _action_refine(
                 / 默认 dist/poni1/poni2 自由，rot1–3 与波长固定
       passes    (int, optional) 1|2|3 (default 2) → refine1 / refine2 / refine3
     """
+    # Refinement fits peaks to a calibrant's theoretical rings — internal-
+    # standard sessions have no peaks/calibrant to refine.
+    # 精修把峰拟合到标样的理论环上——内标会话没有峰也没有标样。
+    if session.get("internal_standard"):
+        return _internal_mode_error()
+
     await _progress(send_progress, 0.0, "Refining geometry / 正在精修几何")
     _check_cancel(cancel_event)
 
@@ -1237,6 +1401,12 @@ async def _action_ring_overlay(
 
     Payload keys / 载荷键：sessionId (str, required)
     """
+    # Theoretical rings come from the calibrant — none in internal-standard
+    # mode (the picked ring is drawn from the wizard's own fit circle instead).
+    # 理论环来自标样——内标模式没有（所点环由向导自身的拟合圆绘制）。
+    if session.get("internal_standard"):
+        return _internal_mode_error()
+
     await _progress(send_progress, 0.0, "Building ring overlay / 正在生成理论环叠加")
     _check_cancel(cancel_event)
 
@@ -1410,6 +1580,23 @@ def _write_poni_sync(gr: Any, out_path: Path, session: Dict[str, Any]) -> str:
     image_path = session.get("image_path")
     if image_path:
         comments.append(f"Image: {image_path}")
+
+    # Internal-standard DEFAULT-DISTANCE annotation (user request): when
+    # ring_standard ran WITHOUT a ring value, the distance is the initial
+    # guess (dist0), not a fitted one — only the beam centre was
+    # ring-calibrated. Marking it here keeps the default traceable wherever
+    # the .poni travels, instead of silently passing as a measured geometry.
+    # 内标默认距离标注（用户要求）：ring_standard 未提供环数值时，距离取的是
+    # 初始猜测（dist0）而非拟合值——仅束流中心经圆环标定。在此写入标注，使
+    # 默认距离随 .poni 流转处处可追溯，而非冒充实测几何。
+    if (session.get("ring_standard") or {}).get("dist_defaulted"):
+        dist_mm = float(gr.dist) * 1e3
+        comments.append(
+            f"Dist-default: sample-detector distance defaulted to {dist_mm:.1f} mm "
+            "(no ring value q/d/2theta/SD provided; only the beam centre is "
+            "ring-calibrated) "
+            f"/ 距离为默认值 {dist_mm:.1f} mm——未提供环数值，仅束流中心经圆环标定"
+        )
 
     buf = io.StringIO()
     PoniFile(data=gr).write(buf, comments=comments or None)
@@ -1736,6 +1923,12 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
     silently starved faint rings (harvest zero → the STEP 1 empty-push bug).
     阈值采用 calib2 的自适应规则（环带 mean+std，候选不足时放宽到 mean），
     取代原先一刀切的全局 0.2·max 截断（弱环收空 → 触发 STEP 1 空推送缺陷）。
+
+    Internal-standard sessions are deliberately NOT refused here: the harvest
+    needs no calibrant, the internal-standard wizard uses ring_standard instead
+    of ring_pick, and leaving the door open keeps the API orthogonal.
+    / 内标会话在此故意不拦：收峰不依赖标样，内标向导走 ring_standard 而非
+    ring_pick，放开可保持 API 正交。
     """
     raw_pts = payload.get("points") or []
     pts = []
@@ -1766,13 +1959,9 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
     def _harvest():
         ys = np.array([p[0] for p in pts], dtype=np.float64)
         xs = np.array([p[1] for p in pts], dtype=np.float64)
-        # Algebraic circle fit (Kåsa): minimize a·x²+y² + b·x + c·y + d.
-        # 代数圆拟合（Kåsa）。
-        A = np.column_stack([xs, ys, np.ones_like(xs)])
-        bb = xs ** 2 + ys ** 2
-        sol, *_ = np.linalg.lstsq(A, bb, rcond=None)
-        cx, cy = sol[0] / 2.0, sol[1] / 2.0
-        radius = math.sqrt(max(sol[2] + cx * cx + cy * cy, 0.0))
+        # Algebraic circle fit (Kåsa) — shared with ring_standard.
+        # 代数圆拟合（Kåsa）——与 ring_standard 共用同一实现。
+        cy, cx, radius = _fit_circle(ys, xs)
         yy, xx = np.ogrid[0:h, 0:w]
         band = np.abs(np.hypot(yy - cy, xx - cx) - radius) <= tol
 
@@ -1853,6 +2042,261 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
         return _err(f"Ring picking failed: {exc}", f"环选拾取失败：{exc}")
 
 
+#: Units accepted by ``ring_standard`` for the picked ring's known value.
+#: ring_standard 接受的内标环数值单位。
+_RING_STANDARD_UNITS: tuple = ("q_A", "q_nm", "tth_deg", "d_A", "d_nm", "dist_mm")
+
+#: Minimum physical sample-detector distance (metres) accepted by
+#: ``ring_standard`` — 0.01 mm. / ring_standard 可接受的最小物理样品-探测器
+#: 距离（米）——0.01 mm。
+_MIN_STANDARD_DIST_M: float = 1e-5
+
+#: Maximum plausible sample-detector distance (metres) — 50 m. Beyond this the
+#: value cannot describe a lab geometry: a wrong unit (e.g. an Å value typed
+#: as nm) or a 2θ hugging 0 lands here, so the request is refused instead of
+#: producing a nonsensical .poni. / ring_standard 可接受的样品-探测器距离上限
+#: （米）——50 m。超过即非真实实验几何（单位填错、或 2θ 趋近 0 会落到这里），
+#: 直接拒绝而非产出无意义的 .poni。
+_MAX_STANDARD_DIST_M: float = 50.0
+
+
+async def _action_ring_standard(
+    session: Dict[str, Any], payload: dict, send_progress, cancel_event,
+) -> dict:
+    """Internal-standard calibration: one KNOWN ring → full geometry.
+
+    No calibrant / no pyFAI peak picking: the user clicks ≥3 points on ONE
+    diffraction ring whose value is known; the Kåsa circle fit gives the beam
+    centre (and the ring radius in px), the value's unit converts to the ring's
+    2θ, and the sample-detector distance follows from the ring radius.
+    内标定标：用户在一个已知数值的衍射环上点 ≥3 点，Kåsa 圆拟合给出束流中心
+    （及环半径，像素）；数值按单位换算为该环 2θ，样品-探测器距离由环半径反算。
+
+    Payload keys / 载荷键：
+      sessionId (str, required)
+      points    (list of {'y','x'}, required, ≥3) clicked on ONE ring /
+                在同一环上点选的点（≥3）
+      value     (float, OPTIONAL, > 0 when present) the ring's known value.
+                OMITTED → the distance defaults to the session's initial guess
+                ``dist0`` (internal-standard mode: 200 mm) and ONLY the beam
+                centre is ring-calibrated; the response flags it via
+                ``distDefaulted`` and the exported .poni carries a
+                ``Dist-default`` comment so the default stays traceable.
+                Present → a finite number > 0, and ``unit`` is mandatory.
+                / 该环已知数值，可省略。不提供时距离取会话初始猜测 ``dist0``
+                （内标模式即 200 mm），仅束流中心经圆环标定；响应以
+                ``distDefaulted`` 标记，导出的 .poni 附 ``Dist-default`` 注释
+                以便追溯默认距离。提供时必须是大于 0 的有限数字，且 unit 必填。
+      unit      ('q_A' | 'q_nm' | 'tth_deg' | 'd_A' | 'd_nm' | 'dist_mm',
+                required iff value is present)
+                q_A/q_nm  — scattering vector q in Å⁻¹ / nm⁻¹
+                d_A/d_nm  — d-spacing in Å / nm
+                tth_deg   — the ring's full scattering angle 2θ in degrees
+                dist_mm   — the sample-detector distance itself in mm
+                / q Å⁻¹、q nm⁻¹、d Å、d nm、2θ（度）、SD（mm）；仅当提供
+                value 时必填（无 value 时下拉残留单位无意义，跳过校验）。
+
+    Unit → 2θ conversion (λ = session wavelength) / 单位 → 2θ 换算：
+      q  = 4π·sinθ/λ  →  tth = 2·asin(q·λ/(4π)); sinθ must stay ≤ 1 and
+      2θ < 90° so the tan(2θ) denominator below is positive.
+    Sample-detector distance / 样品-探测器距离（平方像素假设，见下）：
+      dist = radius_px · ½(pixel1+pixel2) / tan(2θ)
+    The SQUARE-PIXEL ASSUMPTION (one mean pixel size for both axes) mirrors the
+    wizard's own q→SD back-calculation; with non-square pixels the distance
+    would need the per-axis radius decomposition, which a single ring cannot
+    provide. / 平方像素假设（两轴取同一平均像素尺寸）与向导自身的 q→SD 反算
+    一致；像素非方形时距离需要按轴分解半径，单环无法提供。
+
+    The resulting AzimuthalIntegrator is stored as ``session["gr"]`` — the same
+    slot refine writes — so export_poni / integrate_preview / the ring overlay
+    machinery consume it unchanged (PoniFile export and _geometry_summary are
+    duck-typed on dist/poni1/poni2/rot1-3/wavelength; verified).
+    生成的 AzimuthalIntegrator 存入 ``session["gr"]``（与精修同一位置），
+    export_poni / integrate_preview / 环叠加机制无需改动即可消费它（PoniFile
+    导出与 _geometry_summary 仅鸭子类型依赖 dist/poni1/poni2/rot1-3/wavelength，
+    已实测验证）。
+    """
+    await _progress(send_progress, 0.0, "Fitting standard ring / 正在拟合内标环")
+    _check_cancel(cancel_event)
+
+    raw_pts = payload.get("points") or []
+    pts: List[tuple] = []
+    for p in raw_pts:
+        if isinstance(p, dict):
+            py_, px_ = _as_float(p.get("y")), _as_float(p.get("x"))
+        elif isinstance(p, (list, tuple)) and len(p) >= 2:
+            py_, px_ = _as_float(p[0]), _as_float(p[1])
+        else:
+            continue
+        if py_ is not None and px_ is not None:
+            pts.append((py_, px_))
+    if len(pts) < 3:
+        return _err(
+            "Ring standard needs at least 3 finite points on the ring",
+            "内标定标需要环上至少 3 个有效点",
+        )
+
+    # value is OPTIONAL (user request): None → the distance falls back to the
+    # session's initial guess and only the beam centre is ring-calibrated;
+    # present but ≤ 0 → the existing refusal stands. A unit left in the
+    # dropdown is meaningless without a value, so unit validation is skipped
+    # on the default branch.
+    # value 可选（用户要求）：为 None → 距离回退会话初始猜测，仅束流中心经
+    # 圆环标定；提供但 ≤ 0 → 维持原拒绝。无 value 时下拉残留的单位无意义，
+    # 默认分支跳过单位校验。
+    value = _as_float(payload.get("value"))
+    if value is not None and value <= 0.0:
+        return _err(
+            "value must be a finite number > 0 / 数值必须是大于 0 的有限数字",
+        )
+    dist_defaulted = value is None
+    unit: Optional[str] = None
+    if not dist_defaulted:
+        unit = str(payload.get("unit") or "")
+        if unit not in _RING_STANDARD_UNITS:
+            return _err(
+                f"Unknown unit {unit!r}: expected one of "
+                f"{', '.join(_RING_STANDARD_UNITS)}",
+                f"未知单位 {unit!r}：应为 {', '.join(_RING_STANDARD_UNITS)} 之一",
+            )
+
+    wavelength_m = float(session["wavelength"])
+    pixel1 = float(session["pixel1"])
+    pixel2 = float(session["pixel2"])
+
+    ys = np.array([p[0] for p in pts], dtype=np.float64)
+    xs = np.array([p[1] for p in pts], dtype=np.float64)
+    try:
+        cy, cx, radius = await _run_blocking(_fit_circle, ys, xs)
+    except Exception as exc:  # noqa: BLE001 — surfaced to the frontend
+        return _err(f"Circle fit failed: {exc}", f"圆拟合失败：{exc}")
+    _check_cancel(cancel_event)
+    if not (math.isfinite(cy) and math.isfinite(cx)
+            and math.isfinite(radius) and radius > 0.0):
+        return _err(
+            "Circle fit is degenerate — check the picked points",
+            "圆拟合退化——请检查所点选的点",
+        )
+    rms_px = _circle_rms_px(ys, xs, cy, cx, radius)
+
+    tth: Optional[float] = None
+    dist_m: Optional[float] = None
+    if value is None:
+        # No ring value provided: the centre still comes from the circle fit,
+        # while the distance falls back to the session's initial guess. Setup
+        # enforces dist0 > 0; the physical-range rails below still apply.
+        # 未提供环数值：中心仍由圆拟合得出，距离回退会话初始猜测。setup 保证
+        # dist0 > 0；下方的物理范围护栏仍然生效。
+        dist_m = float(session["dist0"])
+    elif unit == "dist_mm":
+        # The distance is given directly — no 2θ needed (tthDeg stays null).
+        # 距离直给——无需 2θ（tthDeg 返回 null）。
+        dist_m = value * 1e-3
+    else:
+        if unit == "tth_deg":
+            tth = math.radians(value)
+        else:
+            if unit == "q_A":
+                q_m = value * 1e10
+            elif unit == "q_nm":
+                q_m = value * 1e9
+            elif unit == "d_A":
+                q_m = 2.0 * math.pi / (value * 1e-10)
+            else:  # d_nm — d[nm] → q[m⁻¹] = 2π/(d·1e-9)
+                q_m = 2.0 * math.pi / (value * 1e-9)
+            # q = 4π·sinθ/λ → sinθ = q·λ/(4π); the ring must be physically
+            # reachable (sinθ ≤ 1) or asin() below would raise.
+            # q = 4π·sinθ/λ → sinθ = q·λ/(4π)；环必须物理可达（sinθ ≤ 1），
+            # 否则下方 asin() 会抛错。
+            sin_theta = q_m * wavelength_m / (4.0 * math.pi)
+            if not (math.isfinite(sin_theta) and sin_theta <= 1.0):
+                return _err(
+                    "The value puts the ring beyond the reachable range "
+                    "(sinθ > 1) — check the value and the wavelength",
+                    "该数值使环超出可达范围（sinθ > 1）——请检查数值与波长",
+                )
+            tth = 2.0 * math.asin(sin_theta)
+        # 2θ must stay under 90° so tan(2θ) > 0 in the distance formula.
+        # 2θ 必须小于 90°，使距离公式中的 tan(2θ) > 0。
+        if not (0.0 < tth < 0.5 * math.pi):
+            return _err(
+                "The value puts the ring at 2θ ≥ 90° (or ≤ 0°) — check the "
+                "value and the wavelength",
+                "该数值对应 2θ ≥ 90°（或 ≤ 0°）——请检查数值与波长",
+            )
+        dist_m = radius * 0.5 * (pixel1 + pixel2) / math.tan(tth)
+    if dist_m is None or not math.isfinite(dist_m) or dist_m <= _MIN_STANDARD_DIST_M:
+        return _err(
+            "Computed sample-detector distance is not physical (≤ 0.01 mm) — "
+            "check the ring value and unit",
+            "计算出的样品-探测器距离不合理（≤ 0.01 mm）——请检查环数值与单位",
+        )
+    if dist_m > _MAX_STANDARD_DIST_M:
+        return _err(
+            "Computed sample-detector distance is not physical (> 50 m) — "
+            "check the ring value and unit",
+            "计算出的样品-探测器距离不合理（> 50 m）——请检查环数值与单位",
+        )
+
+    from pyFAI.integrator.azimuthal import AzimuthalIntegrator
+
+    # rot1=rot2=rot3=0: a single ring plus one known value fixes the centre
+    # and the distance but carries no tilt information — the same rot=0
+    # convention the export pins un-engaged rotations to.
+    # rot1=rot2=rot3=0：单环 + 单个已知数值只能定出中心与距离，不含倾角信息
+    # ——与导出时把未启用旋转角钉为 0 的约定一致。
+    gr = AzimuthalIntegrator(
+        dist=dist_m,
+        poni1=cy * pixel1,
+        poni2=cx * pixel2,
+        rot1=0.0,
+        rot2=0.0,
+        rot3=0.0,
+        pixel1=pixel1,
+        pixel2=pixel2,
+        wavelength=wavelength_m,
+        detector=session.get("detector"),
+    )
+    session["gr"] = gr
+    session["ring_standard"] = {
+        "center_x_px": float(cx),
+        "center_y_px": float(cy),
+        "radius_px": float(radius),
+        "unit": unit,
+        "value": float(value) if value is not None else None,
+        # True when the distance came from dist0 (no ring value) — read by
+        # _write_poni_sync to annotate the exported .poni.
+        # 距离取自 dist0（未提供环数值）时为 True——_write_poni_sync 据此在
+        # 导出的 .poni 中写标注。
+        "dist_defaulted": dist_defaulted,
+    }
+
+    await _progress(send_progress, 1.0, "Standard ring fitted / 内标环拟合完成")
+    return {
+        "status": "ok",
+        "centerXPx": float(cx),
+        "centerYPx": float(cy),
+        "radiusPx": float(radius),
+        "rmsPx": rms_px,
+        # unit/value are None on the default-distance branch (no ring value
+        # was provided). / 默认距离分支下 unit/value 为 None（未提供环数值）。
+        "unit": unit,
+        "value": float(value) if value is not None else None,
+        # 2θ of the picked ring (degrees) — null when no ring value was given
+        # (default distance) or for the dist_mm variant, where the distance
+        # was given instead of a ring value.
+        # 所点环的 2θ（度）——未提供环数值（默认距离）或 dist_mm 变体直给
+        # 距离时返回 null。
+        "tthDeg": float(math.degrees(tth)) if tth is not None else None,
+        "distMm": float(dist_m * 1e3),
+        # True when the distance was defaulted to dist0 (no ring value).
+        # 距离为默认值 dist0（未提供环数值）时为 True。
+        "distDefaulted": dist_defaulted,
+        "geometry": _geometry_summary(gr, pixel1, pixel2),
+        "internalStandard": bool(session.get("internal_standard")),
+    }
+
+
 async def handle_calibration(payload: dict, send_progress, cancel_event) -> dict:
     """Single entry point of the calibration service.
 
@@ -1895,7 +2339,7 @@ async def handle_calibration(payload: dict, send_progress, cancel_event) -> dict
     if action not in {
         "setup", "detect_peaks", "update_peaks", "refine",
         "ring_overlay", "export_poni", "pick_peak", "ring_pick",
-        "integrate_preview",
+        "ring_standard", "integrate_preview",
     }:
         return _err(f"Unknown action: {action!r}", f"未知操作：{action!r}")
     if session is None and action != "setup":
@@ -1912,6 +2356,8 @@ async def handle_calibration(payload: dict, send_progress, cancel_event) -> dict
         return await _action_pick_peak(payload, session)
     if action == "ring_pick":
         return await _action_ring_pick(payload, session)
+    if action == "ring_standard":
+        return await _action_ring_standard(session, payload, send_progress, cancel_event)
     if action == "update_peaks":
         return await _action_update_peaks(session, payload, send_progress, cancel_event)
     if action == "refine":
