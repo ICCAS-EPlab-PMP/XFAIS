@@ -153,6 +153,14 @@ const props = withDefaults(defineProps<{
    * 画布点击始终收集环引导点——即“峰拾取步骤激活”；其余步骤仅查看。
    */
   interactive?: boolean
+  /**
+   * Optional override for the hint bar text. Undefined (the default) keeps the
+   * built-in ring-guide wording; the parent passes a different hint while a
+   * non-peak interaction (e.g. step-1 ring-centre picking) uses the canvas.
+   * 提示条文案的可选覆盖。缺省时沿用内置环选文案；父组件在非峰拾取的画布
+   * 交互（如第 1 步圆环求中心）期间传入自己的提示。
+   */
+  hint?: string
   /** Ring-mode guide points — drawn as distinct markers. */
   ringGuide?: CalibRingGuidePoint[]
   /** Fitted circle through the guide points — dashed preview (null = none). */
@@ -169,6 +177,7 @@ const props = withDefaults(defineProps<{
   beamCenter?: { x: number; y: number } | null
 }>(), {
   interactive: false,
+  hint: '',
   ringGuide: () => [],
   ringFit: null,
   maskOverlay: null,
@@ -185,13 +194,16 @@ const emit = defineEmits<{
 /** Clicks collect guide points while interactive; otherwise view-only. */
 const isInteractive = computed(() => props.interactive)
 
-// Ring-guide hint has no i18n key yet — inline bilingual (see final report).
-// 环选提示暂无 i18n 键 —— 内联双语（见最终报告缺失键清单）。
-const hintLabel = computed(() =>
-  locale.value.startsWith('zh')
+// Ring-guide hint has no i18n key yet — inline bilingual (see final report);
+// the parent may override it via the `hint` prop for other picking modes.
+// 环选提示暂无 i18n 键（见最终报告缺失键清单）——父组件可用 hint 属性覆盖。
+const hintLabel = computed(() => {
+  const custom = props.hint
+  if (custom && custom.trim()) return custom
+  return locale.value.startsWith('zh')
     ? '在当前环上点击 ≥3 个引导点；双击 / 回车 / 完成本环收峰'
-    : 'Click ≥3 guide points on the current ring; double-click / Enter / Finish harvests it',
-)
+    : 'Click ≥3 guide points on the current ring; double-click / Enter / Finish harvests it'
+})
 
 // ── Refs ──────────────────────────────────────────────────────────────────────
 const containerRef = ref<HTMLDivElement | null>(null)

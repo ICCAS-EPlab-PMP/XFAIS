@@ -46,24 +46,22 @@
             </label>
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.radialRange.min') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 step="0.1"
-                :value="radialMin"
+                :model-value="radialMin"
                 :data-testid="testIds.azimuthRadialMin"
-                @input="onRadialInput('min', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onRadialInput('min', $event)"
               />
             </label>
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.radialRange.max') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 step="0.1"
-                :value="radialMax"
+                :model-value="radialMax"
                 :data-testid="testIds.azimuthRadialMax"
-                @input="onRadialInput('max', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onRadialInput('max', $event)"
               />
             </label>
             <p v-if="radialValidationError" class="az-error">
@@ -79,28 +77,26 @@
           <div class="az-grid">
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.azimuthRange.min') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 min="-360"
                 max="360"
                 step="5"
-                :value="azimuthMin"
+                :model-value="azimuthMin"
                 :data-testid="testIds.azimuthAzimuthMin"
-                @input="onAzimuthInput('min', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onAzimuthInput('min', $event)"
               />
             </label>
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.azimuthRange.max') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 min="-360"
                 max="360"
                 step="5"
-                :value="azimuthMax"
+                :model-value="azimuthMax"
                 :data-testid="testIds.azimuthAzimuthMax"
-                @input="onAzimuthInput('max', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onAzimuthInput('max', $event)"
               />
             </label>
             <p v-if="azimuthValidationError" class="az-error">
@@ -144,26 +140,24 @@
           <div class="az-grid">
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.params.npt') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 min="10"
                 step="10"
-                :value="npt"
+                :model-value="npt"
                 :data-testid="testIds.azimuthNpt"
-                @input="npt = parseInt(($event.target as HTMLInputElement).value) || 360"
+                @update:model-value="onNptInput"
               />
             </label>
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.params.nptRad') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 min="1"
                 step="10"
-                :value="nptRad"
+                :model-value="nptRad"
                 :data-testid="testIds.azimuthNptRad"
-                @input="nptRad = parseInt(($event.target as HTMLInputElement).value) || 100"
+                @update:model-value="onNptRadInput"
               />
             </label>
           </div>
@@ -444,6 +438,7 @@ import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } fro
 import type { ColormapName } from '@/lib/chart-utils'
 
 import GeometryForm from '@/components/business/GeometryForm.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
@@ -1292,18 +1287,29 @@ function onRadialUnitChange(event: Event): void {
   radialMax.value = hi
 }
 
-function onRadialInput(field: 'min' | 'max', raw: string): void {
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  if (field === 'min') radialMin.value = num
-  else radialMax.value = num
+function onRadialInput(field: 'min' | 'max', value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
+  if (field === 'min') radialMin.value = value
+  else radialMax.value = value
 }
 
-function onAzimuthInput(field: 'min' | 'max', raw: string): void {
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  if (field === 'min') azimuthMin.value = num
-  else azimuthMax.value = num
+function onAzimuthInput(field: 'min' | 'max', value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
+  if (field === 'min') azimuthMin.value = value
+  else azimuthMax.value = value
+}
+
+// NPT fields: an empty field keeps the last valid value instead of snapping
+// back to the default — rewriting the field mid-edit ("clear to retype"
+// becomes "3605") is exactly the clobbering NumberField exists to prevent.
+// NPT 输入框：清空时保留上一个有效值而非跳回默认值——编辑中途把输入框改写
+// 成默认值（想清空重输却得到 "3605"）正是 NumberField 要杜绝的打断行为。
+function onNptInput(value: number | null): void {
+  if (value != null && Number.isFinite(value)) npt.value = value
+}
+
+function onNptRadInput(value: number | null): void {
+  if (value != null && Number.isFinite(value)) nptRad.value = value
 }
 
 async function handleRun(): Promise<void> {

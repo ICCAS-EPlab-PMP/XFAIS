@@ -30,28 +30,26 @@
           <div class="cake-fieldset-grid">
             <label class="cake-field">
               <span class="cake-field-label">{{ t('integrateCake.azimuthRange.min') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="cake-input"
                 min="-360"
                 max="360"
                 step="5"
-                :value="azimuthMin"
+                :model-value="azimuthMin"
                 :data-testid="testIds.cakeAzimuthMin"
-                @input="onAzimuthInput('min', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onAzimuthInput('min', $event)"
               />
             </label>
             <label class="cake-field">
               <span class="cake-field-label">{{ t('integrateCake.azimuthRange.max') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="cake-input"
                 min="-360"
                 max="360"
                 step="5"
-                :value="azimuthMax"
+                :model-value="azimuthMax"
                 :data-testid="testIds.cakeAzimuthMax"
-                @input="onAzimuthInput('max', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onAzimuthInput('max', $event)"
               />
             </label>
           </div>
@@ -364,6 +362,7 @@ import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } fro
 import type { ColormapName } from '@/lib/chart-utils'
 
 import GeometryForm from '@/components/business/GeometryForm.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
@@ -1107,11 +1106,10 @@ function handleThumbPageSizeChange(size: number): void {
 
 // ── Handlers / 处理函数 ──────────────────────────────────────────────────────
 
-function onAzimuthInput(field: 'min' | 'max', raw: string): void {
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  if (field === 'min') azimuthMin.value = num
-  else azimuthMax.value = num
+function onAzimuthInput(field: 'min' | 'max', value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
+  if (field === 'min') azimuthMin.value = value
+  else azimuthMax.value = value
 }
 
 async function handleRun(): Promise<void> {

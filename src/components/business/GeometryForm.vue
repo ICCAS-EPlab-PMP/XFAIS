@@ -62,62 +62,57 @@
       <div class="gf-grid">
         <label class="gf-field">
           <span class="gf-field-label">{{ t('business.geometry.pixelSize') }}</span>
-          <input
-            type="number"
+          <NumberField
             class="gf-input"
             step="1"
             min="0.1"
-            :value="modelValue.pixel1"
+            :model-value="modelValue.pixel1"
             :data-testid="testIds.geometryPixel1"
-            @input="onFieldInput('pixel1', ($event.target as HTMLInputElement).value)"
+            @update:model-value="onFieldInput('pixel1', $event)"
           />
         </label>
         <label class="gf-field">
           <span class="gf-field-label">{{ t('business.geometry.distance') }}</span>
-          <input
-            type="number"
+          <NumberField
             class="gf-input"
             step="1"
             min="0.1"
-            :value="modelValue.distance"
+            :model-value="modelValue.distance"
             :data-testid="testIds.geometryDistance"
-            @input="onFieldInput('distance', ($event.target as HTMLInputElement).value)"
+            @update:model-value="onFieldInput('distance', $event)"
           />
         </label>
         <label class="gf-field">
           <span class="gf-field-label">{{ t('business.geometry.wavelength') }}</span>
-          <input
-            type="number"
+          <NumberField
             class="gf-input"
             step="0.0001"
             min="0.001"
-            :value="modelValue.wavelength"
+            :model-value="modelValue.wavelength"
             :data-testid="testIds.geometryWavelength"
-            @input="onFieldInput('wavelength', ($event.target as HTMLInputElement).value)"
+            @update:model-value="onFieldInput('wavelength', $event)"
           />
         </label>
         <label class="gf-field">
           <span class="gf-field-label">{{ t('business.geometry.centerX') }}</span>
-          <input
-            type="number"
+          <NumberField
             class="gf-input"
             step="1"
             min="0"
-            :value="modelValue.centerX"
+            :model-value="modelValue.centerX"
             :data-testid="testIds.geometryCenterX"
-            @input="onFieldInput('centerX', ($event.target as HTMLInputElement).value)"
+            @update:model-value="onFieldInput('centerX', $event)"
           />
         </label>
         <label class="gf-field">
           <span class="gf-field-label">{{ t('business.geometry.centerY') }}</span>
-          <input
-            type="number"
+          <NumberField
             class="gf-input"
             step="1"
             min="0"
-            :value="modelValue.centerY"
+            :model-value="modelValue.centerY"
             :data-testid="testIds.geometryCenterY"
-            @input="onFieldInput('centerY', ($event.target as HTMLInputElement).value)"
+            @update:model-value="onFieldInput('centerY', $event)"
           />
         </label>
       </div>
@@ -135,6 +130,7 @@ import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
 import FileDialogButton from './FileDialogButton.vue'
+import NumberField from '@/components/common/NumberField.vue'
 
 /** Geometry parameters shape / 几何参数结构 */
 export interface GeometryParams {
@@ -268,12 +264,11 @@ function switchToManual(): void {
   }
 }
 
-function onFieldInput(field: keyof GeometryParams, raw: string): void {
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  const updated = { ...props.modelValue, [field]: num }
+function onFieldInput(field: keyof GeometryParams, value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
+  const updated = { ...props.modelValue, [field]: value }
   // Keep pixel1 and pixel2 in sync / 保持 pixel1/pixel2 同步
-  if (field === 'pixel1') updated.pixel2 = num
+  if (field === 'pixel1') updated.pixel2 = value
   emit('update:modelValue', updated)
 }
 </script>
@@ -332,6 +327,13 @@ function onFieldInput(field: keyof GeometryParams, raw: string): void {
   gap: 12px;
 }
 
+/* Long PONI paths must never stretch the host sidebar: let the section shrink
+   so the summary rows below can ellipsize. / 长 PONI 路径不得撑宽宿主侧栏：
+   允许本节收缩，使下方摘要行可以省略显示。 */
+.gf-poni-section {
+  min-width: 0;
+}
+
 /* PONI geometry summary / PONI 几何摘要 */
 .gf-poni-summary {
   border: 1px solid var(--border);
@@ -341,6 +343,9 @@ function onFieldInput(field: keyof GeometryParams, raw: string): void {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  /* Long-path overflow guard: never exceed the parent width.
+     长路径防溢出：不得超过父容器宽度。 */
+  max-width: 100%;
 }
 
 .gf-poni-summary--muted {
@@ -355,6 +360,8 @@ function onFieldInput(field: keyof GeometryParams, raw: string): void {
   font-family: var(--font-mono);
   font-size: 0.75rem;
   color: var(--text-secondary);
+  /* Long-path overflow guard / 长路径防溢出 */
+  min-width: 0;
 }
 
 .gf-poni-summary-row--head {
@@ -365,6 +372,16 @@ function onFieldInput(field: keyof GeometryParams, raw: string): void {
 
 .gf-poni-summary-row span:first-child {
   color: var(--text-muted);
+}
+
+/* Value column (incl. the head row's detector name): ellipsize instead of
+   stretching the card. / 数值列（含 head 行的探测器名）：过长时省略显示而非
+   撑破卡片。 */
+.gf-poni-summary-row span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .gf-grid {

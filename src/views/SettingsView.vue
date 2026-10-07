@@ -44,13 +44,13 @@
 
         <label v-if="settings.performance.batchParallel" class="settings-field">
           <span class="settings-label">{{ t('settings.performance.batchWorkers') }}</span>
-          <input
-            v-model.number="settings.performance.batchWorkers"
-            type="number"
+          <NumberField
+            :model-value="settings.performance.batchWorkers"
             min="1"
             max="16"
             class="settings-input"
             data-testid="settings-batch-workers"
+            @update:model-value="(v) => { if (v != null) settings.performance.batchWorkers = v }"
           />
           <small class="settings-hint">{{ t('settings.performance.batchWorkersHint') }}</small>
         </label>
@@ -80,6 +80,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useSettings } from '@/lib/settings'
 import { useToast } from '@/lib/toast'
+import NumberField from '@/components/common/NumberField.vue'
 
 const { t, locale } = useI18n()
 const toast = useToast()

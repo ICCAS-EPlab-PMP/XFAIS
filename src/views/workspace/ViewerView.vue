@@ -201,12 +201,11 @@
                   :data-testid="testIds.viewerClimMin"
                   @input="updateClimMin(Number(($event.target as HTMLInputElement).value))"
                 />
-                <input
-                  :value="climMin"
-                  type="number"
+                <NumberField
+                  :model-value="climMin"
                   class="vw-input vw-input--sm"
                   step="any"
-                  @input="updateClimMin(Number(($event.target as HTMLInputElement).value))"
+                  @update:model-value="updateClimMin($event ?? 0)"
                 />
               </div>
               <div class="vw-clim-field">
@@ -221,12 +220,11 @@
                   :data-testid="testIds.viewerClimMax"
                   @input="updateClimMax(Number(($event.target as HTMLInputElement).value))"
                 />
-                <input
-                  :value="climMax"
-                  type="number"
+                <NumberField
+                  :model-value="climMax"
                   class="vw-input vw-input--sm"
                   step="any"
-                  @input="updateClimMax(Number(($event.target as HTMLInputElement).value))"
+                  @update:model-value="updateClimMax($event ?? 0)"
                 />
               </div>
             </div>
@@ -338,11 +336,11 @@
             <div v-if="ringEnabled" class="vw-grid-2">
               <label class="vw-field">
                 <span class="vw-label">q min (Å⁻¹)</span>
-                <input v-model.number="ringMin" type="number" class="vw-input" step="0.05" min="0" />
+                <NumberField :model-value="ringMin" class="vw-input" step="0.05" min="0" @update:model-value="(v) => { if (v != null) ringMin = v }" />
               </label>
               <label class="vw-field">
                 <span class="vw-label">q max (Å⁻¹)</span>
-                <input v-model.number="ringMax" type="number" class="vw-input" step="0.05" min="0" />
+                <NumberField :model-value="ringMax" class="vw-input" step="0.05" min="0" @update:model-value="(v) => { if (v != null) ringMax = v }" />
               </label>
             </div>
 
@@ -357,13 +355,12 @@
               <div class="vw-grid-2">
                 <label class="vw-field">
                   <span class="vw-label">{{ t('viewer.lineProfileWidth') }}</span>
-                  <input
-                    v-model.number="lineProfileWidth"
-                    type="number"
+                  <NumberField
+                    :model-value="lineProfileWidth"
                     class="vw-input"
                     step="1"
                     min="1"
-                    @change="scheduleLineProfileRecompute"
+                    @update:model-value="(v) => { if (v != null) { lineProfileWidth = v; scheduleLineProfileRecompute() } }"
                   />
                 </label>
                 <label class="vw-field">
@@ -592,6 +589,7 @@ import { testIds } from '@/lib/testIds'
 import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ThumbnailStrip from '@/components/business/ThumbnailStrip.vue'
 import type { ThumbnailItem } from '@/components/business/ThumbnailStrip.vue'

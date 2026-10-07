@@ -385,6 +385,17 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           channel: typeof params.channel === 'number' || typeof params.channel === 'string' ? params.channel : undefined,
           h5_channel: typeof params.channel === 'number' || typeof params.channel === 'string' ? params.channel : undefined,
           settings: asRecord(params.settings),
+          // PERFORMANCE: pass the caller's includeImageData through — the
+          // backend's load_preview otherwise ALSO serializes the full image
+          // matrix (default True), doubling the payload for callers that only
+          // consume the PNG (CalibrationView / MaskMakerView). Undefined keeps
+          // the backend default, so unknown consumers are unaffected.
+          // 性能：透传调用方的 includeImageData——否则后端 load_preview 还会
+          // 附带完整图像矩阵（默认 True），对只消费 PNG 的调用方（标定向导 /
+          // 掩膜编辑器）白白翻倍负载。undefined 时保持后端默认，不影响未知
+          // 消费方。
+          includeImageData: typeof params.includeImageData === 'boolean' ? params.includeImageData : undefined,
+          include_image_data: typeof params.include_image_data === 'boolean' ? params.include_image_data : undefined,
         }
       }
       // All other mask operations: pass through as-is (draw_shape, apply_threshold, export_mask, load_mask)

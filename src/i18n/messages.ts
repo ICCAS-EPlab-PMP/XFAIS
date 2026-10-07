@@ -1463,7 +1463,69 @@ export const messages = {
       loading: '载入中…',
       loadOk: '校正会话已建立',
       loadFail: '建立校正会话失败',
-      seedFromPoni: '从 PONI 初始化'
+      seedFromPoni: '从 PONI 初始化',
+      calibrantSource: '标样来源',
+      calibrantBuiltin: '内置标样',
+      calibrantLocalFile: '本地 .D 文件',
+      selectCalibrantFile: '选择本地 .D 文件',
+      selectedFile: '已选择文件',
+      noCalibrantFileHint: '还没有 .D 文件？',
+      goGenerator: '前往校正标样生成器'
+    },
+    // Two MUTUALLY EXCLUSIVE wizard modes (moved to the top of the setup form).
+    // 两种互斥的向导模式（置于加载表单顶部）。
+    mode: {
+      label: '校正模式',
+      calibrant: '标样校正',
+      internal: '内标定标'
+    },
+    // Stepper names for the internal-standard wizard (calibrant mode keeps the
+    // existing step keys; 导出 reuses calibration.export.title in both).
+    // 内标向导的步骤名（标样模式沿用原有键；两种模式“导出”都复用
+    // calibration.export.title）。
+    steps: {
+      load: '加载',
+      ring: '内标定标',
+      preview: '几何预览'
+    },
+    // Internal-standard step-2 panel / 内标定标第 2 步面板
+    ring: {
+      title: '内标定标',
+      hint: '无需标样：在同一个已知衍射环上点选 ≥3 个点（右键删最近点），回车 / 双击 / “拟合并计算几何”提交',
+      zoomLabel: '放大二次选点（FIT2D 式）',
+      zoomHint: '开启后：第一次点击定位放大区域，在放大窗内点选精确位置',
+      points: '点数',
+      rms: '拟合 RMS',
+      clear: '清除点选',
+      valueLabel: '该环已知数值',
+      unitQN: 'q (nm⁻¹)',
+      unitQA: 'q (Å⁻¹)',
+      unitTth: '2θ (°)',
+      unitDA: 'd (Å)',
+      unitDN: 'd (nm)',
+      unitSd: 'SD (mm)',
+      apply: '拟合并计算几何',
+      resultTitle: '标定结果',
+      resultCenter: '中心 (px)',
+      resultRadius: '半径 (px)',
+      resultTth: '2θ (°)',
+      resultSd: '样品-探测器距离 (mm)',
+      done: '内标几何已计算',
+      doneDefaultDist: '内标几何已计算；SD 为默认值 {mm} mm（未提供环数值）',
+      needPoints: '需要同一环上至少 3 个点',
+      needValue: '数值需为正数，或留空使用默认 SD',
+      valueOptionalHint: '可留空：留空则距离取默认值（{mm} mm），仅中心有效',
+      resultDefaultDist: 'SD 为默认值 {mm} mm（未提供环数值）——导出的 .poni 将写入该标注',
+      exportDefaultDistWarning: '注意：距离为默认值 {mm} mm，未经环数值标定；导出的 .poni 文件将写入此标注',
+      exportToastNote: '（距离为默认值 {mm} mm，已在 .poni 中标注）',
+      canvasHint: '点击添加同一环上的点；右键删最近点；回车 / 双击拟合并计算几何',
+      previewTitle: '几何预览（内标）',
+      previewHint: '几何由内标环直接计算，无精修；下方为 1D / 2D 积分预览，导出 .poni 后可去积分',
+      noGeometry: '尚无几何：请返回内标定标步骤完成拟合',
+      zoomTitle: '放大二次选点',
+      zoomConfirm: '确定',
+      zoomCancel: '取消',
+      zoomPlaceholder: '载入图像…'
     },
     canvas: {
       addPeakHint: '点击图像添加峰；右键移除最近的峰',
@@ -2981,7 +3043,69 @@ export const messages = {
       loading: 'Loading…',
       loadOk: 'Calibration session established',
       loadFail: 'Failed to establish calibration session',
-      seedFromPoni: 'Seed from PONI'
+      seedFromPoni: 'Seed from PONI',
+      calibrantSource: 'Calibrant source',
+      calibrantBuiltin: 'Built-in',
+      calibrantLocalFile: 'Local .D file',
+      selectCalibrantFile: 'Select local .D file',
+      selectedFile: 'Selected file',
+      noCalibrantFileHint: 'No .D file yet?',
+      goGenerator: 'Open the calibrant generator'
+    },
+    // Two MUTUALLY EXCLUSIVE wizard modes (moved to the top of the setup form).
+    // 两种互斥的向导模式（置于加载表单顶部）。
+    mode: {
+      label: 'Calibration mode',
+      calibrant: 'Calibrant',
+      internal: 'Internal standard'
+    },
+    // Stepper names for the internal-standard wizard (calibrant mode keeps the
+    // existing step keys; the export step reuses calibration.export.title in
+    // both modes). / 内标向导的步骤名（标样模式沿用原有键；“导出”两种模式
+    // 都复用 calibration.export.title）。
+    steps: {
+      load: 'Load',
+      ring: 'Internal standard',
+      preview: 'Geometry preview'
+    },
+    // Internal-standard step-2 panel / 内标定标第 2 步面板
+    ring: {
+      title: 'Internal standard',
+      hint: 'No calibrant needed: click ≥3 points on ONE known diffraction ring (right-click removes the nearest); Enter / double-click / Apply & compute submits',
+      zoomLabel: 'Zoomed second pick (FIT2D style)',
+      zoomHint: 'When on: the first click opens a zoom window; pick the exact position there',
+      points: 'Points',
+      rms: 'Fit RMS',
+      clear: 'Clear points',
+      valueLabel: 'Known value of that ring',
+      unitQN: 'q (nm⁻¹)',
+      unitQA: 'q (Å⁻¹)',
+      unitTth: '2θ (°)',
+      unitDA: 'd (Å)',
+      unitDN: 'd (nm)',
+      unitSd: 'SD (mm)',
+      apply: 'Fit & compute geometry',
+      resultTitle: 'Calibration result',
+      resultCenter: 'Centre (px)',
+      resultRadius: 'Radius (px)',
+      resultTth: '2θ (°)',
+      resultSd: 'Sample-detector distance (mm)',
+      done: 'Internal-standard geometry computed',
+      doneDefaultDist: 'Internal-standard geometry computed; SD is the default {mm} mm (no ring value provided)',
+      needPoints: 'At least 3 points on one ring are required',
+      needValue: 'The value must be a positive number — or leave it empty to use the default SD',
+      valueOptionalHint: 'Optional: leave empty to use the default distance ({mm} mm); only the centre is calibrated',
+      resultDefaultDist: 'SD is the default {mm} mm (no ring value provided) — the exported .poni will carry this annotation',
+      exportDefaultDistWarning: 'Note: the distance is the default {mm} mm, not calibrated from a ring value; the exported .poni file will carry this annotation',
+      exportToastNote: '(distance defaulted to {mm} mm, annotated in the .poni)',
+      canvasHint: 'Click to add points on one ring; right-click removes the nearest; Enter / double-click fits and computes the geometry',
+      previewTitle: 'Geometry preview (internal standard)',
+      previewHint: 'The geometry comes straight from the standard ring — no refinement; the 1D / 2D integration preview follows, and the .poni can be exported for integration',
+      noGeometry: 'No geometry yet: go back to the internal-standard step and fit',
+      zoomTitle: 'Zoomed second pick',
+      zoomConfirm: 'OK',
+      zoomCancel: 'Cancel',
+      zoomPlaceholder: 'Loading image…'
     },
     canvas: {
       addPeakHint: 'Click the image to add a peak; right-click removes the nearest peak',

@@ -93,22 +93,22 @@
             <div class="or-field-row">
               <div class="or-field">
                 <label class="or-label">{{ t('orientationAnalysis.min') }}</label>
-                <input v-model.number="radialMin" type="number" class="or-input" step="any" />
+                <NumberField :model-value="radialMin" class="or-input" step="any" @update:model-value="(v) => { if (v != null) radialMin = v }" />
               </div>
               <div class="or-field">
                 <label class="or-label">{{ t('orientationAnalysis.max') }}</label>
-                <input v-model.number="radialMax" type="number" class="or-input" step="any" />
+                <NumberField :model-value="radialMax" class="or-input" step="any" @update:model-value="(v) => { if (v != null) radialMax = v }" />
               </div>
             </div>
             <p class="or-hint">{{ t('orientationAnalysis.selectionHint') }}</p>
             <div class="or-field-row">
               <div class="or-field">
                 <label class="or-label">{{ t('orientationAnalysis.npt') }}</label>
-                <input v-model.number="npt" type="number" class="or-input" min="2" step="1" />
+                <NumberField :model-value="npt" class="or-input" min="2" step="1" @update:model-value="(v) => { if (v != null) npt = v }" />
               </div>
               <div class="or-field">
                 <label class="or-label">{{ t('orientationAnalysis.nptRad') }}</label>
-                <input v-model.number="nptRad" type="number" class="or-input" min="1" step="1" />
+                <NumberField :model-value="nptRad" class="or-input" min="1" step="1" @update:model-value="(v) => { if (v != null) nptRad = v }" />
               </div>
             </div>
           </div>
@@ -209,12 +209,12 @@
             </div>
             <div class="or-field">
               <label class="or-label">{{ t('orientationAnalysis.meridianChi') }}</label>
-              <input
-                v-model.number="meridianChiDeg"
-                type="number"
+              <NumberField
+                :model-value="meridianChiDeg"
                 class="or-input"
                 step="any"
                 :placeholder="t('orientationAnalysis.meridianChiPlaceholder')"
+                @update:model-value="meridianChiDeg = $event"
               />
               <p class="or-hint">{{ t('orientationAnalysis.meridianChiHint') }}</p>
             </div>
@@ -231,30 +231,30 @@
           <div class="or-field-row">
             <div class="or-field">
               <label class="or-label">a (Å)</label>
-              <input v-model.number="cellA" type="number" class="or-input" step="any" min="0" />
+              <NumberField :model-value="cellA" class="or-input" step="any" min="0" @update:model-value="(v) => { if (v != null) cellA = v }" />
             </div>
             <div class="or-field">
               <label class="or-label">b (Å)</label>
-              <input v-model.number="cellB" type="number" class="or-input" step="any" min="0" />
+              <NumberField :model-value="cellB" class="or-input" step="any" min="0" @update:model-value="(v) => { if (v != null) cellB = v }" />
             </div>
           </div>
           <div class="or-field-row">
             <div class="or-field">
               <label class="or-label">c (Å)</label>
-              <input v-model.number="cellC" type="number" class="or-input" step="any" min="0" />
+              <NumberField :model-value="cellC" class="or-input" step="any" min="0" @update:model-value="(v) => { if (v != null) cellC = v }" />
             </div>
             <div class="or-field">
               <label class="or-label">β (°)</label>
-              <input v-model.number="cellBeta" type="number" class="or-input" step="any" min="0" max="180" />
+              <NumberField :model-value="cellBeta" class="or-input" step="any" min="0" max="180" @update:model-value="(v) => { if (v != null) cellBeta = v }" />
             </div>
           </div>
 
           <h4 class="or-subtitle-sm">{{ t('orientationAnalysis.reflections') }}</h4>
           <div v-for="(refl, idx) in reflections" :key="idx" class="or-refl-row">
-            <input v-model.number="refl.h" type="number" class="or-input or-input-sm" placeholder="h" />
-            <input v-model.number="refl.k" type="number" class="or-input or-input-sm" placeholder="k" />
-            <input v-model.number="refl.l" type="number" class="or-input or-input-sm" placeholder="l" />
-            <input v-model.number="refl.cos2" type="number" class="or-input" step="any" placeholder="⟨cos²χ⟩" />
+            <NumberField :model-value="refl.h" class="or-input or-input-sm" placeholder="h" @update:model-value="(v) => { if (v != null) refl.h = v }" />
+            <NumberField :model-value="refl.k" class="or-input or-input-sm" placeholder="k" @update:model-value="(v) => { if (v != null) refl.k = v }" />
+            <NumberField :model-value="refl.l" class="or-input or-input-sm" placeholder="l" @update:model-value="(v) => { if (v != null) refl.l = v }" />
+            <NumberField :model-value="refl.cos2" class="or-input" step="any" placeholder="⟨cos²χ⟩" @update:model-value="(v) => { if (v != null) refl.cos2 = v }" />
             <button type="button" class="or-btn-icon" :title="t('orientationAnalysis.removeReflection')" @click="removeReflection(idx)">&times;</button>
           </div>
           <button type="button" class="or-btn or-btn-sm" @click="addReflection">
@@ -267,7 +267,7 @@
           <h3 class="or-card-title">{{ t('orientationAnalysis.crystallinity') }}</h3>
           <div class="or-field">
             <label class="or-label">{{ t('orientationAnalysis.xcLabel') }}</label>
-            <input v-model.number="crystallinityInput" type="number" class="or-input" step="any" min="0" max="100" placeholder="0–100" />
+            <NumberField :model-value="crystallinityInput" class="or-input" step="any" min="0" max="100" placeholder="0–100" @update:model-value="crystallinityInput = $event" />
             <p class="or-hint">{{ t('orientationAnalysis.xcHint') }}</p>
           </div>
         </div>
@@ -471,6 +471,7 @@ import { useTransport } from '@/lib/transport'
 import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
+import NumberField from '@/components/common/NumberField.vue'
 import GeometryForm from '@/components/business/GeometryForm.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'

@@ -1226,3 +1226,409 @@ def test_ring_pick_assign_ring(synthetic_edf: str):
     assert legacy["peaks"]
     assert legacy["assignRing"] is None
     assert all(p.get("ring") is None for p in legacy["peaks"])
+
+
+# ---------------------------------------------------------------------------
+# Seeded beam centre (ring fit, no internal standard) / 圆环拟合中心种子
+# ---------------------------------------------------------------------------
+
+#: Seed from a user's ring fit: 30 px right / 25 px down of the true centre, so
+#: any (286, 281) result can only come from CONSUMING the seed — not from the
+#: truth (256, 256) nor from guess_poni()'s ellipse estimate (≈256/258 px).
+#: 用户圆环拟合种子：比真值右 30 px、下 25 px——结果出现 (286, 281) 只能说明
+#: 种子确被消费，而非真值或 guess_poni() 椭圆估计（约 256/258 px）。
+SEED_CENTER_X_PX = CENTER_X_PX + 30.0
+SEED_CENTER_Y_PX = CENTER_Y_PX + 25.0
+
+
+def test_setup_seeded_center_consumed(synthetic_edf: str):
+    """setup 载荷里的 centerX/centerY（用户在圆环上点选拟合出的束流中心，
+    无需内标）必须被消费为几何初值：
+
+    1. 不带中心 → 响应 seededCenterPx 为 None、会话 center0 为 None；
+    2. 带中心 → 响应回显该中心，会话 center0 以米制存储（poni1=y·pixel1、
+       poni2=x·pixel2），且 update_peaks 构建的初值几何中心恰为种子
+       （覆盖 guess_poni() 的椭圆估计——对照不带中心的会话，后者的初值
+       中心来自椭圆拟合、约为真值中心）；
+    3. 全参数固定的 refine 保持中心为种子值，证明种子一路进入返回几何；
+       距离仍收敛到真值 3% 以内。
+
+    The seeded centre is 30/25 px off the truth, so a (286, 281) result proves
+    consumption of the seed rather than recovery of the truth.
+    """
+    from python.services import calibration as calib_module
+
+    # -- 1) no seed: response echo + session are both None --------------------
+    plain = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))
+    plain_sid = plain["sessionId"]
+    assert plain["seededCenterPx"] is None
+    assert calib_module._SESSIONS[plain_sid]["center0"] is None
+
+    # Unseeded first guess, for contrast: guess_poni()'s innermost-ring ellipse
+    # fit — close to the TRUE centre, i.e. NOT the seed.
+    # 无种子首猜作对照：guess_poni() 椭圆拟合——接近真值中心，绝非种子值。
+    np.random.seed(RNG_SEED)
+    plain_peaks = _ok(_run({"action": "detect_peaks", "sessionId": plain_sid}))["peaks"]
+    _ok(_run({
+        "action": "update_peaks", "sessionId": plain_sid,
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in plain_peaks],
+    }))
+    plain_gr = calib_module._SESSIONS[plain_sid]["gr"]
+    plain_cx = plain_gr.poni2 / PIXEL_M
+    plain_cy = plain_gr.poni1 / PIXEL_M
+    assert abs(plain_cx - SEED_CENTER_X_PX) > 5.0, plain_cx
+    assert abs(plain_cy - SEED_CENTER_Y_PX) > 5.0, plain_cy
+
+    # -- 2) seeded setup: echoed back + stored in metres + seeds the guess ----
+    seeded = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+        "centerX": SEED_CENTER_X_PX,
+        "centerY": SEED_CENTER_Y_PX,
+    }))
+    sid = seeded["sessionId"]
+    echo = seeded["seededCenterPx"]
+    assert echo == {"x": SEED_CENTER_X_PX, "y": SEED_CENTER_Y_PX}, echo
+    # poni1 runs along rows (y), poni2 along columns (x). / poni1 沿行、poni2 沿列。
+    center0 = calib_module._SESSIONS[sid]["center0"]
+    assert center0 == pytest.approx(
+        (SEED_CENTER_Y_PX * PIXEL_M, SEED_CENTER_X_PX * PIXEL_M), rel=1e-9,
+    )
+
+    np.random.seed(RNG_SEED)
+    peaks = _ok(_run({"action": "detect_peaks", "sessionId": sid}))["peaks"]
+    assert len(peaks) >= 50, f"too few auto-picked peaks: {len(peaks)}"
+    _ok(_run({
+        "action": "update_peaks", "sessionId": sid,
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in peaks],
+    }))
+    # The seeded centre OVERRODE the ellipse estimate in the initial geometry.
+    # 初值几何里种子中心已覆盖椭圆估计。
+    gr = calib_module._SESSIONS[sid]["gr"]
+    assert gr.poni2 / PIXEL_M == pytest.approx(SEED_CENTER_X_PX, abs=1e-9)
+    assert gr.poni1 / PIXEL_M == pytest.approx(SEED_CENTER_Y_PX, abs=1e-9)
+
+    # -- 3) all-fixed refine: the centre survives verbatim ---------------------
+    # All seven parameters fixed → the returned geometry IS the initial one, so
+    # the centre can only be (286, 281) if the seed really was consumed there.
+    # 七参全固定 → 返回几何即初值几何：中心为 (286, 281) 只能源于种子确被
+    # 消费为初值。（pyFAI 的 refine3 支持全固定，无报错，故无需退化为常规
+    # free 精修路径。）
+    pre_dist_mm = gr.dist * 1e3
+    fixed = {
+        "dist": False, "poni1": False, "poni2": False,
+        "rot1": False, "rot2": False, "rot3": False, "wavelength": False,
+    }
+    refined = _ok(_run({
+        "action": "refine", "sessionId": sid, "passes": 2, "free": fixed,
+    }))
+    geometry = refined["geometry"]
+    assert geometry["center_x_px"] == pytest.approx(SEED_CENTER_X_PX, abs=1e-9), geometry
+    assert geometry["center_y_px"] == pytest.approx(SEED_CENTER_Y_PX, abs=1e-9), geometry
+    # The seed only overrides the centre: dist keeps its guess_poni() value.
+    # 种子只覆盖中心：距离保持 guess_poni() 给出的值。
+    assert geometry["dist_mm"] == pytest.approx(pre_dist_mm, rel=1e-9), geometry
+    # And the verified centre is provably NOT the truth: the seed is 30/25 px
+    # off, so recovering (286, 281) means consuming the seed.
+    # 且该中心可证非真值：种子偏 30/25 px，得到 (286, 281) 即种子被消费。
+    assert abs(geometry["center_x_px"] - CENTER_X_PX) > 5.0, geometry
+    assert abs(geometry["center_y_px"] - CENTER_Y_PX) > 5.0, geometry
+    # chi² is informational (None when pyFAI cannot compute it) — when present
+    # it must be a real, non-negative number, not NaN/inf.
+    # χ² 为信息性字段（pyFAI 算不出时可为 None）；存在时必须是有限非负实数。
+    if refined["chi2"] is not None:
+        assert math.isfinite(refined["chi2"]) and refined["chi2"] >= 0, refined["chi2"]
+
+
+# ---------------------------------------------------------------------------
+# Internal-standard mode / 内标定标模式
+# ---------------------------------------------------------------------------
+
+def _setup_internal(edf_path: str) -> str:
+    """Setup WITHOUT any calibrant → internal-standard session.
+    不带任何标样的 setup → 内标会话。"""
+    return _ok(_run({
+        "action": "setup",
+        "filePath": edf_path,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))["sessionId"]
+
+
+def _first_ring_tth_rad() -> float:
+    """Ground-truth 2θ (radians) of LaB6's first ring at the test wavelength —
+    the value ring_standard must recover from the ring geometry.
+    测试波长下 LaB6 首环的真实 2θ（弧度）——ring_standard 必须从环几何恢复。"""
+    import pyFAI.calibrant as calibrant_mod
+
+    calibrant = calibrant_mod.get_calibrant(CALIBRANT_NAME)
+    calibrant.wavelength = WAVELENGTH_M
+    tth0 = calibrant.get_2th()[0]
+    assert tth0 is not None
+    return float(tth0)
+
+
+def _assert_bilingual_error(result: dict) -> str:
+    """Assert an _err payload carrying BOTH languages (EN + 中文 in one
+    'EN / ZH' string). / 断言 _err 载荷双语齐备。"""
+    assert result.get("status") == "error", result
+    message = str(result.get("message") or "")
+    assert " / " in message, message
+    assert any("\u4e00" <= ch <= "\u9fff" for ch in message), message
+    assert any(("a" <= ch.lower() <= "z") for ch in message), message
+    return message
+
+
+def test_setup_internal_mode(synthetic_edf: str):
+    """No calibrant → an internal-standard session; the calibrant-dependent
+    actions refuse it bilingually, detect_peaks still works.
+    无标样 → 内标会话；依赖标样的动作双语拒绝，detect_peaks 仍可用。"""
+    from python.services import calibration as calib_module
+
+    # A calibrant setup is NOT internal mode (the flag tracks the mode).
+    # 带标样的 setup 不是内标模式（标志跟随模式）。
+    assert calib_module._SESSIONS[_setup_session(synthetic_edf)]["internal_standard"] is False
+
+    setup = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))
+    sid = setup["sessionId"]
+    assert setup["calibrantName"] is None
+    session = calib_module._SESSIONS[sid]
+    assert session["internal_standard"] is True
+    assert session["calibrant_name"] is None
+    # The empty Calibrant() sentinel keeps direct session["calibrant"] consumers
+    # (e.g. _build_refinement's constructor argument) from crashing.
+    # 空 Calibrant() 哨兵保证直接读 session["calibrant"] 的路径不炸。
+    assert session["calibrant"] is not None
+
+    # Calibrant-dependent actions: bilingual refusal naming the mode.
+    # 依赖标样的动作：双语拒绝并指明模式。
+    for payload in (
+        {"action": "update_peaks", "sessionId": sid, "peaks": [{"y": 10, "x": 10}]},
+        {"action": "refine", "sessionId": sid},
+        {"action": "ring_overlay", "sessionId": sid},
+    ):
+        message = _assert_bilingual_error(_run(payload))
+        assert "internal-standard" in message, message
+        assert "内标定标" in message, message
+
+    # detect_peaks has no calibrant dependency — it must still run.
+    # detect_peaks 不含标样依赖——必须照常可用。
+    np.random.seed(RNG_SEED)
+    detect = _ok(_run({"action": "detect_peaks", "sessionId": sid}))
+    assert len(detect["peaks"]) >= 50, f"too few auto-picked peaks: {len(detect['peaks'])}"
+
+
+def test_ring_standard_units(synthetic_edf: str):
+    """One KNOWN ring (8 points on the true first ring) → full geometry, for
+    every supported unit: centre (256, 256) ±1e-6, radius = truth, SD = 200 mm
+    (rel 1e-6), 2θ recovered for the q/d/2θ variants (null for dist_mm).
+    已知环（真值首环上 8 点）→ 完整几何：中心 (256,256)±1e-6、半径 = 真值、
+    SD = 200 mm（rel 1e-6）；q/d/2θ 变体恢复 2θ（dist_mm 为 null）。"""
+    sid = _setup_internal(synthetic_edf)
+    r0 = _first_ring_radius_px()
+    tth0 = _first_ring_tth_rad()
+    points = _ring_guide_points(r0, [a * 45.0 for a in range(8)])
+
+    # Truths converted from the ring's 2θ: q = 4π·sinθ/λ (SI metres).
+    # 由环 2θ 换算的真值：q = 4π·sinθ/λ（SI 米制）。
+    q_m = 4.0 * math.pi * math.sin(tth0 / 2.0) / WAVELENGTH_M
+    cases = {
+        "q_nm": q_m / 1e9,                       # nm⁻¹
+        "q_A": q_m / 1e10,                       # Å⁻¹
+        "d_A": (2.0 * math.pi / q_m) * 1e10,     # Å
+        "d_nm": (2.0 * math.pi / q_m) * 1e9,     # nm
+        "tth_deg": math.degrees(tth0),           # degrees
+        "dist_mm": DIST_MM,                      # mm (direct)
+    }
+    for unit, value in cases.items():
+        result = _ok(_run({
+            "action": "ring_standard", "sessionId": sid, "points": points,
+            "value": value, "unit": unit,
+        }))
+        assert result["centerXPx"] == pytest.approx(CENTER_X_PX, abs=1e-6), (unit, result)
+        assert result["centerYPx"] == pytest.approx(CENTER_Y_PX, abs=1e-6), (unit, result)
+        assert result["radiusPx"] == pytest.approx(r0, rel=1e-6), (unit, result)
+        assert result["rmsPx"] is not None and result["rmsPx"] >= 0.0, (unit, result)
+        assert result["distMm"] == pytest.approx(DIST_MM, rel=1e-6), (unit, result)
+        assert result["unit"] == unit
+        assert result["value"] == pytest.approx(value, rel=1e-12)
+        assert result["internalStandard"] is True
+        if unit == "dist_mm":
+            # The distance was given directly — no ring 2θ to report.
+            # 距离直给——没有可报的环 2θ。
+            assert result["tthDeg"] is None
+        else:
+            assert result["tthDeg"] == pytest.approx(math.degrees(tth0), rel=1e-6), (unit, result)
+        geometry = result["geometry"]
+        assert geometry["dist_mm"] == pytest.approx(DIST_MM, rel=1e-6), (unit, geometry)
+        assert geometry["center_x_px"] == pytest.approx(CENTER_X_PX, abs=1e-6), (unit, geometry)
+        assert geometry["center_y_px"] == pytest.approx(CENTER_Y_PX, abs=1e-6), (unit, geometry)
+        assert geometry["wavelength_A"] == pytest.approx(WAVELENGTH_A, rel=1e-9)
+        # No tilt information in a single ring → rot stays exactly 0.
+        # 单环不含倾角信息 → rot 严格为 0。
+        assert geometry["rot1_deg"] == 0.0 and geometry["rot2_deg"] == 0.0
+        assert geometry["rot3_deg"] == 0.0
+
+
+def test_ring_standard_errors(synthetic_edf: str):
+    """Every invalid ring_standard input is refused bilingually: fewer than 3
+    finite points, unknown unit, value ≤ 0, sinθ > 1, 2θ ≥ 90°, and a
+    non-physical distance (≤ 0.01 mm on the low rail, > 50 m on the high one).
+    所有非法输入双语拒绝：有效点不足 3、未知单位、value ≤ 0、sinθ > 1、
+    2θ ≥ 90°、距离非物理（下限 ≤ 0.01 mm、上限 > 50 m）。"""
+    sid = _setup_internal(synthetic_edf)
+    r0 = _first_ring_radius_px()
+    points = _ring_guide_points(r0, [0.0, 45.0, 90.0, 135.0])
+
+    bad_calls = [
+        # < 3 finite points (a NaN coordinate does not count as a point).
+        # 有效点不足 3（NaN 坐标不算点）。
+        {"points": points[:2], "value": 1.0, "unit": "q_nm"},
+        {"points": [points[0], points[1], {"y": float("nan"), "x": 10.0}],
+         "value": 1.0, "unit": "q_nm"},
+        # Unknown unit / 未知单位
+        {"points": points, "value": 1.0, "unit": "furlong"},
+        # value ≤ 0 / 数值 ≤ 0
+        {"points": points, "value": 0.0, "unit": "q_nm"},
+        # sinθ > 1: q·λ/(4π) beyond the reachable range.
+        # sinθ > 1：q·λ/(4π) 超出可达范围。
+        {"points": points, "value": 1e9, "unit": "q_A"},
+        # 2θ ≥ 90° given directly / 直给 2θ ≥ 90°。
+        {"points": points, "value": 90.0, "unit": "tth_deg"},
+        # Non-physical distance: 0.001 mm ≤ 0.01 mm floor.
+        # 非物理距离：0.001 mm ≤ 0.01 mm 下限。
+        {"points": points, "value": 0.001, "unit": "dist_mm"},
+        # …and the 50 m ceiling: 1e6 mm = 1000 m (a wrong unit scale).
+        # ……以及 50 m 上限：1e6 mm = 1000 m（单位量级填错）。
+        {"points": points, "value": 1e6, "unit": "dist_mm"},
+    ]
+    for extra in bad_calls:
+        _assert_bilingual_error(_run({
+            "action": "ring_standard", "sessionId": sid, **extra,
+        }))
+
+
+def test_ring_standard_export_and_preview(synthetic_edf: str, tmp_path: Path):
+    """ring_standard's geometry is a first-class session geometry: export_poni
+    writes it (read back with pyFAI's own PoniFile — dist / poni1 / poni2 /
+    wavelength / rot=0) and integrate_preview consumes it (non-empty 1D/2D).
+    ring_standard 的几何是一等公民：export_poni 落盘（用 pyFAI 自带 PoniFile
+    读回 dist / poni1 / poni2 / wavelength / rot=0），integrate_preview 可用
+    （1D/2D 非空）。"""
+    sid = _setup_internal(synthetic_edf)
+    r0 = _first_ring_radius_px()
+    tth0 = _first_ring_tth_rad()
+    q_m = 4.0 * math.pi * math.sin(tth0 / 2.0) / WAVELENGTH_M
+    points = _ring_guide_points(r0, [a * 45.0 for a in range(8)])
+    fitted = _ok(_run({
+        "action": "ring_standard", "sessionId": sid, "points": points,
+        "value": q_m / 1e9, "unit": "q_nm",
+    }))
+
+    poni_path = tmp_path / "internal_standard.poni"
+    exported = _ok(_run({
+        "action": "export_poni", "sessionId": sid, "savePath": str(poni_path),
+    }))
+    assert poni_path.is_file()
+    assert exported["summary"]["dist_mm"] == pytest.approx(DIST_MM, rel=1e-6)
+    assert exported["summary"]["dist_mm"] == pytest.approx(fitted["distMm"], rel=1e-12)
+
+    from pyFAI.io.ponifile import PoniFile
+
+    pf = PoniFile()
+    pf.read_from_file(str(poni_path))
+    assert pf.dist == pytest.approx(DIST_M, rel=1e-6)
+    assert pf.poni1 == pytest.approx(CENTER_Y_PX * PIXEL_M, rel=1e-6)
+    assert pf.poni2 == pytest.approx(CENTER_X_PX * PIXEL_M, rel=1e-6)
+    assert pf.wavelength == pytest.approx(WAVELENGTH_M, rel=1e-6)
+    assert pf.rot1 == 0.0 and pf.rot2 == 0.0 and pf.rot3 == 0.0
+
+    preview = _ok(_run({"action": "integrate_preview", "sessionId": sid}))
+    one, two = preview["1d"], preview["2d"]
+    assert len(one["x"]) == 1024 and len(one["y"]) == 1024
+    assert any(v is not None for v in one["y"]), "1-D preview must have data"
+    assert two["nRad"] > 0 and two["nAzim"] > 0
+    assert len(two["intensity"]) == two["nRad"] * two["nAzim"]
+    assert any(v is not None for v in two["intensity"]), "2-D cake must have data"
+
+
+def test_ring_standard_default_dist(synthetic_edf: str, tmp_path: Path):
+    """ring_standard WITHOUT a value (user request): the centre still comes
+    from the circle fit while the distance defaults to the initial guess
+    (dist0 = 200 mm); the response flags ``distDefaulted`` and export_poni
+    annotates the .poni with ``Dist-default``. A later valued run on the SAME
+    session clears the flag and the annotation.
+    不带 value 的 ring_standard（用户要求）：中心仍由圆拟合得出，距离取初始
+    猜测（dist0 = 200 mm）；响应以 ``distDefaulted`` 标记，export_poni 在
+    .poni 中写入 ``Dist-default`` 注释。同一会话随后带值重跑则标志与注释一并
+    消失。"""
+    from python.services import calibration as calib_module
+
+    sid = _setup_internal(synthetic_edf)
+    r0 = _first_ring_radius_px()
+    points = _ring_guide_points(r0, [a * 45.0 for a in range(8)])
+
+    # No value, no unit → the default-distance branch. The unit is skipped
+    # entirely (a stale dropdown entry would be meaningless).
+    # 无 value 无 unit → 默认距离分支。单位校验整体跳过（下拉残留无意义）。
+    defaulted = _ok(_run({
+        "action": "ring_standard", "sessionId": sid, "points": points,
+    }))
+    assert defaulted["distDefaulted"] is True
+    assert defaulted["unit"] is None and defaulted["value"] is None
+    assert defaulted["tthDeg"] is None
+    # The distance is exactly the session's initial guess (dist0 = 200 mm),
+    # the centre is the ground truth from the circle fit.
+    # 距离恰为会话初始猜测（dist0 = 200 mm），中心为圆拟合得到的真值。
+    assert defaulted["distMm"] == pytest.approx(DIST_MM, rel=1e-12)
+    assert defaulted["centerXPx"] == pytest.approx(CENTER_X_PX, abs=1e-6)
+    assert defaulted["centerYPx"] == pytest.approx(CENTER_Y_PX, abs=1e-6)
+    assert calib_module._SESSIONS[sid]["ring_standard"]["dist_defaulted"] is True
+
+    # The annotation lands in the exported .poni. ASCII probes only: the file
+    # may be written in the locale encoding (GBK here), so decode lossily and
+    # match ASCII substrings that survive any encoding.
+    # 标注须出现在导出的 .poni 中。仅用 ASCII 探针：文件可能按本地编码
+    # （此处 GBK）写出，故有损解码并匹配任意编码下都存活的 ASCII 子串。
+    poni_defaulted = tmp_path / "defaulted.poni"
+    _ok(_run({
+        "action": "export_poni", "sessionId": sid, "savePath": str(poni_defaulted),
+    }))
+    assert "Dist-default" in poni_defaulted.read_text(encoding="utf-8", errors="replace")
+    assert "200.0 mm" in poni_defaulted.read_text(encoding="utf-8", errors="replace")
+
+    # A valued run on the SAME session restores the exact path: no flag, no
+    # annotation. / 同一会话带值重跑恢复精确路径：无标志、无注释。
+    tth0 = _first_ring_tth_rad()
+    q_m = 4.0 * math.pi * math.sin(tth0 / 2.0) / WAVELENGTH_M
+    valued = _ok(_run({
+        "action": "ring_standard", "sessionId": sid, "points": points,
+        "value": q_m / 1e9, "unit": "q_nm",
+    }))
+    assert valued["distDefaulted"] is False
+    assert valued["distMm"] == pytest.approx(DIST_MM, rel=1e-6)
+    assert calib_module._SESSIONS[sid]["ring_standard"]["dist_defaulted"] is False
+
+    poni_valued = tmp_path / "valued.poni"
+    _ok(_run({
+        "action": "export_poni", "sessionId": sid, "savePath": str(poni_valued),
+    }))
+    assert "Dist-default" not in poni_valued.read_text(encoding="utf-8", errors="replace")

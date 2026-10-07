@@ -131,17 +131,17 @@
           <div class="lm-field-row">
             <div class="lm-field">
               <label class="lm-label">{{ t('lamellar.qMin') }}</label>
-              <input v-model.number="radialMin" type="number" class="lm-input" step="any" placeholder="—" />
+              <NumberField :model-value="radialMin" class="lm-input" step="any" placeholder="—" @update:model-value="radialMin = $event" />
             </div>
             <div class="lm-field">
               <label class="lm-label">{{ t('lamellar.qMax') }}</label>
-              <input v-model.number="radialMax" type="number" class="lm-input" step="any" placeholder="—" />
+              <NumberField :model-value="radialMax" class="lm-input" step="any" placeholder="—" @update:model-value="radialMax = $event" />
             </div>
           </div>
           <p class="lm-hint">{{ t('lamellar.qRangeHint') }}</p>
           <div v-if="inputMode === 'image'" class="lm-field">
             <label class="lm-label">{{ t('lamellar.npt') }}</label>
-            <input v-model.number="npt" type="number" class="lm-input" min="64" step="1" />
+            <NumberField :model-value="npt" class="lm-input" min="64" step="1" @update:model-value="(v) => { if (v != null) npt = v }" />
           </div>
         </div>
 
@@ -157,7 +157,7 @@
           </div>
           <div v-if="bgMode === 'constant'" class="lm-field">
             <label class="lm-label">{{ t('lamellar.bgLevel') }}</label>
-            <input v-model.number="bgConstant" type="number" class="lm-input" step="any" />
+            <NumberField :model-value="bgConstant" class="lm-input" step="any" @update:model-value="bgConstant = $event" />
           </div>
           <p class="lm-hint">{{ t('lamellar.bgHint') }}</p>
         </div>
@@ -345,11 +345,11 @@
               <div class="lm-field-row lm-tangent-fields">
                 <div class="lm-field">
                   <label class="lm-label">{{ t('lamellar.tangentWindowLabel') }}</label>
-                  <input v-model.number="tangentFitMin" type="number" class="lm-input" step="any" placeholder="auto" />
+                  <NumberField :model-value="tangentFitMin" class="lm-input" step="any" placeholder="auto" @update:model-value="tangentFitMin = $event" />
                 </div>
                 <div class="lm-field">
                   <label class="lm-label">–</label>
-                  <input v-model.number="tangentFitMax" type="number" class="lm-input" step="any" placeholder="auto" />
+                  <NumberField :model-value="tangentFitMax" class="lm-input" step="any" placeholder="auto" @update:model-value="tangentFitMax = $event" />
                 </div>
               </div>
               <button type="button" class="lm-btn lm-btn-sm lm-btn-primary" :disabled="!canRun || isRunning" @click="handleRun">
@@ -471,6 +471,7 @@ import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import LineChart from '@/components/charts/LineChart.vue'
 import type { LineTrace } from '@/components/charts/LineChart.vue'
 

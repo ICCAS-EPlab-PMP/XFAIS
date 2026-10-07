@@ -261,6 +261,13 @@ async function loadImage(filePath: string): Promise<void> {
     filePath,
     frame: 0,
     settings: buildRenderSettings(),
+    // PERFORMANCE (大图加载慢): this view consumes the PNG (binary frame →
+    // blob URL) and metadata only — never the raw imageData matrix, which
+    // would double the payload for nothing. Explicit false; the backend
+    // default is NOT changed (unknown consumers keep it).
+    // 性能：本视图只消费 PNG（二进制帧 → blob URL）与元数据，从不使用原始
+    // imageData 矩阵（白白翻倍负载）。显式 false；不改后端默认值。
+    includeImageData: false,
   })
 
   // Receive PNG image as binary data (desktop binary WebSocket frame).

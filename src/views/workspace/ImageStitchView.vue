@@ -46,30 +46,30 @@
             <div class="is-image-fields">
               <div class="is-field">
                 <label class="is-label">{{ t('imageStitch.pixelSize') }} (µm)</label>
-                <input
-                  v-model.number="img.pixelSizeUm"
-                  type="number"
+                <NumberField
+                  :model-value="img.pixelSizeUm"
                   class="is-input"
                   step="any"
                   min="0"
+                  @update:model-value="(v) => { if (v != null) img.pixelSizeUm = v }"
                 />
               </div>
               <div class="is-field">
                 <label class="is-label">{{ t('imageStitch.offsetX') }}</label>
-                <input
-                  v-model.number="img.offsetX"
-                  type="number"
+                <NumberField
+                  :model-value="img.offsetX"
                   class="is-input"
                   step="any"
+                  @update:model-value="(v) => { if (v != null) img.offsetX = v }"
                 />
               </div>
               <div class="is-field">
                 <label class="is-label">{{ t('imageStitch.offsetY') }}</label>
-                <input
-                  v-model.number="img.offsetY"
-                  type="number"
+                <NumberField
+                  :model-value="img.offsetY"
                   class="is-input"
                   step="any"
+                  @update:model-value="(v) => { if (v != null) img.offsetY = v }"
                 />
               </div>
             </div>
@@ -144,11 +144,21 @@
             <div class="is-field-row">
               <div class="is-field">
                 <label class="is-label">Min</label>
-                <input v-model.number="climMin" type="number" class="is-input is-input-sm" step="any" />
+                <NumberField
+                  :model-value="climMin"
+                  class="is-input is-input-sm"
+                  step="any"
+                  @update:model-value="climMin = $event ?? 0"
+                />
               </div>
               <div class="is-field">
                 <label class="is-label">Max</label>
-                <input v-model.number="climMax" type="number" class="is-input is-input-sm" step="any" />
+                <NumberField
+                  :model-value="climMax"
+                  class="is-input is-input-sm"
+                  step="any"
+                  @update:model-value="climMax = $event ?? 0"
+                />
               </div>
             </div>
           </template>
@@ -267,6 +277,7 @@ import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import ImagePreview from '@/components/charts/ImagePreview.vue'
 
 // === Type definitions / 类型定义 ===

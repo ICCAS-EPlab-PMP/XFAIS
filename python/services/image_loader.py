@@ -209,7 +209,16 @@ def _cached_disk_frame(
             raise IOError(f"fabio decoded no image data from {normalized_path}")
         if raw.ndim > 2:
             raw = raw[0]
-    return raw.astype(np.float32)
+        # Dead-pixel parity with the H5 path (_prepare_frame): fabio decodes
+        # EIGER TIFF/EDF frames as uint32 whose 0xFFFFFFFF fill marks dead
+        # pixels; left as ~4.29e9 the sentinel poisons every average-based
+        # integration (e.g. integrate_preview).
+        # 与 H5 路径（_prepare_frame）的死像素处理对齐：fabio 解码的
+        # EIGER TIFF/EDF 帧以 0xFFFFFFFF 填充死像素，不转换的话该哨兵值
+        # （~4.29e9）会污染所有基于均值的积分（如 integrate_preview）。
+        arr = raw.astype(np.float32)
+        arr[arr > H5_DEAD_PIXEL_THRESHOLD] = -1.0
+        return arr
 
 
 class H5Handler:
