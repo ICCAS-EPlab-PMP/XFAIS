@@ -18,6 +18,11 @@ import fabio
 import h5py
 import numpy as np
 
+# Register non-default HDF5 filters (BitShuffle id 32008 etc.) before any read.
+# HEPS/上海光源 Eiger 原始 h5 用 bitshuffle 压缩；不注册时 h5py 读帧报
+# "compression unknown"，open_file 只能渲染空帧（adjustedMax=NaN）。
+import hdf5plugin  # noqa: F401
+
 EIGER_4D_CHANNELS: list[str] = ["LowThresholdData", "HighThresholdData", "DiffData"]
 H5_DEAD_PIXEL_THRESHOLD: float = 4.25e9
 SUPPORTED_IMAGE_EXTS: tuple[str, ...] = (".edf", ".tif", ".tiff", ".h5")
