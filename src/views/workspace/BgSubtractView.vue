@@ -163,8 +163,12 @@
             </label>
           </div>
 
-          <div v-if="transmissionSource === 'per-file' && tooManyFilesForPerFile" class="bgs-match-warning">
-            ⚠ {{ t('bgSubtract.tooManyFilesWarning') }}
+          <!-- Over-limit notice: shown whenever the per-file option is out of
+               reach (any source mode), so the user is always told WHY it is
+               disabled. / 超限提示：只要超出逐文件上限就显示（与当前来源模式
+               无关），用户始终能知道选项为何不可用。 -->
+          <div v-if="tooManyFilesForPerFile" class="bgs-match-warning">
+            ⚠ {{ t('bgSubtract.tooManyFilesWarning', { limit: PER_FILE_TRANSMISSION_LIMIT }) }}
           </div>
 
           <!-- Manual transmission / 手动透射率 -->
@@ -690,7 +694,16 @@ const canMatchIonchamber = computed(() => {
   return hasFiles && !!ionchamberFolder.value && !matchingIonchamber.value
 })
 
-const tooManyFilesForPerFile = computed(() => currentSamplePaths.value.length > 10)
+// Per-file transmission cap (user request 2026-10-13: raised 10 → 100). The
+// UI keeps the per-file inputs for up to 100 sample images; beyond that the
+// radio is disabled AND the user is explicitly told (visible warning + toast
+// on the forced switch) instead of the option silently greying out — the
+// previous behaviour read as "the feature disappeared" after importing many
+// images. / 逐文件透过率上限（2026-10-13 用户要求：10 → 100）。≤100 张仍可
+// 逐文件设置；超出时禁用单选并明确告知（警示条 + 强切时的 toast），而非像
+// 从前那样选项悄悄变灰——用户导入多图后误以为功能丢失。
+const PER_FILE_TRANSMISSION_LIMIT = 100
+const tooManyFilesForPerFile = computed(() => currentSamplePaths.value.length > PER_FILE_TRANSMISSION_LIMIT)
 
 const batchResultSummary = computed<ResultSummaryData | null>(() => {
   if (!batchResult.value) return null
@@ -753,10 +766,17 @@ watch(bgPath, (newPath) => {
   }
 })
 
-// Force switch away from per-file when too many files / 文件过多时强制切离逐文件模式
+// Force switch away from per-file when over the limit — WITH a toast, so the
+// forced fallback is never silent (user request 2026-10-13: 超出数量请告知用户).
+// 超出逐文件上限时强制切回统一模式——附 toast 提示，绝不静默切换。
 watch(tooManyFilesForPerFile, (tooMany) => {
   if (tooMany && transmissionSource.value === 'per-file') {
     transmissionSource.value = 'manual'
+    toast.push({
+      title: t('bgSubtract.title'),
+      message: t('bgSubtract.tooManyFilesWarning', { limit: PER_FILE_TRANSMISSION_LIMIT }),
+      tone: 'warning',
+    })
   }
 })
 

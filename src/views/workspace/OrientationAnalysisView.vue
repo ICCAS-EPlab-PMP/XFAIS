@@ -250,12 +250,23 @@
           </div>
 
           <h4 class="or-subtitle-sm">{{ t('orientationAnalysis.reflections') }}</h4>
-          <div v-for="(refl, idx) in reflections" :key="idx" class="or-refl-row">
-            <NumberField :model-value="refl.h" class="or-input or-input-sm" placeholder="h" @update:model-value="(v) => { if (v != null) refl.h = v }" />
-            <NumberField :model-value="refl.k" class="or-input or-input-sm" placeholder="k" @update:model-value="(v) => { if (v != null) refl.k = v }" />
-            <NumberField :model-value="refl.l" class="or-input or-input-sm" placeholder="l" @update:model-value="(v) => { if (v != null) refl.l = v }" />
-            <NumberField :model-value="refl.cos2" class="or-input" step="any" placeholder="⟨cos²χ⟩" @update:model-value="(v) => { if (v != null) refl.cos2 = v }" />
-            <button type="button" class="or-btn-icon" :title="t('orientationAnalysis.removeReflection')" @click="removeReflection(idx)">&times;</button>
+          <p class="or-hint">{{ t('orientationAnalysis.reflRingHint') }}</p>
+          <div v-for="(refl, idx) in reflections" :key="idx" class="or-refl">
+            <div class="or-refl-row">
+              <NumberField :model-value="refl.h" class="or-input or-input-sm" placeholder="h" @update:model-value="(v) => { if (v != null) refl.h = v }" />
+              <NumberField :model-value="refl.k" class="or-input or-input-sm" placeholder="k" @update:model-value="(v) => { if (v != null) refl.k = v }" />
+              <NumberField :model-value="refl.l" class="or-input or-input-sm" placeholder="l" @update:model-value="(v) => { if (v != null) refl.l = v }" />
+              <button type="button" class="or-btn-icon" :title="t('orientationAnalysis.removeReflection')" @click="removeReflection(idx)">&times;</button>
+            </div>
+            <div class="or-refl-row or-refl-row--range">
+              <template v-if="inputMode === 'image'">
+                <NumberField :model-value="refl.radialMin" class="or-input or-input-sm" step="any" :placeholder="t('orientationAnalysis.min')" @update:model-value="(v) => refl.radialMin = v" />
+                <span class="or-refl-sep">–</span>
+                <NumberField :model-value="refl.radialMax" class="or-input or-input-sm" step="any" :placeholder="t('orientationAnalysis.max')" @update:model-value="(v) => refl.radialMax = v" />
+                <span class="or-refl-unit">{{ radialUnitShortLabel }}</span>
+              </template>
+              <NumberField :model-value="refl.cos2" class="or-input or-input-cos2" step="any" :placeholder="t('orientationAnalysis.cos2Placeholder')" @update:model-value="(v) => refl.cos2 = v" />
+            </div>
           </div>
           <button type="button" class="or-btn or-btn-sm" @click="addReflection">
             + {{ t('orientationAnalysis.addReflection') }}
@@ -356,6 +367,7 @@
                     <th v-if="methods.includes('hermans')">⟨cos²φ⟩</th>
                     <th v-if="methods.includes('fwhm')">f (FWHM)</th>
                     <th v-if="methods.includes('fwhm')">FWHM (°)</th>
+                    <th v-if="methods.includes('wilchinsky')">f (Wilchinsky)</th>
                     <th>{{ t('orientationAnalysis.batch.warningsCol') }}</th>
                   </tr>
                 </thead>
@@ -371,6 +383,7 @@
                     <td v-if="methods.includes('hermans')">{{ fmt(metric(item, 'hermans', 'cos2_phi')) }}</td>
                     <td v-if="methods.includes('fwhm')">{{ fmt(metric(item, 'fwhm', 'f')) }}</td>
                     <td v-if="methods.includes('fwhm')">{{ fmt(metric(item, 'fwhm', 'fwhm_deg')) }}°</td>
+                    <td v-if="methods.includes('wilchinsky')">{{ fmt(metric(item, 'wilchinsky', 'f')) }}</td>
                     <td>{{ item.warnings?.length ?? 0 }}</td>
                   </tr>
                 </tbody>
@@ -438,6 +451,12 @@
                 <div v-if="r.condition_number !== undefined && r.condition_number !== null" class="or-result-row">
                   <span class="or-result-key">cond</span>
                   <span class="or-result-val">{{ formatNum(r.condition_number) }}</span>
+                </div>
+                <!-- Wilchinsky: measured ⟨cos²χ⟩ per reflection (auto-integrated). -->
+                <!-- Wilchinsky：逐反射实测 ⟨cos²χ⟩（自动积分结果）。 -->
+                <div v-for="(rr, j) in r.reflections ?? []" :key="`${idx}-${j}`" class="or-result-row">
+                  <span class="or-result-key">({{ (rr.hkl ?? []).join('') }}) ⟨cos²χ⟩</span>
+                  <span class="or-result-val">{{ formatNum(rr.measured) }}</span>
                 </div>
               </div>
             </div>
@@ -522,6 +541,12 @@ const radialUnitOptions = [
   { value: '2th_deg', label: '2θ (°)' },
   { value: 'r_mm', label: 'r (mm)' },
 ]
+// Short unit ("Å⁻¹" from "q (Å⁻¹)") for the per-reflection range labels.
+// 单位短标签（"q (Å⁻¹)" → "Å⁻¹"），用于反射环带范围行。
+const radialUnitShortLabel = computed(() => {
+  const label = radialUnitOptions.find((o) => o.value === radialUnit.value)?.label ?? ''
+  return label.match(/\(([^)]+)\)/)?.[1] ?? label
+})
 
 // --- Curves-mode state / 曲线模式状态 ---
 const curvesText = ref('')
@@ -547,10 +572,21 @@ const cellA = ref(6.65)
 const cellB = ref(20.96)
 const cellC = ref(6.5)
 const cellBeta = ref(99.62)
-interface Reflection { h: number; k: number; l: number; cos2: number }
-const reflections = ref<Reflection[]>([{ h: 1, k: 1, l: 0, cos2: 0.5 }])
+// Each reflection carries its own ring range (image mode): Wilchinsky needs
+// one I(χ) per (hkl), so every row integrates its own curve. `cos2` stays
+// optional as a manual override (the only route in curves mode).
+// 每个反射携带自己的环带范围（图像模式）：Wilchinsky 每个 (hkl) 需要一条
+// I(χ)，每行各自积分。`cos2` 可选，作为手动覆盖（曲线模式下的唯一途径）。
+interface Reflection { h: number; k: number; l: number; cos2: number | null; radialMin: number | null; radialMax: number | null }
+// Defaults = the classic α-iPP Wilchinsky set (110)/(040)/(130).
+// 默认行 = α-iPP 经典 Wilchinsky 反射组 (110)/(040)/(130)。
+const reflections = ref<Reflection[]>([
+  { h: 1, k: 1, l: 0, cos2: null, radialMin: null, radialMax: null },
+  { h: 0, k: 4, l: 0, cos2: null, radialMin: null, radialMax: null },
+  { h: 1, k: 3, l: 0, cos2: null, radialMin: null, radialMax: null },
+])
 function addReflection(): void {
-  reflections.value.push({ h: 0, k: 0, l: 0, cos2: 0 })
+  reflections.value.push({ h: 0, k: 0, l: 0, cos2: null, radialMin: null, radialMax: null })
 }
 function removeReflection(idx: number): void {
   reflections.value.splice(idx, 1)
@@ -1014,7 +1050,12 @@ function buildParams(): Record<string, unknown> {
   if (methods.value.includes('wilchinsky')) {
     p.wilchinsky = {
       cell: { a: cellA.value, b: cellB.value, c: cellC.value, beta: cellBeta.value },
-      reflections: reflections.value.map((r) => ({ h: r.h, k: r.k, l: r.l, cos2: r.cos2 })),
+      reflections: reflections.value.map((r) => ({
+        h: r.h, k: r.k, l: r.l,
+        cos2: r.cos2,
+        radialMin: r.radialMin,
+        radialMax: r.radialMax,
+      })),
       uniqueAxis: 'b',
     }
   }
@@ -1049,6 +1090,20 @@ function buildChartTraces(data: Record<string, any>): void {
       traces.push({ x: chi, y: data.background, name: t('orientationAnalysis.backgroundCurve'), color: '#dc2626' })
     }
   }
+  // Wilchinsky: one folded+corrected pair PER REFLECTION ring — the method
+  // integrates one I(χ) per (hkl), and the chart shows them all.
+  // Wilchinsky：每条反射环带各画 折叠+校正 两条——该方法对每个 (hkl) 各积分
+  // 一条 I(χ)，图表全部显示。
+  const wilCurves = Array.isArray(data.wilchinskyCurves) ? data.wilchinskyCurves as Record<string, any>[] : []
+  const palette = ['#7c3aed', '#0d9488', '#d97706', '#db2777', '#65a30d', '#0ea5e9']
+  wilCurves.forEach((c, i) => {
+    const cchi = Array.isArray(c.chi) ? c.chi as number[] : []
+    if (!cchi.length) return
+    const hkl = Array.isArray(c.hkl) ? c.hkl.join('') : '?'
+    const color = palette[i % palette.length]
+    traces.push({ x: cchi, y: c.foldedIntensity ?? [], name: `(${hkl}) ${t('orientationAnalysis.rawCurve')}`, color, dash: 'dot' })
+    traces.push({ x: cchi, y: c.correctedIntensity ?? [], name: `(${hkl}) ${t('orientationAnalysis.correctedCurve')}`, color })
+  })
   chartTraces.value = traces
 }
 
@@ -1141,6 +1196,7 @@ function exportCsv(): void {
     const cols: string[] = ['file']
     if (methods.value.includes('hermans')) cols.push('hermans_f', 'hermans_cos2_phi')
     if (methods.value.includes('fwhm')) cols.push('fwhm_f', 'fwhm_deg')
+    if (methods.value.includes('wilchinsky')) cols.push('wilchinsky_f')
     cols.push('warnings')
     const lines = [cols.join(',')]
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1151,6 +1207,9 @@ function exportCsv(): void {
       }
       if (methods.value.includes('fwhm')) {
         row.push(String(metric(item, 'fwhm', 'f') ?? ''), String(metric(item, 'fwhm', 'fwhm_deg') ?? ''))
+      }
+      if (methods.value.includes('wilchinsky')) {
+        row.push(String(metric(item, 'wilchinsky', 'f') ?? ''))
       }
       row.push(JSON.stringify((item.warnings ?? []).join(' | ')))
       lines.push(row.join(','))
@@ -1176,6 +1235,11 @@ function exportCsv(): void {
   lines.push('')
   for (const r of (resultData.value.results ?? []) as Array<Record<string, unknown>>) {
     lines.push(`# ${r.method}: f=${r.f}, cos2_phi=${r.cos2_phi ?? ''}, fwhm_deg=${r.fwhm_deg ?? ''}`)
+    // Wilchinsky: per-reflection integrated ⟨cos²χ⟩. / Wilchinsky：逐反射积分的 ⟨cos²χ⟩。
+    for (const rr of (r.reflections ?? []) as Array<Record<string, unknown>>) {
+      const hkl = Array.isArray(rr.hkl) ? (rr.hkl as number[]).join('') : ''
+      lines.push(`# wilchinsky (${hkl}): cos2_chi=${rr.measured ?? ''}`)
+    }
   }
   downloadBlob(lines.join('\n'), 'orientation_analysis.csv')
 }
@@ -1307,7 +1371,17 @@ onUnmounted(() => {
   color: var(--color-text-muted, #6b7280);
   font-size: 0.88rem;
 }
-.or-refl-row { display: flex; gap: 4px; align-items: center; margin-bottom: 6px; }
+.or-refl {
+  padding: 6px 4px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  margin-bottom: 8px;
+}
+.or-refl-row { display: flex; gap: 4px; align-items: center; }
+.or-refl-row--range { margin-top: 4px; }
+.or-refl-sep { color: var(--color-text-muted, #6b7280); font-size: 0.8rem; }
+.or-refl-unit { color: var(--color-text-muted, #6b7280); font-size: 0.75rem; white-space: nowrap; }
+.or-input-cos2 { max-width: 110px; margin-left: auto; }
 .or-run-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .or-error {
   background: #fef2f2;

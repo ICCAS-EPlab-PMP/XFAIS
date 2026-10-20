@@ -15,8 +15,10 @@ import numpy as np
 
 from python.service_launcher import (
     WebSocketService,
+    _wilchinsky_ring_ranges,
     build_health_report,
     handle_integrate_cake,
+    handle_orientation_analysis,
     handle_viewer_config,
     normalize_requirement_name,
     parse_required_packages,
@@ -51,6 +53,72 @@ def test_build_health_report_marks_missing_dependency(tmp_path: Path) -> None:
 
 async def _noop_progress(_progress: float, _message: str) -> None:
     """空进度回调 / No-op progress callback."""
+
+
+def test_wilchinsky_ring_ranges_parsing() -> None:
+    """环带范围解析：有范围且无手动 cos² 的反射才需要自动积分。
+    Ring-range parsing: only reflections with a range AND no manual cos² auto-integrate.
+    """
+    payload = {
+        "wilchinsky": {
+            "reflections": [
+                {"h": 1, "k": 1, "l": 0, "radial_min": 1.0, "radial_max": 1.1},   # ring
+                {"h": 0, "k": 4, "l": 0, "radial_min": 1.3, "radial_max": 1.4,
+                 "cos2": 0.25},                                                   # manual override
+                {"h": 1, "k": 3, "l": 0},                                         # nothing
+                {"h": 0, "k": 0, "l": 1, "radial_min": 2.0, "radial_max": 1.0},  # inverted → ignored
+            ]
+        }
+    }
+    assert _wilchinsky_ring_ranges(payload) == [(1.0, 1.1), None, None, None]
+    assert _wilchinsky_ring_ranges({}) == []
+
+
+def test_handle_orientation_analysis_curves_mode_wilchinsky_per_reflection() -> None:
+    """曲线模式端到端：每个反射各带一条 I(χ)，handler 返回全部曲线。
+    Curves-mode end-to-end: each reflection carries its own I(χ); the handler
+    returns one chart curve per reflection.
+    """
+    chi = list(range(360))
+    alpha = float(np.degrees(np.arccos(np.sqrt(0.7))))
+
+    def ring(alpha_deg: float, target_floor: float = 1.0) -> list[float]:
+        d = np.abs((np.array(chi) - alpha_deg + 180.0) % 360.0 - 180.0)
+        I = target_floor + 20.0 * np.exp(-(d ** 2) / 50.0)
+        d2 = np.abs((np.array(chi) - (180.0 - alpha_deg) + 180.0) % 360.0 - 180.0)
+        I = I + 20.0 * np.exp(-(d2 ** 2) / 50.0)
+        return I.tolist()
+
+    payload = {
+        "input_mode": "curves",
+        "methods": ["wilchinsky"],
+        "scattering_geometry": "transmission",
+        "symmetry": "none",
+        "missing": "interp",
+        "background": {"mode": "constant", "auto_estimate": True},
+        "chi": chi,
+        "intensity": [1.0] * 360,
+        "wilchinsky": {
+            "cell": {"a": 1.0, "b": 1.0, "c": 1.0, "beta": 90.0},
+            "reflections": [
+                {"h": 1, "k": 0, "l": 0, "chi": chi, "intensity": ring(alpha)},
+                {"h": 0, "k": 1, "l": 0, "chi": chi,
+                 "intensity": ring(float(np.degrees(np.arccos(np.sqrt(0.2)))))},
+                {"h": 0, "k": 0, "l": 1, "chi": chi,
+                 "intensity": ring(float(np.degrees(np.arccos(np.sqrt(0.1)))))},
+            ],
+            "unique_axis": "b",
+        },
+    }
+
+    result = asyncio.run(
+        handle_orientation_analysis(payload, _noop_progress, asyncio.Event())
+    )
+
+    assert result["status"] == "ok"
+    assert len(result["wilchinsky_curves"]) == 3
+    w = next(r for r in result["results"] if r["method"] == "wilchinsky")
+    assert abs(w["cos2_phi_c"] - 0.1) < 0.02
 
 
 def test_handle_viewer_config_load_preview_returns_image_data() -> None:

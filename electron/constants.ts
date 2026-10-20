@@ -1,5 +1,9 @@
+import pkg from '../package.json'
+
 export const APP_NAME = 'X-FAIS'
-export const APP_VERSION = '0.3.0'
+// 单一来源：package.json 的 version（v0.3.2 前此处硬编码漏升，更新检查报旧版）
+// Single source of truth: package.json version (previously a stale hardcode)
+export const APP_VERSION = pkg.version
 export const IPC_CHANNELS = {
   appMeta: 'app:meta',
   pythonStatus: 'python:status',

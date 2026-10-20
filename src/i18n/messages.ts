@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.2'
+      version: 'v0.3.3'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.3.2',
+      kicker: '桌面集成版 v0.3.3',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -159,6 +159,10 @@ export const messages = {
         lamellar: {
           title: 'SAXS 片晶结构分析',
           description: '由 I(q) 提取长周期与片晶厚度：一维相关函数（γ₁）法，逐步展示 q²I(q)、γ₁ 与切线斜率，支持批量处理'
+        },
+        curveFitting: {
+          title: '衍射曲线拟合',
+          description: 'PeakWorkbench 谱峰工作台：数据 → 基线 → 放峰 → 拟合 → 报告五步流程；多种峰形与基线、图上锚点拖拽、自动寻峰、稳健拟合与逐峰误差，全部本机完成'
         },
         poniImporter: {
           title: 'PONI 文件转化',
@@ -1017,7 +1021,7 @@ export const messages = {
       methodMean: '均值 (Mean)',
       methodTrimmedMean: '去极值均值 (Trimmed Mean)',
       transPerFile: '分别设置透射率',
-      tooManyFilesWarning: '文件超过 10 张，分别设置透射率已禁用，请使用统一手动输入或电离室匹配',
+      tooManyFilesWarning: '文件超过 {limit} 张，分别设置透射率不可用（已切回统一输入），请使用统一手动输入或电离室匹配',
     },
     imageMath: {
       title: '图像运算',
@@ -1176,6 +1180,8 @@ export const messages = {
       equatorialToChain: '赤道反射换算到链轴 (<cos²φ_c>=1−<cos²χ>)',
       cellParams: '晶胞参数（单斜 b-unique）',
       reflections: '反射列表',
+      reflRingHint: '图像模式下为每个反射填写各自的环带范围（与上方径向单位一致），Wilchinsky 将逐条积分 I(χ) 并显示全部曲线；⟨cos²χ⟩ 留空即自动计算，也可手动填写覆盖。',
+      cos2Placeholder: '⟨cos²χ⟩（留空自动）',
       removeReflection: '移除反射',
       addReflection: '添加反射',
       crystallinity: '结晶度（可选）',
@@ -1306,6 +1312,14 @@ export const messages = {
       lc: '晶区厚度 l_c',
       la: '非晶厚度 l_a',
       phiC: '堆叠结晶度 φ_c',
+    },
+    curveFitting: {
+      title: '衍射曲线拟合',
+      // The workbench UI itself is the verbatim PeakWorkbench port (Chinese
+      // labels, like the reference); only the page header is i18n-driven.
+      // 工作台界面为 PeakWorkbench 原样移植（与参考程序一致的中文文案）；
+      // 仅页头走 i18n。
+      subtitle: 'PeakWorkbench 谱峰工作台：数据 → 基线 → 放峰 → 拟合 → 报告；图上锚点拖拽、自动寻峰、稳健拟合，全部本机完成（拟合在 Web Worker 中运行，迭代遥测实时回传）。',
     },
     poniImporter: {
       title: 'PONI 文件转化',
@@ -1587,7 +1601,7 @@ export const messages = {
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.2'
+      version: 'v0.3.3'
     },
     shell: {
       sections: {
@@ -1621,7 +1635,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.3.2',
+      kicker: 'Desktop Edition v0.3.3',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -1742,6 +1756,10 @@ export const messages = {
         lamellar: {
           title: 'SAXS Lamellar Analysis',
           description: 'Long period & lamellar thickness from I(q) via the 1-D correlation function (γ₁), with per-step curves (q²I, γ₁, tangent slope) and batch processing'
+        },
+        curveFitting: {
+          title: 'Diffraction Curve Fitting',
+          description: 'PeakWorkbench spectral workbench: data → baseline → peaks → fit → report; multiple peak shapes and baselines, on-chart anchor dragging, auto detection, robust fitting and per-peak errors — all in-process'
         },
         poniImporter: {
           title: 'Switch to PONI',
@@ -2600,7 +2618,7 @@ export const messages = {
       methodMean: 'Mean',
       methodTrimmedMean: 'Trimmed Mean',
       transPerFile: 'Per-file Transmission',
-      tooManyFilesWarning: 'More than 10 files selected. Per-file transmission is disabled. Use manual input or ionchamber matching instead.',
+      tooManyFilesWarning: 'More than {limit} files selected. Per-file transmission is unavailable (switched back to a single value); use manual input or ionchamber matching instead.',
     },
     imageMath: {
       title: 'Image Math',
@@ -2759,6 +2777,8 @@ export const messages = {
       equatorialToChain: 'Convert equatorial reflection to chain axis (<cos²φ_c>=1−<cos²χ>)',
       cellParams: 'Unit cell (monoclinic b-unique)',
       reflections: 'Reflections',
+      reflRingHint: 'In image mode give each reflection its own ring range (same unit as above); Wilchinsky integrates one I(χ) per reflection and the chart shows every curve. Leave ⟨cos²χ⟩ empty to compute it automatically, or type a manual override.',
+      cos2Placeholder: '⟨cos²χ⟩ (auto)',
       removeReflection: 'Remove reflection',
       addReflection: 'Add reflection',
       crystallinity: 'Crystallinity (optional)',
@@ -2889,6 +2909,12 @@ export const messages = {
       lc: 'Crystalline thickness l_c',
       la: 'Amorphous thickness l_a',
       phiC: 'Stack crystallinity φ_c',
+    },
+    curveFitting: {
+      title: 'Diffraction Curve Fitting',
+      // The workbench UI itself is the verbatim PeakWorkbench port (Chinese
+      // labels, like the reference); only the page header is i18n-driven.
+      subtitle: 'PeakWorkbench workbench: data → baseline → peaks → fit → report; anchor dragging, auto detection and robust fitting, all in-process (the fit runs in a Web Worker and streams iteration telemetry).',
     },
     poniImporter: {
       title: 'Switch to PONI',

@@ -73,6 +73,7 @@
             :detecting="detecting"
             :guide-count="ringGuide.length"
             :ring-picking="ringPicking"
+            :center-picking="centerPicking"
             :beyond-mask="beyondMask"
             :remove-existing="removeExisting"
             :refreshing="refreshingRings"
@@ -82,6 +83,7 @@
             @clear="handleClearPeaks"
             @finish-ring="finishRingPick"
             @clear-guides="ringGuide = []"
+            @toggle-center-pick="toggleCenterPick"
             @update:beyond-mask="beyondMask = $event"
             @update:remove-existing="removeExisting = $event"
             @refresh-rings="handleRefreshRings"
@@ -295,7 +297,9 @@
           :interactive="step === 'peaks' || step === 'ring'"
           :ring-guide="canvasGuide"
           :ring-fit="canvasFit"
-          :hint="step === 'ring' ? t('calibration.ring.canvasHint') : undefined"
+          :hint="step === 'ring'
+            ? t('calibration.ring.canvasHint')
+            : (step === 'peaks' && centerPicking ? centerPickHint : undefined)"
           :mask-overlay="maskOverlay"
           :beam-center="refinedBeamCenter"
           @canvas-click="onCanvasClick"
@@ -700,6 +704,67 @@ const refreshingRings = ref(false)
 // Ring-guide points (owned here; drawn by CalibCanvas) / 环引导点
 const ringGuide = ref<Array<{ y: number; x: number }>>([])
 const ringPicking = ref(false)
+/**
+ * 点选初猜中心 mode (2026-10-20 feature): one canvas click sends the pixel to
+ * the backend set_center action — it becomes the session's centre seed (and
+ * the live geometry's poni1/poni2 once a refinement exists) while AUTO ring
+ * numbers re-derive under the new coordinate system (user rings stay).
+ * The mode is SINGLE-SHOT: after a successful set it disarms, so ring-guide
+ * clicks resume immediately.
+ * 点选初猜中心（2026-10-20 新功能）：画布单击把像素发给后端 set_center——
+ * 写入会话中心种子（已有精修器时同时改其 poni1/poni2），自动环号按新坐标系
+ * 立即重排（用户环号保留）。模式为一次性：设置成功即自动退出，画布点击
+ * 恢复收集环引导点。
+ */
+const centerPicking = ref(false)
+let centerSeq = 0
+
+function toggleCenterPick(): void {
+  centerPicking.value = !centerPicking.value
+}
+
+const centerPickHint = computed(() =>
+  isZh.value ? '在图像上单击光束中心的大致位置（设置后自动退出该模式）' : 'Click the approximate beam centre on the image (the mode disarms after one set)',
+)
+
+/**
+ * Send the clicked pixel as the initial-guess beam centre. The backend
+ * re-derives AUTO ring numbers under the new centre (the centre defines the
+ * 2θ coordinate system) and returns the refreshed geometry + peak table.
+ * 把点击像素作为初猜光束中心发给后端。后端按新中心（中心决定 2θ 坐标系）
+ * 重排自动环号，并返回刷新后的几何与峰表。
+ */
+async function setCenterAt(row: number, col: number): Promise<void> {
+  if (!sessionActive.value) {
+    toast.push({ title: t('calibration.title'), message: t('calibration.errors.noSession'), tone: 'error' })
+    centerPicking.value = false
+    return
+  }
+  const seq = ++centerSeq
+  try {
+    const data = await submitAndWait('calibration', sessionPayload('set_center', {
+      y: row,
+      x: col,
+    }))
+    if (seq !== centerSeq) return // superseded / 已被取代
+    geometry.value = normalizeGeometry(data.geometry)
+    if (Array.isArray(data.peaks) && data.peaks.length > 0) applyPeaksResponse(data)
+    void refreshRingOverlay()
+    const refreshed = numberOrNull(data.rings_refreshed) ?? 0
+    const pos = `(${row.toFixed(0)}, ${col.toFixed(0)}) px`
+    toast.push({
+      title: isZh.value ? '初猜中心' : 'Initial centre',
+      message: isZh.value
+        ? `初猜中心已设为 ${pos}` + (refreshed > 0 ? `；${refreshed} 个自动环号已按新中心重排（您指定的环号保留）` : '')
+        : `Initial centre set to ${pos}` + (refreshed > 0 ? `; ${refreshed} auto ring number(s) re-derived under the new centre (your picked rings kept)` : ''),
+      tone: 'success',
+    })
+  } catch (err) {
+    if (seq === centerSeq) toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
+  } finally {
+    if (seq === centerSeq) centerPicking.value = false
+  }
+}
 
 // Refine state / 精化状态
 // Defaults mirror the backend _DEFAULT_FREE: distance + beam centre free,
@@ -828,6 +893,7 @@ function normalizePeaks(raw: unknown): CalibPeak[] {
           ring,
           dthetaDeg: numberOrNull(o.dtheta_deg ?? o.dthetaDeg),
           suspect: o.suspect === true,
+          ringUser: o.ring_user === true || o.ringUser === true,
         })
       }
     }
@@ -1573,7 +1639,10 @@ function pushPeaksUpdate(opts: { mode?: 'assign' | 'keep'; allowEmpty?: boolean 
   const seq = ++peaksUpdateSeq
   void submitAndWait('calibration', sessionPayload('update_peaks', {
     mode,
-    peaks: peaks.value.map(p => ({ y: p.y, x: p.x, ring: p.ring ?? null })),
+    // ringUser travels BOTH ways: user-owned rings (完成本环 / 整环改号)
+    // survive refine's automatic refresh on the backend.
+    // ringUser 随载荷往返：用户所有的环号在后端精修的自动重排中被保留。
+    peaks: peaks.value.map(p => ({ y: p.y, x: p.x, ring: p.ring ?? null, ringUser: p.ringUser === true })),
   })).then(data => {
     if (seq !== peaksUpdateSeq) return // stale / 已过期
     applyPeaksResponse(data)
@@ -1650,7 +1719,7 @@ function handleRenameRing(oldRing: number, newRing: number): void {
   const touched = peaks.value.some(p => p.ring === oldRing)
   if (!touched) return
   peaks.value = sortPeaksByRing(
-    peaks.value.map(p => (p.ring === oldRing ? { ...p, ring: newRing } : p)),
+    peaks.value.map(p => (p.ring === oldRing ? { ...p, ring: newRing, ringUser: true } : p)),
   )
   pushPeaksUpdate({ mode: 'keep' })
 }
@@ -1712,6 +1781,12 @@ function onCanvasClick(pixel: { row: number; col: number }): void {
       return
     }
     pushRingPoint(pixel.row, pixel.col)
+    return
+  }
+  // 点选初猜中心 armed: this click sets the centre instead of a guide point.
+  // 点选初猜中心激活时：本击设置中心，而非收集引导点。
+  if (centerPicking.value) {
+    void setCenterAt(pixel.row, pixel.col)
     return
   }
   ringGuide.value = [...ringGuide.value, { y: pixel.row, x: pixel.col }]
@@ -1833,8 +1908,11 @@ async function finishRingPick(): Promise<void> {
     for (const p of harvested) {
       if (peaks.value.some(q => q.y === p.y && q.x === p.x)) continue
       // Stamp the CURRENT ring (backend echoes it; enforced here as a guard).
-      // 直接打上当前环号（后端已回带，此处兜底强制）。
+      // The stamp is USER-OWNED: refine's refresh must keep it (0.3.3 bug).
+      // 直接打上当前环号（后端已回带，此处兜底强制）；该环号为用户所有，
+      // 精修的自动重排必须保留（0.3.3 缺陷修复）。
       p.ring = assignRing
+      p.ringUser = true
       peaks.value = [...peaks.value, p]
       added = true
     }
@@ -2152,6 +2230,24 @@ async function handleRefine(payload: { passes: number }): Promise<void> {
     residuals.value = normalizeResiduals(data.residuals)
     converged.value = typeof data.converged === 'boolean' ? data.converged : null
     exportResult.value = null
+
+    // Refine re-assigns ring numbers from the CURRENT geometry before fitting
+    // (BUGFIX 2026-10-13): apply the refreshed peak table and tell the user how
+    // many were corrected, so a stale assignment (no 刷新环号 clicked) can no
+    // longer silently poison the refinement. / 精修前已按当前几何自动重排环号：
+    // 应用刷新后的峰表并提示修正数量——未点「刷新环号」的旧分配不会再悄悄
+    // 毁掉精修。
+    if (Array.isArray(data.peaks)) applyPeaksResponse(data)
+    const refreshed = numberOrNull(data.rings_refreshed) ?? 0
+    if (refreshed > 0) {
+      toast.push({
+        title: t('calibration.peaks.title'),
+        message: isZh.value
+          ? `精修前已按当前几何自动刷新环号（修正 ${refreshed} 个峰），详见峰表`
+          : `Ring numbers auto-refreshed before refining (${refreshed} peaks corrected); see the peak table`,
+        tone: 'info',
+      })
+    }
 
     if (converged.value === false) {
       toast.push({

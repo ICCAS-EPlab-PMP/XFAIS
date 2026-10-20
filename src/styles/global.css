@@ -82,6 +82,21 @@ p {
   outline-offset: 2px;
 }
 
+/* The desktop shell floor is 1180 px (electron/main.ts BrowserWindow.minWidth),
+   but the web build also runs in browser windows narrower than that, and the
+   app shell already collapses its nav at ≤1120 px. Relaxing the floor only
+   while the curve-fitting workbench is mounted lets that page lay out at
+   narrow viewports instead of overflowing the visible area; every other page
+   keeps the historical 1180 px floor.
+   / 桌面外壳最小宽度 1180（electron/main.ts 的 minWidth）；Web 版会在更窄的
+   浏览器窗口运行，而外壳导航在 ≤1120 已折叠。仅在曲线拟合工作台挂载时放宽
+   该下限，使该页在窄视口正常布局；其余页面保持原 1180px 下限。 */
+@media (max-width: 1179px) {
+  body:has(.cf-wb) {
+    min-width: 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

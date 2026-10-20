@@ -99,6 +99,12 @@ export interface CalibPeak {
   dthetaDeg?: number | null
   /** True when the peak sits beyond the midpoint toward a neighbouring ring. */
   suspect?: boolean
+  /**
+   * True when the ring number was set BY THE USER (完成本环 stamp / summary
+   * renumber) — such rings survive refine's automatic refresh.
+   * 用户亲手指定的环号（完成本环 / 汇总表改号）——精修的自动重排会保留。
+   */
+  ringUser?: boolean
 }
 
 /** A predicted ring polyline. points are [y, x] (row, col) pairs, consistent with CalibPeak. */

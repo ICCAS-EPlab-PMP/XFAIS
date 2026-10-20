@@ -292,6 +292,11 @@ const applicationCards: FeatureCard[] = [
     key: 'lamellar',
     route: '/workspace/lamellar-analysis',
     icon: '≡'
+  },
+  {
+    key: 'curveFitting',
+    route: '/workspace/curve-fitting',
+    icon: 'ƒ'
   }
 ]
 

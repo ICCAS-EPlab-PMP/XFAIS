@@ -1,0 +1,91 @@
+/**
+ * PeakWorkbench 谱峰工作台 — design tokens.
+ * 设计令牌（X-FAIS 浅色配色 / X-FAIS light palette）。
+ *
+ * Ported from the reference workbench. The reference shipped a dark palette on
+ * `:root, :root[data-theme='dark']` plus a `[data-theme='light']` override;
+ * this port REPLACES BOTH with ONE light block that maps every token onto the
+ * X-FAIS design system (src/styles/variables.css) — 按用户要求「配色用我们的」。
+ *
+ * Scope: `.cf-wb` is the workbench container. `:root:has(.cf-wb)` mirrors the
+ * same values at the document root ONLY while the workbench is mounted, for two
+ * integration reasons:
+ *   1. Modal.vue / PeakAdjustPopover.vue `<teleport to="body">`, so their DOM
+ *      sits outside `.cf-wb` and must still inherit the tokens;
+ *   2. the ported PlotController reads its chart palette from
+ *      `getComputedStyle(document.documentElement)` (utils/palette.ts).
+ * No other view is mounted at the same time, and token values either match the
+ * app (`--border`) or are unique to this module, so nothing else changes.
+ *
+ * NOTE: `--border` is inlined as the app's literal #e2e8f0 instead of
+ * `var(--border, …)`: a custom property that references itself in its own
+ * declaration is a CSS dependency cycle (invalid at computed-value time).
+ */
+
+.cf-wb,
+:root:has(.cf-wb) {
+  color-scheme: light;
+
+  /* layered backgrounds */
+  --bg-0: var(--bg-primary, #f8fafc);
+  --bg-1: var(--bg-surface, #ffffff);
+  --bg-2: var(--bg-surface-alt, #f1f5f9);
+  --bg-3: #e8eef6;
+  --bg-inset: var(--bg-primary, #f8fafc);
+
+  /* lines */
+  --border: #e2e8f0; /* = app --border (inlined: self-reference is a cycle) */
+  --border-strong: var(--border-hover, #cbd5e1);
+
+  /* text */
+  --text-1: var(--text-primary, #1e293b);
+  --text-2: var(--text-secondary, #64748b);
+  --text-3: var(--text-muted, #94a3b8);
+  --status-text: var(--text-secondary, #64748b);
+
+  /* semantic */
+  --accent: var(--primary-light, #3b82f6);
+  --accent-soft: rgba(59, 130, 246, 0.12);
+  --accent-line: rgba(59, 130, 246, 0.45);
+  --success: #16a34a;
+  --success-soft: rgba(22, 163, 74, 0.12);
+  --warning: #d97706;
+  --warning-soft: rgba(217, 119, 6, 0.12);
+  --danger: var(--error, #ef4444);
+  --danger-soft: rgba(239, 68, 68, 0.12);
+
+  /* chart surface (light) */
+  --plot-bg: #ffffff;
+  --chart-grid: #e2e8f0;
+  --chart-axis: #94a3b8;
+  --chart-text: #64748b;
+  --chart-data: #475569;
+  --chart-fit: var(--primary, #1e40af);
+  --chart-base: #d97706;
+  --chart-resid: #94a3b8;
+  --chart-cursor: rgba(30, 41, 59, 0.35);
+
+  /* elevation */
+  --shadow-1: var(--shadow-sm, 0 1px 2px rgba(15, 23, 42, 0.08));
+  --shadow-2: var(--shadow-md, 0 12px 24px rgba(15, 23, 42, 0.12));
+  --shadow-3: var(--shadow-lg, 0 20px 45px rgba(15, 23, 42, 0.14));
+
+  --backdrop: rgba(15, 23, 42, 0.35);
+}
+
+.cf-wb,
+:root:has(.cf-wb) {
+  --font-ui: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Noto Sans CJK SC', sans-serif;
+  --mono: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Consolas, monospace;
+
+  --fs-title: 13px;
+  --fs-body: 13px;
+  --fs-small: 11px;
+
+  --radius: 8px;
+  --radius-sm: 5px;
+  /* duration only: ported rules compose `var(--speed) ease` */
+  --speed: 150ms;
+  --speed-fast: 0.12s;
+}

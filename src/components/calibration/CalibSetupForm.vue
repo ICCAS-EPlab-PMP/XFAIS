@@ -236,25 +236,49 @@
       <p class="csf-hint">{{ t('calibration.setup.wavelengthHint') }}</p>
     </div>
 
-    <!-- Initial distance guess / 初始距离猜测
-         Hidden in internal-standard mode: that mode derives the distance (SD)
-         from the standard ring in step 2, so the guess is not needed. The
-         value is still forwarded with the payload (the backend setup contract
-         requires distGuessMm > 0) — it just stays at whatever the form holds.
-         内标模式下隐藏：该模式的样品-探测器距离由第 2 步的标准环算出，无需
-         猜测值。数值仍随载荷下发（后端 setup 契约要求 distGuessMm > 0），
-         只是不再作为表单项出现。 -->
-    <div v-if="!isInternal" class="csf-field">
-      <label class="csf-label">{{ t('calibration.setup.distGuess') }} (mm)</label>
-      <NumberField
-        :model-value="model.distGuessMm"
-        class="csf-input"
-        step="any"
-        min="0"
-        @update:model-value="onNumberInput('distGuessMm', $event)"
-      />
-      <p class="csf-hint">{{ t('calibration.setup.distHint') }}</p>
-    </div>
+    <!-- Initial distance guess / 初始距离猜测 — COLLAPSED by default
+         (2026-10-20 user request: 预估 SD 默认收起，不要展开). The presets
+         and hint live inside the fold; the value still travels with the setup
+         payload untouched. Hidden in internal-standard mode: that mode derives
+         the distance (SD) from the standard ring in step 2, so the guess is
+         not needed (the backend setup contract still requires distGuessMm >
+         0 — the form simply keeps whatever it holds).
+         初始距离猜测——默认折叠（2026-10-20 用户要求：预估 SD 默认收了）。
+         预设按钮与提示在折叠区内；数值仍原样随 setup 载荷下发。内标模式下
+         隐藏：该模式的 SD 由第 2 步的标准环算出（后端契约仍要求
+         distGuessMm > 0，表单保持现值即可）。 -->
+    <details v-if="!isInternal" class="csf-details csf-details--sd">
+      <summary class="csf-details-summary">{{ sdGroupLabel }}</summary>
+      <div class="csf-field csf-field--inner">
+        <label class="csf-label">{{ t('calibration.setup.distGuess') }} (mm)</label>
+        <NumberField
+          :model-value="model.distGuessMm"
+          class="csf-input"
+          step="any"
+          min="0"
+          @update:model-value="onNumberInput('distGuessMm', $event)"
+        />
+        <!-- Common distance presets (user request 2026-10-13): one tap fills the
+             guess so ring assignment starts from a sane geometry. /
+             常用距离预设（2026-10-13 用户要求）：一键填入猜测值，使环号分配从
+             合理几何起步。 -->
+        <div class="csf-preset-row">
+          <button
+            type="button"
+            class="csf-btn csf-btn--secondary csf-btn--sm"
+            :title="distPresetTitle"
+            @click="onNumberInput('distGuessMm', 130)"
+          >WAXS · 130</button>
+          <button
+            type="button"
+            class="csf-btn csf-btn--secondary csf-btn--sm"
+            :title="distPresetTitle"
+            @click="onNumberInput('distGuessMm', 2500)"
+          >SAXS · 2500</button>
+        </div>
+        <p class="csf-hint">{{ t('calibration.setup.distHint') }}</p>
+      </div>
+    </details>
 
     <!-- Seed from an existing .poni / 从 PONI 初始化 -->
     <button
@@ -422,6 +446,24 @@ function patch(fields: Partial<CalibSetupModel>): void {
 function onNumberInput(field: 'pixelSizeUm' | 'distGuessMm', value: number | null): void {
   if (value != null && Number.isFinite(value)) patch({ [field]: value } as Partial<CalibSetupModel>)
 }
+
+/** Tooltip for the WAXS/SAXS distance presets (user request 2026-10-13). */
+/** 距离预设按钮的提示文案（2026-10-13 用户要求）。 */
+const distPresetTitle = computed(() =>
+  isZh.value
+    ? '常用样品-探测器距离预设（mm）：WAXS ≈ 130，SAXS ≈ 2500；点击填入'
+    : 'Common sample-detector distance presets (mm): WAXS ≈ 130, SAXS ≈ 2500; click to fill',
+)
+
+/** Summary label of the collapsed estimated-SD fold (2026-10-20 user request:
+ *  预估 SD 默认收起). Shows the current guess so the fold is informative
+ *  even while collapsed. 折叠区标题（2026-10-20 用户要求：预估 SD 默认收
+ *  起）——标题带当前值，收起时也有信息量。 */
+const sdGroupLabel = computed(() =>
+  isZh.value
+    ? `预估 SD（初始距离猜测，当前 ${Number.isFinite(props.modelValue.distGuessMm) ? props.modelValue.distGuessMm : '?'} mm）`
+    : `Estimated SD (initial distance guess, now ${Number.isFinite(props.modelValue.distGuessMm) ? props.modelValue.distGuessMm : '?'} mm)`,
+)
 
 // ── Wavelength ↔ energy (REQ 波长和能量可以切换) ────────────────────────────
 // λ(Å) · E(keV) = hc/e = 12.398419843320026 keV·Å. The form model keeps the
@@ -921,6 +963,42 @@ function submit(): void {
 /* Full-width .D browse button / 通栏 .D 选文件按钮 */
 .csf-btn--block {
   width: 100%;
+}
+
+/* Distance preset row (user request 2026-10-13). / 距离预设按钮行。 */
+.csf-preset-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* Collapsed-by-default fold for the estimated SD (2026-10-20 user request).
+   预估 SD 折叠区（2026-10-20 用户要求，默认收起）。 */
+.csf-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0;
+}
+
+.csf-details-summary {
+  padding: 7px 10px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.csf-details-summary:hover {
+  background: var(--bg-hover);
+}
+
+.csf-field--inner {
+  padding: 4px 10px 10px;
+}
+
+.csf-btn--sm {
+  padding: 3px 10px;
+  font-size: 0.78rem;
 }
 
 /* Inline link inside a hint line / 小字提示行内的行内链接 */

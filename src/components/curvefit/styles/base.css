@@ -1,0 +1,403 @@
+/**
+ * PeakWorkbench 谱峰工作台 — workbench-scoped base styles + shared component classes.
+ * 工作台基础样式与共享组件类（作用域限定，不污染 X-FAIS 全局样式）。
+ *
+ * Ported from the reference `styles/base.css`. X-FAIS owns `html`/`body`/`#app`,
+ * so those rules are dropped and every former global rule is scoped to the
+ * workbench surfaces:
+ *   .cf-wb    — workbench container
+ *   .backdrop — Modal.vue (teleported to body)
+ *   .pop      — PeakAdjustPopover.vue (teleported to body)
+ * uPlot internals are left to uplot's own stylesheet; no selectors target them
+ * here.
+ */
+
+:is(.cf-wb, .backdrop, .pop),
+:is(.cf-wb, .backdrop, .pop) *,
+:is(.cf-wb, .backdrop, .pop) *::before,
+:is(.cf-wb, .backdrop, .pop) *::after {
+  box-sizing: border-box;
+}
+
+:is(.cf-wb, .backdrop, .pop) ::selection {
+  background: var(--accent-soft);
+}
+
+/* Scrollbars (WebKit) */
+:is(.cf-wb, .backdrop, .pop) ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+:is(.cf-wb, .backdrop, .pop) ::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+:is(.cf-wb, .backdrop, .pop) ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--text-3);
+  background-clip: content-box;
+}
+:is(.cf-wb, .backdrop, .pop) ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------------ */
+/* Buttons                                                             */
+/* ------------------------------------------------------------------ */
+
+:is(.cf-wb, .backdrop, .pop) .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-body);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background-color var(--speed-fast) ease, border-color var(--speed-fast) ease,
+    color var(--speed-fast) ease, opacity var(--speed-fast) ease;
+}
+:is(.cf-wb, .backdrop, .pop) .btn:hover:not(:disabled) {
+  background: var(--bg-3);
+  border-color: var(--text-3);
+}
+:is(.cf-wb, .backdrop, .pop) .btn:active:not(:disabled) {
+  background: var(--bg-2);
+}
+:is(.cf-wb, .backdrop, .pop) .btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+:is(.cf-wb, .backdrop, .pop) .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+:is(.cf-wb, .backdrop, .pop) .btn.primary:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent);
+  filter: brightness(1.1);
+}
+:is(.cf-wb, .backdrop, .pop) .btn.primary:active:not(:disabled) {
+  filter: brightness(0.95);
+}
+
+:is(.cf-wb, .backdrop, .pop) .btn.danger:hover:not(:disabled) {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+:is(.cf-wb, .backdrop, .pop) .btn.ghost {
+  border-color: transparent;
+  color: var(--text-2);
+}
+:is(.cf-wb, .backdrop, .pop) .btn.ghost:hover:not(:disabled) {
+  background: var(--bg-3);
+  color: var(--text-1);
+  border-color: transparent;
+}
+
+:is(.cf-wb, .backdrop, .pop) .btn.sm {
+  height: 24px;
+  padding: 0 8px;
+  font-size: var(--fs-small);
+}
+
+:is(.cf-wb, .backdrop, .pop) .btn.icon-only {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+:is(.cf-wb, .backdrop, .pop) .btn .icon {
+  flex: none;
+}
+
+:is(.cf-wb, .backdrop, .pop) .btn.is-busy {
+  pointer-events: none;
+  opacity: 0.75;
+}
+
+:is(.cf-wb, .backdrop, .pop) .spinner {
+  width: 12px;
+  height: 12px;
+  flex: none;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: pf-spin 0.7s linear infinite;
+}
+@keyframes pf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Inputs                                                              */
+/* ------------------------------------------------------------------ */
+
+:is(.cf-wb, .backdrop, .pop) .field,
+:is(.cf-wb, .backdrop, .pop) .select {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-inset);
+  color: var(--text-1);
+  font: inherit;
+  font-size: var(--fs-body);
+  font-variant-numeric: tabular-nums;
+  outline: none;
+  transition: border-color var(--speed-fast) ease, box-shadow var(--speed-fast) ease;
+  min-width: 0;
+}
+:is(.cf-wb, .backdrop, .pop) .field:focus,
+:is(.cf-wb, .backdrop, .pop) .select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+:is(.cf-wb, .backdrop, .pop) .field.invalid {
+  border-color: var(--danger);
+}
+:is(.cf-wb, .backdrop, .pop) .field::placeholder {
+  color: var(--text-3);
+}
+
+:is(.cf-wb, .backdrop, .pop) .select {
+  appearance: none;
+  padding-right: 22px;
+  cursor: pointer;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238b96a5' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+}
+:is(.cf-wb, .backdrop, .pop) .select option {
+  background: var(--bg-2);
+  color: var(--text-1);
+}
+
+:is(.cf-wb, .backdrop, .pop) .optgroup {
+  font-size: var(--fs-small);
+  color: var(--text-3);
+}
+
+/* Checkbox */
+:is(.cf-wb, .backdrop, .pop) .checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+  color: var(--text-2);
+  font-size: var(--fs-body);
+}
+:is(.cf-wb, .backdrop, .pop) .checkbox:hover {
+  color: var(--text-1);
+}
+:is(.cf-wb, .backdrop, .pop) .checkbox input {
+  display: none;
+}
+:is(.cf-wb, .backdrop, .pop) .checkbox .box {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-inset);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background-color var(--speed-fast) ease, border-color var(--speed-fast) ease;
+}
+:is(.cf-wb, .backdrop, .pop) .checkbox .box svg {
+  opacity: 0;
+  transition: opacity var(--speed-fast) ease;
+}
+:is(.cf-wb, .backdrop, .pop) .checkbox input:checked + .box {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+:is(.cf-wb, .backdrop, .pop) .checkbox input:checked + .box svg {
+  opacity: 1;
+}
+
+/* Segmented control */
+:is(.cf-wb, .backdrop, .pop) .seg {
+  display: inline-flex;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--bg-inset);
+}
+:is(.cf-wb, .backdrop, .pop) .seg button {
+  height: 24px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: var(--fs-small);
+  cursor: pointer;
+  transition: background-color var(--speed-fast) ease, color var(--speed-fast) ease;
+}
+:is(.cf-wb, .backdrop, .pop) .seg button + button {
+  border-left: 1px solid var(--border);
+}
+:is(.cf-wb, .backdrop, .pop) .seg button:hover {
+  color: var(--text-1);
+}
+:is(.cf-wb, .backdrop, .pop) .seg button.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* Range slider */
+:is(.cf-wb, .backdrop, .pop) .slider {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-strong);
+  outline: none;
+  cursor: pointer;
+}
+:is(.cf-wb, .backdrop, .pop) .slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-0);
+  box-shadow: var(--shadow-1);
+}
+:is(.cf-wb, .backdrop, .pop) .slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 2px solid var(--bg-0);
+}
+
+/* ------------------------------------------------------------------ */
+/* Panels & text                                                       */
+/* ------------------------------------------------------------------ */
+
+:is(.cf-wb, .backdrop, .pop) .panel,
+.pop.panel {
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-1);
+  transition: background-color var(--speed) ease, border-color var(--speed) ease;
+}
+
+:is(.cf-wb, .backdrop, .pop) .panel-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 12px 7px;
+  font-size: var(--fs-small);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+  text-transform: uppercase;
+}
+:is(.cf-wb, .backdrop, .pop) .panel-title .icon {
+  color: var(--accent);
+}
+
+:is(.cf-wb, .backdrop, .pop) .hint {
+  font-size: var(--fs-small);
+  /* --text-2, not --text-3: hint copy is body-level explanation and needs
+     ≥ 4.5:1 on the white panel (user-visible readability fix, 2026-10-20). /
+     用 --text-2 而非 --text-3：提示语属正文说明，白底上需 ≥ 4.5:1 对比度
+     （2026-10-20 可读性修复）。 */
+  color: var(--text-2);
+  line-height: 1.5;
+}
+
+:is(.cf-wb, .backdrop, .pop) .num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+:is(.cf-wb, .backdrop, .pop) .kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 3px 0;
+  font-size: var(--fs-body);
+}
+:is(.cf-wb, .backdrop, .pop) .kv .k {
+  color: var(--text-2);
+  flex: none;
+}
+:is(.cf-wb, .backdrop, .pop) .kv .v {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Data tables */
+:is(.cf-wb, .backdrop, .pop) .table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-body);
+}
+:is(.cf-wb, .backdrop, .pop) .table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-2);
+  color: var(--text-3);
+  font-size: var(--fs-small);
+  font-weight: 600;
+  text-align: left;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+:is(.cf-wb, .backdrop, .pop) .table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+:is(.cf-wb, .backdrop, .pop) .table tbody tr:nth-child(even) td {
+  background: color-mix(in srgb, var(--bg-3) 40%, transparent);
+}
+:is(.cf-wb, .backdrop, .pop) .table tbody tr:hover td {
+  background: var(--bg-3);
+}
+:is(.cf-wb, .backdrop, .pop) .table .r {
+  text-align: right;
+}
+
+/* Section label inside panels */
+:is(.cf-wb, .backdrop, .pop) .sec-label {
+  font-size: var(--fs-small);
+  font-weight: 600;
+  color: var(--text-2);
+  margin: 10px 0 6px;
+}
+
+/* Focus ring for keyboard users */
+:is(.cf-wb, .backdrop, .pop):focus-visible,
+:is(.cf-wb, .backdrop, .pop) :focus-visible {
+  outline: 2px solid var(--accent-line);
+  outline-offset: 1px;
+}
