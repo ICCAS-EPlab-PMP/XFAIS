@@ -1089,6 +1089,11 @@ async def _action_update_peaks(
                 every ring number from the CURRENT geometry (the 刷新环号/自检
                 refresh path). / 'keep' 尊重用户在峰表中编辑过的环号，仅对缺失
                 者分配；'assign'（默认）全部按当前几何重新分配（自检刷新路径）。
+      peaks[*].ringUser (bool, optional) — marks rings the USER set deliberately
+                (完成本环 stamp / summary-table renumber). In 'keep' mode such
+                rings stay user-owned through refine's automatic refresh;
+                'assign' clears every flag. / 标记用户亲手指定的环号：keep 模式
+                下这些环号在精修的自动重排中被保留；assign 模式清除全部标记。
 
     Response peaks carry ``ring`` plus the per-peak self-check fields
     ``dtheta_deg`` (signed deviation from the assigned ring, degrees) and
@@ -1121,6 +1126,15 @@ async def _action_update_peaks(
             "message": "Peak list cleared (no-op) / 峰列表已清空",
         }
 
+    # RING PROVENANCE (2026-10-20, user bug report): a peak whose ring number
+    # was set BY THE USER (ring-by-ring 完成本环 / summary-table renumber /
+    # frontend ringUser flag) is marked ``ring_user``; refine keeps those rings
+    # instead of re-deriving them. 'assign' mode re-derives everything and
+    # clears the flags (刷新环号/自检 stays the full-reset path).
+    # 环号溯源（2026-10-20 用户缺陷报告）：凡用户亲手指定的环号（逐一环选完成
+    # 本环 / 汇总表改号 / 前端 ringUser 标记）都带 ``ring_user`` 标记；精修保留
+    # 这些环号、不再重排。'assign' 模式全部重排并清除标记（刷新环号/自检仍是
+    # 全量重置路径）。
     honor_kept = str(payload.get("mode", "assign")) == "keep"
 
     h, w = session["shape"]
@@ -1133,15 +1147,17 @@ async def _action_update_peaks(
         if not (0.0 <= y < h and 0.0 <= x < w):
             continue
         ring = None
+        ring_user = False
         if isinstance(pt, dict):
             ring_num = _as_float(pt.get("ring"))
             if ring_num is not None and float(ring_num).is_integer() and ring_num >= 0:
                 ring = int(ring_num)
+            ring_user = bool(pt.get("ringUser"))
         elif isinstance(pt, (list, tuple)) and len(pt) > 2:
             ring_num = _as_float(pt[2])
             if ring_num is not None and float(ring_num).is_integer() and ring_num >= 0:
                 ring = int(ring_num)
-        clean.append((y, x, ring))
+        clean.append((y, x, ring, ring_user))
     if not clean:
         return _err("No valid peaks inside the image / 图像范围内没有有效峰")
 
@@ -1161,15 +1177,24 @@ async def _action_update_peaks(
     session["gr"] = gr
     data = session["data"]
     peaks_out: List[Dict[str, Any]] = []
-    for (y, x, _user_ring), ring, dth, susp in zip(clean, rings, dtheta, suspect):
+    for (y, x, user_ring, user_flag), ring, dth, susp in zip(clean, rings, dtheta, suspect):
         iy, ix = int(round(y)), int(round(x))
         iy = min(max(iy, 0), h - 1)
         ix = min(max(ix, 0), w - 1)
+        # The ring stays USER-OWNED only when the user supplied one, asked to
+        # keep it, and the backend indeed honoured it (an unreachable ring
+        # number falls back to nearest → auto again).
+        # 仅当用户给了环号、以 keep 模式请求、且后端确实尊重了该环号时才算
+        # 用户所有（不可达环号回退最近环 → 重新视为自动）。
+        kept_user = bool(
+            honor_kept and user_flag and user_ring is not None and int(ring) == int(user_ring)
+        )
         peaks_out.append(
             {
                 "y": iy, "x": ix,
                 "intensity": float(data[iy, ix]),
                 "ring": int(ring),
+                "ring_user": kept_user,
                 "dtheta_deg": float(dth) if np.isfinite(dth) else None,
                 "suspect": bool(susp),
             },
@@ -1247,6 +1272,84 @@ def _refine_residuals(gr: Any) -> List[Dict[str, Any]]:
     return out
 
 
+async def _action_set_center(session: Dict[str, Any], payload: dict) -> dict:
+    """Set the beam-centre FIRST GUESS from a canvas click (2026-10-20 feature).
+
+    The click (pixel y/x) becomes the session's ``center0`` seed AND, when a
+    refinement already exists, poni1/poni2 of the live geometry. Because the
+    centre DEFINES the coordinate system every 2θ is measured in, the ring
+    numbers of AUTO-assigned peaks are re-derived under the new centre right
+    away (user-owned ``ring_user`` rings are honored, never renumbered), so
+    the overlay/table stay consistent — the coordinate-system shift the
+    feature request explicitly warned about.
+    以画布点击设置光束中心初猜（2026-10-20 新功能）。点击（像素 y/x）写入会话
+    ``center0`` 种子；已有精修器时同时改写其 poni1/poni2。中心决定了所有 2θ
+    的坐标系，故自动分配的环号立即按新中心重排（用户所有的 ring_user 环号被
+    保留、绝不改号），使环叠加与峰表保持一致——即需求中特别提醒的坐标系变化
+    联动。
+    """
+    if session.get("internal_standard"):
+        return _internal_mode_error()
+
+    y = _as_float(payload.get("y"))
+    x = _as_float(payload.get("x"))
+    if y is None or x is None:
+        return _err(
+            "y/x (pixel coordinates) required / 需要像素坐标 y/x",
+        )
+    pixel1 = float(session["pixel1"])
+    pixel2 = float(session["pixel2"])
+    poni1 = float(y) * pixel1
+    poni2 = float(x) * pixel2
+    session["center0"] = (poni1, poni2)
+
+    peaks_now = session.get("peaks") or []
+    rings_refreshed = 0
+    gr = session.get("gr")
+    if peaks_now:
+        ys = np.array([float(p["y"]) for p in peaks_now], dtype=np.float64)
+        xs = np.array([float(p["x"]) for p in peaks_now], dtype=np.float64)
+        kept = np.array(
+            [
+                int(p["ring"]) if (p.get("ring_user") and p.get("ring") is not None) else None
+                for p in peaks_now
+            ],
+            dtype=object,
+        )
+        try:
+            rings, dtheta, suspect = await _run_blocking(
+                _assign_rings_detailed, session, ys, xs, kept, True,
+            )
+            gr = await _run_blocking(_build_refinement, session, ys, xs, rings)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the frontend
+            return _err(f"Ring re-assignment failed: {exc}", f"环号重排失败：{exc}")
+        # The clicked centre WINS over whatever _build_refinement seeded
+        # (gr_prev poni or guess_poni's ellipse fit). / 点击中心优先于
+        # _build_refinement 的一切种子（前次 poni 或椭圆拟合）。
+        gr.poni1, gr.poni2 = poni1, poni2
+        session["gr"] = gr
+        # Geometry changed → the cached 2θ map behind ring_overlay is stale.
+        # 几何已变 → ring_overlay 背后的 2θ 缓存失效。
+        session["tth_cache"] = None
+        for p, ring, dth, susp in zip(peaks_now, rings, dtheta, suspect):
+            if p.get("ring") != int(ring):
+                rings_refreshed += 1
+                p["ring_user"] = False
+            p["ring"] = int(ring)
+            p["dtheta_deg"] = float(dth) if np.isfinite(dth) else None
+            p["suspect"] = bool(susp)
+
+    geom_src = gr if gr is not None else _guess_integrator(session)
+    geometry = _geometry_summary(geom_src, pixel1, pixel2)
+    return {
+        "status": "ok",
+        "geometry": geometry,
+        "peaks": peaks_now,
+        "rings_refreshed": rings_refreshed,
+        "center": {"y": float(y), "x": float(x)},
+    }
+
+
 async def _action_refine(
     session: Dict[str, Any], payload: dict, send_progress, cancel_event,
 ) -> dict:
@@ -1273,6 +1376,61 @@ async def _action_refine(
         return _err(
             "No peaks assigned yet: run update_peaks first / 尚未分配峰：请先执行 update_peaks",
         )
+
+    # BUGFIX 2026-10-13 (user report): refine used whatever ring numbers the
+    # LAST update_peaks left inside session["gr"]. A user who never clicked
+    # 刷新环号/自检 refined against a stale assignment — e.g. rings numbered
+    # when the initial guess was poor — so 精修中心位点 fitted the WRONG
+    # theoretical rings. AUTO-assigned rings are therefore re-assigned from
+    # the CURRENT geometry and the refinement rebuilt BEFORE every refine.
+    #
+    # BUGFIX 2026-10-20 (user report, supersedes the blanket refresh): the
+    # blanket refresh also STOMPED rings the user had picked deliberately —
+    # with a single PARTIAL ring harvested ring-by-ring, nearest-ring under a
+    # rough guess geometry relabels it to a "better" ring and the refine then
+    # fits the wrong theoretical ring (the serious bug of 0.3.3). User-owned
+    # rings (``ring_user``: 完成本环 stamps / summary-table renumber) are now
+    # HONORED by the refresh; only auto-assigned peaks re-derive. 刷新环号/自检
+    # (update_peaks mode 'assign') remains the explicit full-reset path.
+    # 修复（2026-10-13）：精修原先直接用上一次 update_peaks 留在 session["gr"]
+    # 里的环号——用户没点「刷新环号/自检」就会拿旧分配（初值差时的分配）去精修。
+    # 自动分配的环号仍在每次精修前按当前几何重排并重建精修器。
+    # 修复（2026-10-20，取代一刀切重排）：一刀切重排会把用户逐环工作流亲手指定
+    # 的环号也冲掉——只收单个不完整环时，粗几何下的最近环重排会把环号改到
+    # “更好”的其它环上，精修随之拟合到错误理论环（0.3.3 的严重缺陷）。现在
+    # 用户所有的环号（ring_user：完成本环打标 / 汇总表改号）在重排中被保留，
+    # 仅自动分配的峰重新推导；「刷新环号/自检」仍是显式全量重置路径。
+    peaks_now = session.get("peaks") or []
+    rings_refreshed = 0
+    if peaks_now:
+        ys = np.array([float(p["y"]) for p in peaks_now], dtype=np.float64)
+        xs = np.array([float(p["x"]) for p in peaks_now], dtype=np.float64)
+        # kept = ring numbers OWNED by the user (None for auto peaks → they
+        # re-derive under the current geometry). / kept = 用户所有的环号
+        # （自动峰为 None → 按当前几何重新分配）。
+        kept = np.array(
+            [
+                int(p["ring"]) if (p.get("ring_user") and p.get("ring") is not None) else None
+                for p in peaks_now
+            ],
+            dtype=object,
+        )
+        try:
+            rings, dtheta, suspect = await _run_blocking(
+                _assign_rings_detailed, session, ys, xs, kept, True,
+            )
+            gr = await _run_blocking(_build_refinement, session, ys, xs, rings)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the frontend
+            return _err(f"Ring re-assignment failed: {exc}", f"环号重排失败：{exc}")
+        session["gr"] = gr
+        for p, ring, dth, susp in zip(peaks_now, rings, dtheta, suspect):
+            if p.get("ring") != int(ring):
+                rings_refreshed += 1
+                p["ring_user"] = False
+            p["ring"] = int(ring)
+            p["dtheta_deg"] = float(dth) if np.isfinite(dth) else None
+            p["suspect"] = bool(susp)
+        _check_cancel(cancel_event)
 
     free_raw = payload.get("free") or {}
     if not isinstance(free_raw, dict):
@@ -1319,7 +1477,17 @@ async def _action_refine(
     geometry = _geometry_summary(gr, session["pixel1"], session["pixel2"])
 
     await _progress(send_progress, 1.0, "Refinement complete / 精修完成")
-    return {"status": "ok", "geometry": geometry, "chi2": chi2, "residuals": residuals}
+    return {
+        "status": "ok",
+        "geometry": geometry,
+        "chi2": chi2,
+        "residuals": residuals,
+        # Auto ring refresh before refining (BUGFIX 2026-10-13): the updated
+        # peak list + how many ring numbers were corrected. 精修前自动环号
+        # 重排：更新后的峰列表 + 修正的环号数量。
+        "peaks": peaks_now,
+        "rings_refreshed": rings_refreshed,
+    }
 
 
 def _extract_ring_overlay(session: Dict[str, Any], gr: Any, calibrant: Any,
@@ -2011,6 +2179,9 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
                 peak = {"y": iy2, "x": ix2, "intensity": float(data[iy2, ix2])}
                 if assign_ring is not None:
                     peak["ring"] = assign_ring
+                    # User-owned ring (2026-10-20): survive refine's refresh.
+                    # 用户所有的环号：在精修的环号重排中被保留。
+                    peak["ring_user"] = True
                 out.append(peak)
         return out, radius, cy, cx, arc_out, upper
 
@@ -2337,7 +2508,7 @@ async def handle_calibration(payload: dict, send_progress, cancel_event) -> dict
     # Every remaining action needs a session / 其余 action 均需要会话
     session = _get_session(payload.get("sessionId"))
     if action not in {
-        "setup", "detect_peaks", "update_peaks", "refine",
+        "setup", "detect_peaks", "update_peaks", "refine", "set_center",
         "ring_overlay", "export_poni", "pick_peak", "ring_pick",
         "ring_standard", "integrate_preview",
     }:
@@ -2362,6 +2533,8 @@ async def handle_calibration(payload: dict, send_progress, cancel_event) -> dict
         return await _action_update_peaks(session, payload, send_progress, cancel_event)
     if action == "refine":
         return await _action_refine(session, payload, send_progress, cancel_event)
+    if action == "set_center":
+        return await _action_set_center(session, payload)
     if action == "ring_overlay":
         return await _action_ring_overlay(session, payload, send_progress, cancel_event)
     if action == "integrate_preview":

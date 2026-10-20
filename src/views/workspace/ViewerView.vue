@@ -492,24 +492,21 @@
               <p v-else class="vw-hint">{{ t('viewer.pixelInfoClickHint') }}</p>
             </div>
 
-            <!-- Line-profile plot (only in line-profile sub-mode) / 沿线剖面图（仅沿线剖面子模式） -->
-            <div
-              v-if="pixelInfoMode && lineProfileMode"
-              class="vw-pixel-info vw-line-profile"
-              :data-testid="testIds.viewerStats"
-            >
-              <h4 class="vw-stats-title">{{ t('viewer.lineProfile') }}</h4>
-              <div v-if="lineProfileLoading" class="vw-hint">{{ t('viewer.lineProfileLoading') }}</div>
-              <LineChart
-                v-else-if="lineProfileResult"
-                :traces="lineProfileTraces"
-                :x-label="lineProfileXLabel"
-                :x-unit="lineProfileXUnit"
-                :y-label="t('viewer.lineProfileIntensity')"
-                y-unit="a.u."
-              />
-              <p v-else class="vw-hint">{{ t('viewer.lineProfileDrawHint') }}</p>
-            </div>
+          </div>
+
+          <!-- Line-profile plot (full-width below the image section, only in line-profile sub-mode) / 沿线剖面图（图像区域下方通栏，仅沿线剖面子模式） -->
+          <div v-if="pixelInfoMode && lineProfileMode" class="vw-chart-section vw-line-profile">
+            <h4 class="vw-chart-label">{{ t('viewer.lineProfile') }}</h4>
+            <div v-if="lineProfileLoading" class="vw-hint">{{ t('viewer.lineProfileLoading') }}</div>
+            <LineChart
+              v-else-if="lineProfileResult"
+              :traces="lineProfileTraces"
+              :x-label="lineProfileXLabel"
+              :x-unit="lineProfileXUnit"
+              :y-label="t('viewer.lineProfileIntensity')"
+              y-unit="a.u."
+            />
+            <p v-else class="vw-hint">{{ t('viewer.lineProfileDrawHint') }}</p>
           </div>
 
           <!-- Frame navigator bar / 帧导航条 -->
@@ -579,7 +576,7 @@
  *
  * Fast probe (metadata) + single-frame load flow.
  */
-import { ref, computed, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
@@ -1186,9 +1183,27 @@ function getViewerTaskInterceptor(): ViewerTaskSubmitInterceptor | undefined {
   return (window as typeof window & {
     __viewerTestHooks__?: {
       interceptTaskSubmit?: ViewerTaskSubmitInterceptor
+      drawLine?: (x0: number, y0: number, x1: number, y1: number) => void
     }
   }).__viewerTestHooks__?.interceptTaskSubmit
 }
+
+// QA hook: e2e / 录屏自动化直接触发沿线剖面（与真实画线拖拽同一条 onLineDrawn 链路，
+// 端点为数据像素坐标，剖面仍由后端真实计算）。仅挂载时暴露，不影响正常交互。
+onMounted(() => {
+  const hooks = window as typeof window & {
+    __viewerTestHooks__?: {
+      interceptTaskSubmit?: ViewerTaskSubmitInterceptor
+      drawLine?: (x0: number, y0: number, x1: number, y1: number) => void
+    }
+  }
+  hooks.__viewerTestHooks__ = {
+    ...hooks.__viewerTestHooks__,
+    drawLine: (x0: number, y0: number, x1: number, y1: number) => {
+      void onLineDrawn({ pixelX0: x0, pixelY0: y0, pixelX1: x1, pixelY1: y1 })
+    },
+  }
+})
 
 function submitViewerLoadTask(params: ViewerTaskParams): Promise<ViewerSubmitResponse> {
   const submit = (route: string, nextParams: ViewerTaskParams) => transport.submitTask(route, nextParams)
@@ -2670,7 +2685,7 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-/* Heatmap section / 热力图区域 */
+/* Chart card (line-profile plot, full width below the image section) / 图表卡片（沿线剖面图，图像区域下方通栏） */
 .vw-chart-section {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);

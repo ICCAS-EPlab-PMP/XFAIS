@@ -5,6 +5,7 @@
  * File dialogs use hidden <input type="file"> elements and browser download APIs.
  */
 
+import { version as APP_VERSION } from '../../package.json'
 import type {
   ITransport,
   PythonStatus,
@@ -50,6 +51,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   image_stitch: '/api/image_stitch',
   orientation_analysis: '/api/orientation_analysis',
   lamellar_analysis: '/api/lamellar_analysis',
+  curve_fitting: '/api/curve_fitting',
   // v0.3.0: built-in calibration wizard / 内置校正向导
   calibration: '/api/calibration'
 }
@@ -552,9 +554,11 @@ export class WebTransport implements ITransport {
   // ── App metadata ────────────────────────────────────────────────────────────
 
   async getAppMeta(): Promise<AppMeta> {
-    // Try reading version from meta tag injected at build time
+    // Try reading version from meta tag injected at build time; fall back to
+    // package.json version (the meta tag is currently never injected, and the
+    // old hardcoded fallback went stale — same class of bug as constants.ts)
     const metaTag = document.querySelector('meta[name="app-version"]')
-    const version = metaTag?.getAttribute('content') ?? '0.2.1'
+    const version = metaTag?.getAttribute('content') ?? APP_VERSION
 
     return {
       appName: 'X-FAIS',

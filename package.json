@@ -1,6 +1,6 @@
 {
   "name": "x-fais-electron",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "private": true,
   "type": "module",
   "main": "dist-electron/main/index.js",
@@ -30,6 +30,7 @@
   },
   "dependencies": {
     "plotly.js-dist-min": "^3.5.0",
+    "uplot": "^1.6.32",
     "vue": "^3.5.13",
     "vue-i18n": "^9.14.5",
     "vue-router": "^4.5.1"
@@ -71,7 +72,10 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ]
     },

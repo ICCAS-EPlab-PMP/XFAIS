@@ -66,6 +66,24 @@
       </button>
     </div>
 
+    <!-- Pick initial centre (2026-10-20): arms a SINGLE-SHOT canvas mode that
+         sends the next click to set_center (centre seed + auto ring
+         re-derivation under the new coordinate system). /
+         点选初猜中心（2026-10-20）：武装一次性画布模式——下一次点击发送给
+         set_center（中心种子 + 自动环号按新坐标系重排）。 -->
+    <div class="cpp-row">
+      <button
+        type="button"
+        class="cpp-btn"
+        :class="{ 'cpp-btn--armed': centerPicking }"
+        :disabled="ringPicking"
+        :title="centerPickTitle"
+        @click="$emit('toggle-center-pick')"
+      >
+        {{ centerPickLabel }}
+      </button>
+    </div>
+
     <!-- Extraction options (calib2 parity): beyond mask = calib2 "Ring" tool
          tooltip "Extract peaks, beyond masked values"; remove existing =
          calib2 "Rubber" tool semantics applied to the harvested band/arc.
@@ -143,6 +161,13 @@
         {{ refreshing ? refreshRunningLabel : refreshLabel }}
       </button>
     </div>
+    <!-- Caution (user request 2026-10-13): refresh renumbers from the CURRENT
+         geometry — with a weak signal or unconfirmed initial guesses that can
+         scramble ring numbers. Refine re-assigns automatically before fitting,
+         so clicking refresh manually is mainly to INSPECT the table. /
+         告诫（2026-10-13 用户要求）：刷新按当前几何重排环号——信号不好或初值
+         未确认时可能打乱环号；精修前已自动重排，手动点击主要为检视峰表。 -->
+    <p class="cpp-hint cpp-hint--caution">{{ refreshCaution }}</p>
 
     <!-- Per-ring summary table (REQ: one row per ring, not per peak) /
          每环汇总表：一行一环（而非一行一峰）。
@@ -168,6 +193,13 @@
             <td class="cpp-ringcell">
               <template v-if="row.ring != null">
                 <span class="cpp-swatch" :style="{ background: calibPeakRingColor(row.ring) }" />
+                <!-- ★ = user-owned ring number (survives refine's refresh). /
+                     ★ = 用户指定的环号（精修重排中保留）。 -->
+                <span
+                  v-if="row.userOwned"
+                  class="cpp-ring-user"
+                  :title="ringUserTitle"
+                >★</span>
                 <!-- calib2's ring-number spin box applied to the WHOLE ring:
                      editing moves every peak of this ring to the new number
                      (UI 1-based; emitted value converted to 0-based backend
@@ -235,6 +267,8 @@ const props = withDefaults(defineProps<{
   guideCount?: number
   /** Whether ring_pick is in flight (disables the ring controls). */
   ringPicking?: boolean
+  /** Whether the SINGLE-SHOT pick-initial-centre canvas mode is armed. */
+  centerPicking?: boolean
   /** calib2 "Ring" tool parity: extract peaks beyond masked values. */
   beyondMask?: boolean
   /** calib2 "Rubber" parity: remove existing points inside the extraction area. */
@@ -245,6 +279,7 @@ const props = withDefaults(defineProps<{
   detecting: false,
   guideCount: 0,
   ringPicking: false,
+  centerPicking: false,
   beyondMask: false,
   removeExisting: false,
   refreshing: false,
@@ -257,6 +292,7 @@ const emit = defineEmits<{
   clear: []
   'finish-ring': []
   'clear-guides': []
+  'toggle-center-pick': []
   'update:beyondMask': [value: boolean]
   'update:removeExisting': [value: boolean]
   'refresh-rings': []
@@ -289,6 +325,16 @@ const ringHint = computed(() =>
 )
 const finishRingLabel = computed(() => (isZh.value ? '完成本环' : 'Finish ring'))
 const clearGuidesLabel = computed(() => (isZh.value ? '清除引导点' : 'Clear guides'))
+const centerPickLabel = computed(() =>
+  isZh.value
+    ? (props.centerPicking ? '点选初猜中心中…（点击图像）' : '点选初猜中心')
+    : (props.centerPicking ? 'Picking centre… (click the image)' : 'Pick initial centre'),
+)
+const centerPickTitle = computed(() =>
+  isZh.value
+    ? '在图像上单击光束中心的大致位置：作为初猜中心（poni 种子），自动环号会立即按新坐标系重排，您指定的环号保持不变；设置后自动退出该模式'
+    : 'Click the approximate beam centre on the image: it seeds the geometry centre; auto ring numbers re-derive under the new coordinate system (your picked rings stay). The mode disarms after one set',
+)
 const advancedLabel = computed(() => (isZh.value ? '高级' : 'Advanced'))
 const autoLabel = computed(() => (isZh.value ? '高级：全图自动拾取' : 'Advanced: full-image auto pick'))
 const detectingLabel = computed(() => (isZh.value ? '自动拾取中…' : 'Detecting…'))
@@ -317,6 +363,16 @@ const refreshTitle = computed(() =>
     ? '按当前几何重新分配全部环号，并标记偏离理论环的可疑峰'
     : 'Re-assign every ring number from the current geometry and flag deviating peaks',
 )
+/** Caution under the refresh button (user request 2026-10-13; wording
+ *  updated 2026-10-20: refine now KEEPS user-picked ring numbers, only auto
+ *  ones refresh). */
+/** 刷新按钮下的告诫文案（2026-10-13 用户要求；2026-10-20 更新措辞：精修保留
+ *  用户点选的环号，仅自动分配者刷新）。 */
+const refreshCaution = computed(() =>
+  isZh.value
+    ? '提示：「刷新环号」会把全部环号（含手工环号）按当前几何重排，信号不好或初值未确认时慎用；精修前的自动重排只刷新自动环号，您点选/改过的环号（标 ★）保持不变。'
+    : 'Tip: "Refresh rings" re-derives EVERY ring (manual ones included) from the current geometry — use with care. The automatic refresh before refining only touches auto-assigned rings; the ones you picked/renumbered (marked ★) stay.',
+)
 const ringColTitle = computed(() =>
   isZh.value ? '环号可直接编辑（整环改号，界面 1 起）' : 'Ring number is editable (renumbers the whole ring, 1-based)',
 )
@@ -324,6 +380,11 @@ const ringEditTitle = computed(() =>
   isZh.value ? '输入新环号并回车：该环全部峰移动到新环' : 'Type a new ring number: every peak of this ring moves to it',
 )
 const countColLabel = computed(() => (isZh.value ? '峰数' : 'Peaks'))
+const ringUserTitle = computed(() =>
+  isZh.value
+    ? '用户指定的环号：精修前的自动重排会保留它（「刷新环号/自检」仍会重排全部）'
+    : 'User-set ring number: kept by refine\'s automatic refresh ("Refresh rings / check" still re-derives everything)',
+)
 const suspectColTitle = computed(() =>
   isZh.value ? '可疑峰数（偏离所分配理论环）' : 'Suspect peaks (deviating from their assigned ring)',
 )
@@ -361,6 +422,8 @@ interface CalibRingRow {
   count: number
   meanDtheta: number | null
   suspects: number
+  /** True when ≥1 peak of the ring carries a user-set ring number (★). */
+  userOwned: boolean
 }
 
 const ringRows = computed<CalibRingRow[]>(() => {
@@ -381,6 +444,7 @@ const ringRows = computed<CalibRingRow[]>(() => {
         ? dthetas.reduce((a, b) => a + b, 0) / dthetas.length
         : null,
       suspects: bucket.filter(p => p.suspect).length,
+      userOwned: bucket.some(p => p.ringUser === true),
     })
   }
   // Ascending ring order; unassigned (null) last.
@@ -436,6 +500,11 @@ function onRingEdit(oldRing: number, e: Event): void {
   font-size: 0.75rem;
   color: var(--text-muted);
   line-height: 1.4;
+}
+
+/* Amber caution variant (refresh-rings tip, 2026-10-13). / 琥珀色告诫变体。 */
+.cpp-hint--caution {
+  color: #b45309;
 }
 
 /* Ring-number spinner bar (REQ 2) / 当前环号数字框 */
@@ -616,6 +685,22 @@ function onRingEdit(oldRing: number, e: Event): void {
 
 .cpp-btn--primary:hover:not(:disabled) {
   opacity: 0.9;
+}
+
+/* Armed single-shot centre pick (点选初猜中心激活态) — magenta like the
+   beam-centre crosshair it seeds. */
+.cpp-btn--armed {
+  border-color: #e879f9;
+  color: #e879f9;
+  background: rgba(232, 121, 249, 0.10);
+}
+
+/* ★ user-owned ring badge / 用户环号标记 */
+.cpp-ring-user {
+  color: #e879f9;
+  font-size: 0.78rem;
+  line-height: 1;
+  cursor: help;
 }
 
 .cpp-table-wrap {

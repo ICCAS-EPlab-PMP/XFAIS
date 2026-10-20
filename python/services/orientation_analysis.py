@@ -879,7 +879,11 @@ def analyze_orientation(chi_deg: Any, intensity: Any, **opts: Any) -> dict[str, 
     fwhm : dict
         peak_window. / peak_window。
     wilchinsky : dict
-        cell, reflections, unique_axis. / cell、reflections、unique_axis。
+        cell, reflections, unique_axis. Each reflection entry may carry either
+        a manual "cos2" value or its own "chi"/"intensity" arrays — the latter
+        are integrated automatically (same preprocessing as the primary curve).
+        cell、reflections、unique_axis。每个反射条目可带手动 "cos2"，或自带
+        "chi"/"intensity" 数组——后者自动积分（与主曲线同一套预处理）。
     crystallinity : float, optional
         User-supplied degree of crystallinity Xc (0–100) for bias reporting.
         用户提供的结晶度 Xc（0–100），用于偏差报告。
@@ -888,7 +892,8 @@ def analyze_orientation(chi_deg: Any, intensity: Any, **opts: Any) -> dict[str, 
     -------
     dict
         chi, intensity, folded_intensity, corrected_intensity, background,
-        fold_info, background_info, results, crystallinity, warnings, quality.
+        fold_info, background_info, results, wilchinsky_curves, crystallinity,
+        warnings, quality.
     """
     methods = opts.get("methods") or ["hermans"]
     for m in methods:
@@ -953,6 +958,7 @@ def analyze_orientation(chi_deg: Any, intensity: Any, **opts: Any) -> dict[str, 
 
     # ③ Orientation metrics. / ③ 取向度计算。
     results: list[dict[str, Any]] = []
+    wilchinsky_curves: list[dict[str, Any]] = []
     if "hermans" in methods:
         h_opts = opts.get("hermans") or {}
         r, m = hermans_orientation(
@@ -974,8 +980,69 @@ def analyze_orientation(chi_deg: Any, intensity: Any, **opts: Any) -> dict[str, 
                 "已选择 Wilchinsky 但未提供 cell/reflections，已跳过。"
             )
         else:
+            # Each reflection may carry its own I(χ) curve (extracted from its own
+            # ring on the detector); the second moment ⟨cos²χ⟩ is then integrated
+            # automatically with the SAME preprocessing as the primary curve. A
+            # manual "cos2" value still overrides. Wilchinsky therefore integrates
+            # one curve per reflection — typically three or more.
+            # 每个反射可携带自己的 I(χ) 曲线（取自探测器上各自的衍射环），⟨cos²χ⟩
+            # 按与主曲线相同的预处理自动积分；手动填写的 "cos2" 仍然优先。
+            # 因此 Wilchinsky 会对每条反射曲线各积分一次——通常至少三条。
+            h_opts = opts.get("hermans") or {}
+            refl_used: list[dict[str, Any]] = []
+            for ref in w_opts["reflections"]:
+                h = float(ref.get("h", 0))
+                k = float(ref.get("k", 0))
+                l = float(ref.get("l", 0))
+                hkl_label = f"({int(h)}{int(k)}{int(l)})"
+                entry: dict[str, Any] = {"h": h, "k": k, "l": l}
+                r_chi = ref.get("chi")
+                r_int = ref.get("intensity")
+                cos2_given = ref.get("cos2")
+                if isinstance(cos2_given, (int, float)) and np.isfinite(cos2_given):
+                    entry["cos2"] = float(cos2_given)
+                elif r_chi is not None and r_int is not None:
+                    try:
+                        f_chi, f_I, r_miss = handle_missing(r_chi, r_int, strategy=missing)
+                        fc_chi, fc_I, r_fold = fold_symmetry(
+                            f_chi, f_I, symmetry=symmetry, geometry=geometry,
+                        )
+                        if not r_fold["folded"]:
+                            fc_chi, fc_I = f_chi, f_I
+                        bc_chi, bc_I, r_bg, _r_bgi = subtract_background(fc_chi, fc_I, **bg_kwargs)
+                        hr, _hm = hermans_orientation(
+                            bc_chi, bc_I,
+                            chi_zero=h_opts.get("chi_zero", "meridian"),
+                            equatorial_to_chain=False,
+                            reference_chi_deg=h_opts.get("reference_chi_deg"),
+                        )
+                    except ValueError as exc:
+                        raise ValueError(f"Reflection {hkl_label}: {exc}") from exc
+                    if r_miss.get("unreliable"):
+                        warnings.append(
+                            f"Reflection {hkl_label}: large χ gap "
+                            f"({r_miss['max_gap_deg']:.1f}°); ⟨cos²χ⟩ may be unreliable. "
+                            f"反射 {hkl_label}：存在大 χ 间隙（{r_miss['max_gap_deg']:.1f}°），"
+                            f"⟨cos²χ⟩ 可能不可信。"
+                        )
+                    entry["cos2"] = hr["cos2_normal"]
+                    wilchinsky_curves.append({
+                        "hkl": [int(h), int(k), int(l)],
+                        "chi": bc_chi.tolist(),
+                        "folded_intensity": fc_I.tolist(),
+                        "corrected_intensity": bc_I.tolist(),
+                        "background": r_bg.tolist(),
+                        "cos2": hr["cos2_normal"],
+                    })
+                else:
+                    raise ValueError(
+                        f"Reflection {hkl_label} has neither a manual ⟨cos²χ⟩ nor an "
+                        f"I(χ) curve to integrate. "
+                        f"反射 {hkl_label} 既没有手动 ⟨cos²χ⟩，也没有可积分的 I(χ) 曲线。"
+                    )
+                refl_used.append(entry)
             r, m = wilchinsky_chain_axis(
-                w_opts["reflections"], w_opts["cell"],
+                refl_used, w_opts["cell"],
                 unique_axis=w_opts.get("unique_axis", "b"),
             )
             results.append({**r, "method": "wilchinsky"})
@@ -1023,6 +1090,7 @@ def analyze_orientation(chi_deg: Any, intensity: Any, **opts: Any) -> dict[str, 
         "fold_info": {**fold_info, "missing": miss_meta},
         "background_info": bg_info,
         "results": results,
+        "wilchinsky_curves": wilchinsky_curves,
         "crystallinity_hint": crystallinity_hint,
         "warnings": warnings,
         "quality": {

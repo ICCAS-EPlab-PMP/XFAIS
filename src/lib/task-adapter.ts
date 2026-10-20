@@ -497,7 +497,12 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
             const rr = asRecord(r)
             return {
               h: asNumber(rr.h, 0), k: asNumber(rr.k, 0), l: asNumber(rr.l, 0),
-              cos2: asNumber(rr.cos2, asNumber(rr.cos2Chi, 0)),
+              // cos2 is optional: null/absent means the backend integrates the
+              // reflection's own ring (radial range) to get ⟨cos²χ⟩ automatically.
+              // cos2 可选：为空表示后端按该反射的环带范围自动积分 ⟨cos²χ⟩。
+              cos2: asOptionalNumber(rr.cos2) ?? asOptionalNumber(rr.cos2Chi) ?? undefined,
+              radial_min: asOptionalNumber(rr.radialMin) ?? asOptionalNumber(rr.radial_min) ?? undefined,
+              radial_max: asOptionalNumber(rr.radialMax) ?? asOptionalNumber(rr.radial_max) ?? undefined,
             }
           }),
           unique_axis: asString(wilchinskyRaw.uniqueAxis) ?? 'b',
@@ -600,6 +605,82 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         if (qMax !== undefined) base.q_max = qMax
       }
       return base
+    }
+    case 'curve_fitting': {
+      // Stateless interactive fitting: one command, three actions (preview /
+      // evaluate / fit) over the same camelCase payload from the view.
+      // 无状态交互式拟合：同一命令三种动作（preview / evaluate / fit），
+      // 载荷由视图以 camelCase 统一给出。
+      const regionRaw = asRecord(params.region)
+      const smRaw = asRecord(params.smoothing)
+      const bgRaw = asRecord(params.background)
+      const bgRegionRaw = asRecord(bgRaw.region)
+      const bgRegionsRaw = Array.isArray(bgRaw.regions) ? bgRaw.regions : []
+      const detectRaw = asRecord(params.detect)
+      const optRaw = asRecord(params.options)
+      const peaksRaw = Array.isArray(params.peaks) ? params.peaks : []
+      return {
+        action: asString(params.action) ?? 'preview',
+        x: Array.isArray(params.x)
+          ? params.x.filter((v): v is number => typeof v === 'number') : [],
+        y: Array.isArray(params.y)
+          ? params.y.filter((v): v is number => typeof v === 'number') : [],
+        region: {
+          min: asOptionalNumber(regionRaw.min),
+          max: asOptionalNumber(regionRaw.max),
+        },
+        smoothing: {
+          method: asString(smRaw.method) ?? 'none',
+          window: asNumber(smRaw.window, 11),
+          poly_order: asNumber(smRaw.polyOrder, 3),
+        },
+        background: {
+          method: asString(bgRaw.method) ?? 'none',
+          order: asNumber(bgRaw.order, 2),
+          iterations: asNumber(bgRaw.iterations, 40),
+          refine: asBoolean(bgRaw.refine, false),
+          // PeakFit baseline SECTIONS: multiple peak-free bands whose union
+          // feeds ONE baseline fit; single region kept for compatibility.
+          // PeakFit 式背景多段选区：多条无峰点带并入同一次基线拟合；单个
+          // region 字段保留兼容。
+          regions: bgRegionsRaw.map((entry) => {
+            const r = asRecord(entry)
+            return {
+              min: asOptionalNumber(r.min),
+              max: asOptionalNumber(r.max),
+            }
+          }),
+          region: {
+            min: asOptionalNumber(bgRegionRaw.min),
+            max: asOptionalNumber(bgRegionRaw.max),
+          },
+        },
+        peaks: peaksRaw.map((entry) => {
+          const p = asRecord(entry)
+          const locks = asRecord(p.locks)
+          return {
+            type: asString(p.type) ?? 'pseudo_voigt',
+            center: asOptionalNumber(p.center),
+            height: asOptionalNumber(p.height),
+            fwhm: asOptionalNumber(p.fwhm),
+            shape: asOptionalNumber(p.shape),
+            locks: {
+              center: asBoolean(locks.center, false),
+              height: asBoolean(locks.height, false),
+              fwhm: asBoolean(locks.fwhm, false),
+              shape: asBoolean(locks.shape, false),
+            },
+          }
+        }),
+        detect: {
+          enabled: asBoolean(detectRaw.enabled, false),
+          prominence: asNumber(detectRaw.prominence, 0.05),
+        },
+        options: {
+          max_iterations: asNumber(optRaw.maxIterations, 500),
+          loss: asString(optRaw.loss) ?? 'linear',
+        },
+      }
     }
     default:
       return params
@@ -789,6 +870,61 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
       return {
         kind: 'result',
         data: mapSingle(result)
+      }
+    }
+    case 'curve_fitting': {
+      const numArray = (v: unknown): number[] =>
+        Array.isArray(v) ? v.filter((x): x is number => typeof x === 'number') : []
+      const fitRaw = asRecord(result.fit)
+      const curvesRaw = asRecord(fitRaw.curves)
+      return {
+        kind: 'result',
+        data: {
+          action: asString(result.action) ?? 'preview',
+          x: numArray(result.x),
+          rawY: numArray(result.raw_y),
+          smoothedY: result.smoothed_y === null || result.smoothed_y === undefined ? null : numArray(result.smoothed_y),
+          processedY: numArray(result.processed_y),
+          backgroundY: result.background_y === null || result.background_y === undefined ? null : numArray(result.background_y),
+          autoPeaks: Array.isArray(result.auto_peaks)
+            ? result.auto_peaks.map((entry) => asRecord(entry))
+            : [],
+          backgroundInfo: asRecord(result.background_info),
+          quality: asRecord(result.quality),
+          warnings: Array.isArray(result.warnings)
+            ? result.warnings.filter((w): w is string => typeof w === 'string') : [],
+          fit: Object.keys(fitRaw).length === 0 ? null : {
+            success: asBoolean(fitRaw.success, false),
+            message: asString(fitRaw.message) ?? '',
+            nIterations: typeof fitRaw.n_iterations === 'number' ? fitRaw.n_iterations : 0,
+            nFreeParams: typeof fitRaw.n_free_params === 'number' ? fitRaw.n_free_params : 0,
+            stats: asRecord(fitRaw.stats),
+            backgroundInfo: asRecord(fitRaw.background_info),
+            peaks: Array.isArray(fitRaw.peaks)
+              ? fitRaw.peaks.map((entry) => {
+                const p = asRecord(entry)
+                return {
+                  index: typeof p.index === 'number' ? p.index : 0,
+                  type: asString(p.type) ?? 'gaussian',
+                  params: asRecord(p.params),
+                  errors: asRecord(p.errors),
+                  area: typeof p.area === 'number' ? p.area : null,
+                  areaError: typeof p.area_error === 'number' ? p.area_error : null,
+                  areaFraction: typeof p.area_fraction === 'number' ? p.area_fraction : null,
+                  locks: asRecord(p.locks),
+                }
+              })
+              : [],
+            curves: {
+              sum: numArray(curvesRaw.sum),
+              background: curvesRaw.background === null || curvesRaw.background === undefined ? null : numArray(curvesRaw.background),
+              peaks: Array.isArray(curvesRaw.peaks)
+                ? curvesRaw.peaks.map((entry) => numArray(entry))
+                : [],
+              residuals: numArray(curvesRaw.residuals),
+            },
+          },
+        },
       }
     }
     case 'viewer_config':

@@ -1043,6 +1043,201 @@ def test_update_peaks_keep_mode_and_suspect_selfcheck(synthetic_edf: str):
 # beyondMask on pick_peak / detect_peaks / 单峰与自动拾取的越过掩码开关
 # ---------------------------------------------------------------------------
 
+def test_refine_auto_reassigns_stale_ring_numbers(synthetic_edf: str):
+    """BUGFIX 2026-10-13 regression: refine must re-assign ring numbers from
+    the CURRENT geometry before fitting, so a user who never clicked
+    刷新环号/自检 cannot poison 精修中心位点 with a stale/wrong assignment.
+    The response carries the refreshed peaks + a correction count.
+    回归（2026-10-13 修复）：精修前必须按当前几何自动重排环号——用户没点
+    「刷新环号/自检」时，过期/错误分配不能再毁掉精修；响应携带刷新后的峰
+    与修正计数。"""
+    import pyFAI.calibrant as calibrant_mod
+
+    setup = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))
+    sid = setup["sessionId"]
+    np.random.seed(RNG_SEED)
+    detect = _ok(_run({"action": "detect_peaks", "sessionId": sid}))["peaks"]
+
+    assigned = _ok(_run({
+        "action": "update_peaks", "sessionId": sid,
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in detect],
+    }))["peaks"]
+    calibrant = calibrant_mod.get_calibrant(CALIBRANT_NAME)
+    calibrant.wavelength = WAVELENGTH_M
+    n_reachable = sum(1 for v in calibrant.get_2th() if v is not None)
+
+    # Simulate the user's stale table: relabel ONE peak onto a wrong ring via
+    # keep mode (as a miscounted ring-by-ring pick or a poor initial guess
+    # would leave behind), then refine WITHOUT clicking 刷新环号.
+    # 模拟过期峰表：keep 模式把一个峰改到错误环（等效于逐一环选数错号或初值
+    # 差时的残留），随后不点「刷新环号」直接精修。
+    victim = min(range(len(assigned)), key=lambda i: abs(assigned[i]["dtheta_deg"]))
+    true_ring = assigned[victim]["ring"]
+    wrong_ring = true_ring + 1 if true_ring + 1 < n_reachable else true_ring - 1
+    _ok(_run({
+        "action": "update_peaks", "sessionId": sid, "mode": "keep",
+        "peaks": [
+            {"y": p["y"], "x": p["x"], "ring": wrong_ring if i == victim else None}
+            for i, p in enumerate(assigned)
+        ],
+    }))
+
+    refine = _ok(_run({"action": "refine", "sessionId": sid, "passes": 1}))
+    # The refreshed peak list returns with the refine and the wrong ring was
+    # corrected back to the geometry-derived assignment.
+    # 精修响应带回刷新后的峰表，且错误环号已被修正回几何分配值。
+    assert refine["rings_refreshed"] >= 1
+    peaks_out = refine["peaks"]
+    assert peaks_out[victim]["ring"] == true_ring
+    assert refine["geometry"]["dist_mm"] == pytest.approx(DIST_MM, rel=2e-3)
+
+
+def test_refine_preserves_user_owned_rings(synthetic_edf: str):
+    """0.3.3 regression (user bug report): a ring number the USER set
+    deliberately (ring-by-ring 完成本环 stamp / summary renumber → ringUser)
+    must SURVIVE refine's automatic refresh — with a single partial ring the
+    nearest-ring re-derivation under a rough guess used to relabel it to a
+    "better" ring and the refine then fitted the wrong theoretical ring.
+    Only auto-assigned rings re-derive.
+    回归（0.3.3 用户缺陷报告）：用户亲手指定的环号（逐一环选打标 / 汇总表
+    改号 → ringUser）必须在精修的自动重排中被保留——只收单个不完整环时，
+    粗几何下的最近环重排曾把环号改到“更好”的其它环，精修随之拟合错误理论
+    环。仅自动分配的环号重新推导。"""
+    setup = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))
+    sid = setup["sessionId"]
+    np.random.seed(RNG_SEED)
+    detect = _ok(_run({"action": "detect_peaks", "sessionId": sid}))["peaks"]
+    assigned = _ok(_run({
+        "action": "update_peaks", "sessionId": sid,
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in detect],
+    }))["peaks"]
+
+    # User-owned ring: keep mode + ringUser on ONE peak (what 完成本环 /
+    # summary renumber produce). Even a DELIBERATELY WRONG ring must stick —
+    # it is the user's call, refine must not "fix" it.
+    # 用户所有环号：keep + ringUser（完成本环 / 改号产生的形态）。即便是刻意
+    # 填错的环号也要保留——那是用户的决定，精修不得“纠正”。
+    victim = min(range(len(assigned)), key=lambda i: abs(assigned[i]["dtheta_deg"]))
+    user_ring = (assigned[victim]["ring"] + 3) % 6
+    kept = _ok(_run({
+        "action": "update_peaks", "sessionId": sid, "mode": "keep",
+        "peaks": [
+            (
+                {"y": p["y"], "x": p["x"], "ring": user_ring, "ringUser": True}
+                if i == victim
+                else {"y": p["y"], "x": p["x"]}
+            )
+            for i, p in enumerate(assigned)
+        ],
+    }))["peaks"]
+    # update_peaks echoes the provenance. update_peaks 回带溯源标记。
+    assert kept[victim]["ring"] == user_ring
+    assert kept[victim]["ring_user"] is True
+    assert not any(p["ring_user"] for i, p in enumerate(kept) if i != victim)
+
+    refine = _ok(_run({"action": "refine", "sessionId": sid, "passes": 1}))
+    # The user-owned ring SURVIVES the pre-refine refresh (the serious-bug
+    # fix): the victim keeps `user_ring` instead of being renumbered to the
+    # geometry-nearest ring.
+    # 用户所有环号在精修前重排中被保留（严重缺陷修复）：该峰保持 user_ring，
+    # 不再被改到几何最近环。
+    assert refine["peaks"][victim]["ring"] == user_ring
+    assert refine["peaks"][victim]["ring_user"] is True
+    # 刷新环号/自检 (assign mode) remains the explicit full-reset path — it
+    # clears provenance and re-derives everything.
+    # 「刷新环号/自检」（assign 模式）仍是显式全量重置——清除溯源并全部重排。
+    refreshed = _ok(_run({
+        "action": "update_peaks", "sessionId": sid, "mode": "assign",
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in refine["peaks"]],
+    }))["peaks"]
+    assert not any(p["ring_user"] for p in refreshed)
+
+
+def test_set_center_seeds_geometry_and_keeps_user_rings(synthetic_edf: str):
+    """2026-10-20 feature: a canvas click becomes the initial-guess beam
+    centre. The geometry echo reflects the clicked pixel immediately (even
+    before any refinement exists), AUTO ring numbers re-derive under the new
+    coordinate system, and user-owned rings survive.
+    2026-10-20 新功能：画布点击成为初猜中心。几何回显立即反映点击像素（尚无
+    精修器时亦然）；自动环号按新坐标系重排；用户环号保留。"""
+    setup = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))
+    sid = setup["sessionId"]
+
+    # No peaks yet: set_center still answers with a geometry built from the
+    # guess integrator seeded at the clicked pixel.
+    # 尚无峰：set_center 也回带以点击像素为种子的猜测几何。
+    res0 = _ok(_run({"action": "set_center", "sessionId": sid, "y": CENTER_Y_PX + 12, "x": CENTER_X_PX - 8}))
+    assert res0["center"] == {"y": CENTER_Y_PX + 12, "x": CENTER_X_PX - 8}
+    assert res0["geometry"]["center_y_px"] == pytest.approx(CENTER_Y_PX + 12, abs=1e-6)
+    assert res0["geometry"]["center_x_px"] == pytest.approx(CENTER_X_PX - 8, abs=1e-6)
+    assert res0["geometry"]["dist_mm"] == pytest.approx(DIST_MM, rel=1e-6)
+
+    # With peaks (one user-owned), moving the centre re-derives ONLY the auto
+    # rings; the user ring stays. / 有峰（其一为用户所有）时移动中心只重排自动
+    # 环号；用户环号不动。
+    np.random.seed(RNG_SEED)
+    detect = _ok(_run({"action": "detect_peaks", "sessionId": sid}))["peaks"]
+    assigned = _ok(_run({
+        "action": "update_peaks", "sessionId": sid,
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in detect],
+    }))["peaks"]
+    victim = min(range(len(assigned)), key=lambda i: abs(assigned[i]["dtheta_deg"]))
+    user_ring = assigned[victim]["ring"]
+    _ok(_run({
+        "action": "update_peaks", "sessionId": sid, "mode": "keep",
+        "peaks": [
+            (
+                {"y": p["y"], "x": p["x"], "ring": user_ring, "ringUser": True}
+                if i == victim
+                else {"y": p["y"], "x": p["x"]}
+            )
+            for i, p in enumerate(assigned)
+        ],
+    }))
+
+    res1 = _ok(_run({"action": "set_center", "sessionId": sid, "y": CENTER_Y_PX - 25, "x": CENTER_X_PX + 15}))
+    assert res1["geometry"]["center_y_px"] == pytest.approx(CENTER_Y_PX - 25, abs=1e-6)
+    assert res1["geometry"]["center_x_px"] == pytest.approx(CENTER_X_PX + 15, abs=1e-6)
+    assert res1["peaks"][victim]["ring"] == user_ring
+    assert res1["peaks"][victim]["ring_user"] is True
+    assert isinstance(res1["rings_refreshed"], int)
+
+    # Internal-standard sessions refuse set_center (their geometry is computed
+    # by ring_standard, never seeded). / 内标会话拒绝 set_center（其几何由
+    # ring_standard 计算，不做种子）。
+    setup2 = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "internalStandard": True,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))
+    refused = _run({"action": "set_center", "sessionId": setup2["sessionId"], "y": 5, "x": 5})
+    assert refused["status"] == "error"
+
+
 def test_pick_peak_beyond_mask_variants(synthetic_edf: str):
     setup = _ok(_run({
         "action": "setup",

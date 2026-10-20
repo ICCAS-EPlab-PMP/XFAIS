@@ -882,6 +882,7 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   image_stitch: '/api/image_stitch',
   orientation_analysis: '/api/orientation_analysis',
   lamellar_analysis: '/api/lamellar_analysis',
+  curve_fitting: '/api/curve_fitting',
   poni_importer: '/api/poni_importer',
   calibration: '/api/calibration'
 }

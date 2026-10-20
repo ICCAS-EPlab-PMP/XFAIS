@@ -280,6 +280,10 @@
               <button type="button" class="lm-btn lm-btn-sm" @click="exportBatchCsv">
                 {{ t('lamellar.batch.exportSummary') }}
               </button>
+              <button type="button" class="lm-btn lm-btn-sm" @click="exportAllCurvesCsv">
+                {{ t('lamellar.batch.exportAllCurves') }}
+                <span class="lm-beta-tag">{{ t('lamellar.batch.betaTag') }}</span>
+              </button>
             </div>
             <div v-if="failedFiles.length" class="lm-failed">
               <strong>{{ t('lamellar.batch.failed') }}:</strong>
@@ -1021,15 +1025,22 @@ function downloadText(content: string, name: string): void {
   URL.revokeObjectURL(url)
 }
 
-function exportCsv(): void {
-  const d = detailData.value
-  if (!d) return
-  lamellarExportedOnce.value = true
+/**
+ * Curve sections for one analysis payload — the single-file export format,
+ * reused verbatim per file by the batch curves export (results summary as
+ * trailing # comment lines so spreadsheet tools treat them as annotations).
+ * 单个结果负载的曲线段文本——即单文件导出格式；批量全曲线导出按文件逐段
+ * 复用（结果参数以 # 注释行收尾，表格软件会将其视为注释）。
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function curveSectionLines(d: Record<string, any>, label: string | null): string[] {
   // CSV q columns follow the selected unit (matches the on-screen charts);
   // r/gamma columns stay nm (real space is always reported in nm).
   // CSV 的 q 列按所选单位（与图表一致）；r/γ 列保持 nm（实空间恒以 nm 报告）。
   const u = qUnit.value === 'nm^-1' ? 'nm' : 'A'
-  const lines: string[] = [`q_${u},intensity,corrected_intensity,q2I`]
+  const lines: string[] = []
+  if (label) lines.push(`# ===== file: "${label}" =====`)
+  lines.push(`q_${u},intensity,corrected_intensity,q2I`)
   const q = toDisplayQ((d.q as number[]) ?? [])
   for (let i = 0; i < q.length; i++) {
     lines.push([
@@ -1060,13 +1071,37 @@ function exportCsv(): void {
       lines.push([tan.line_r[i], tan.line_gamma?.[i] ?? ''].join(','))
     }
   }
-  const r = res.value ?? {}
+  const r = (Array.isArray(d.results) ? d.results[0] : null) ?? {}
   lines.push(
     '',
     `# L=${r.long_period_nm}, L_2min=${r.long_period_2min_nm}, l_c=${r.l_crystalline_nm}, l_a=${r.l_amorphous_nm}, phi_c=${r.crystallinity_stack}`,
     `# tangent: slope=${r.tangent_slope_nm_inv}, r2=${r.tangent_r2}, fit=[${r.tangent_fit_min_nm},${r.tangent_fit_max_nm}], x@gamma_min=${r.x_at_gamma_min}, x@0=${r.x_at_gamma_zero}, O_s=${r.specific_surface_nm_inv}`,
   )
+  return lines
+}
+
+function exportCsv(): void {
+  const d = detailData.value
+  if (!d) return
+  lamellarExportedOnce.value = true
+  const lines = curveSectionLines(d, batchItems.value ? detailLabel.value : null)
   downloadText(lines.join('\n'), 'lamellar_analysis.csv')
+}
+
+/** Batch mode: every sample's FULL curve set (I(q), q²I, γ₁, tangent) in one CSV. */
+/** 批量模式：把每个样品的全部曲线（I(q)、q²I、γ₁、切线）导出到一个 CSV。 */
+function exportAllCurvesCsv(): void {
+  const items = batchItems.value
+  if (!items?.length) return
+  lamellarExportedOnce.value = true
+  const lines: string[] = []
+  items.forEach((item, idx) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const section = curveSectionLines(item as Record<string, any>, String(item.sourceLabel ?? ''))
+    if (idx > 0) lines.push('')
+    lines.push(...section)
+  })
+  downloadText(lines.join('\n'), 'lamellar_batch_curves.csv')
 }
 
 function exportBatchCsv(): void {
@@ -1157,6 +1192,18 @@ onUnmounted(() => {
 .lm-btn:hover { background: var(--color-surface-hover, #f3f4f6); }
 .lm-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .lm-btn-sm { padding: 4px 10px; font-size: 0.82rem; }
+/* Beta tag: marks features still under user validation (e.g. batch curves export). */
+/* 测试版标签：标注仍在用户验证期的新功能（如批量全曲线导出）。 */
+.lm-beta-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid #f59e0b;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  line-height: 1.4;
+  color: #b45309;
+  background: #fffbeb;
+}
 .lm-btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
 .lm-btn-primary:hover { background: #1d4ed8; }
 .lm-btn-icon {

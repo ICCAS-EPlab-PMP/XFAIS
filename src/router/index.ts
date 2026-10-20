@@ -193,6 +193,16 @@ const router = createRouter({
       },
     },
     {
+      path: '/workspace/curve-fitting',
+      name: 'curve-fitting',
+      component: () => import('@/views/workspace/CurveFittingView.vue'),
+      meta: {
+        titleKey: 'curveFitting.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'curveFitting.subtitle',
+      },
+    },
+    {
       path: '/workspace/poni-importer',
       name: 'poni-importer',
       component: () => import('@/views/workspace/PoniImporterView.vue'),

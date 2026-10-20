@@ -360,6 +360,71 @@ class TestPipeline:
         w = next(r for r in out["results"] if r["method"] == "wilchinsky")
         assert abs(w["cos2_phi_c"] - 0.5) < 1e-6
 
+    def test_wilchinsky_per_reflection_curves(self, uniform_grid):
+        """Reflections carrying their own I(χ) get ⟨cos²χ⟩ integrated automatically.
+
+        Cubic cell, χ=0 = meridian (reference axis). A closure-consistent target
+        set x = (0.70, 0.20, 0.10) (Σx = 1) is encoded as narrow peaks at
+        χ = arccos(√x_i) plus their Friedel/mirror partners, so each ring's
+        ⟨cos²χ⟩ ≈ cos²α = x_i. β=90° → ⟨cos²φ_c⟩ = x3.
+        """
+        cell = {"a": 1.0, "b": 1.0, "c": 1.0, "beta": 90.0}
+        targets = [0.70, 0.20, 0.10]
+
+        def _ring(alpha_deg):
+            I = np.full_like(uniform_grid, 1.0)  # isotropic floor
+            for c in (alpha_deg, 180.0 - alpha_deg, 180.0 + alpha_deg, 360.0 - alpha_deg):
+                I = I + _gaussian_peak(uniform_grid, center=c, sigma=5.0, height=20.0)
+            return I.tolist()
+
+        reflections = []
+        for (h, k, l), tgt in zip([(1, 0, 0), (0, 1, 0), (0, 0, 1)], targets):
+            alpha = float(np.degrees(np.arccos(np.sqrt(tgt))))
+            reflections.append({"h": h, "k": k, "l": l,
+                                "chi": uniform_grid.tolist(), "intensity": _ring(alpha)})
+        out = analyze_orientation(
+            uniform_grid, np.ones_like(uniform_grid), methods=["wilchinsky"],
+            wilchinsky={"cell": cell, "reflections": reflections},
+            background={"mode": "constant", "auto_estimate": True},
+        )
+        w = next(r for r in out["results"] if r["method"] == "wilchinsky")
+        assert abs(w["cos2_axes"]["1"] - 0.70) < 0.02
+        assert abs(w["cos2_axes"]["2"] - 0.20) < 0.02
+        assert abs(w["cos2_axes"]["3"] - 0.10) < 0.02
+        assert abs(w["cos2_phi_c"] - 0.10) < 0.02
+        # per-reflection measured ⟨cos²χ⟩ surfaced for the results card
+        measured = {tuple(r["hkl"]): r["measured"] for r in w["reflections"]}
+        assert abs(measured[(1, 0, 0)] - 0.70) < 0.02
+        assert abs(measured[(0, 0, 1)] - 0.10) < 0.02
+        # one chart curve per reflection, each on a full folded grid
+        curves = out["wilchinsky_curves"]
+        assert len(curves) == 3
+        for cv in curves:
+            assert len(cv["chi"]) == 360
+            assert len(cv["corrected_intensity"]) == 360
+            assert len(cv["folded_intensity"]) == 360
+
+    def test_wilchinsky_manual_cos2_overrides_curve(self, uniform_grid):
+        """A manual cos2 wins over a supplied curve (explicit override)."""
+        cell = {"a": 1.0, "b": 1.0, "c": 1.0, "beta": 90.0}
+        reflections = [
+            {"h": 1, "k": 0, "l": 0, "cos2": 0.2},
+            {"h": 0, "k": 1, "l": 0, "cos2": 0.3},
+            # curve that WOULD integrate to ≈0.5, but manual cos2 overrides it
+            {"h": 0, "k": 0, "l": 1, "cos2": 0.5,
+             "chi": uniform_grid.tolist(),
+             "intensity": (_gaussian_peak(uniform_grid, 90.0, 5.0, 20.0) + 1.0).tolist()},
+        ]
+        out = analyze_orientation(
+            uniform_grid, np.ones_like(uniform_grid), methods=["wilchinsky"],
+            wilchinsky={"cell": cell, "reflections": reflections},
+        )
+        w = next(r for r in out["results"] if r["method"] == "wilchinsky")
+        assert abs(w["cos2_axes"]["1"] - 0.2) < 1e-6
+        assert abs(w["cos2_phi_c"] - 0.5) < 1e-6
+        # overridden reflections contribute no auto-integrated chart curve
+        assert out["wilchinsky_curves"] == []
+
 
 # ---------------------------------------------------------------------------
 # Validation / 输入校验
@@ -387,6 +452,18 @@ class TestValidation:
             wilchinsky_chain_axis(
                 [{"h": 1, "k": 0, "l": 0, "cos2": 0.5}],
                 {"a": -1, "b": 1, "c": 1, "beta": 90.0},
+            )
+
+    def test_wilchinsky_reflection_without_cos2_or_curve(self):
+        """A reflection with neither manual cos² nor a curve is a clear error."""
+        with pytest.raises(ValueError, match="Reflection \\(110\\)"):
+            analyze_orientation(
+                [0.0, 90.0, 180.0, 270.0], [1.0, 2.0, 1.0, 2.0],
+                methods=["wilchinsky"],
+                wilchinsky={
+                    "cell": {"a": 6.65, "b": 20.96, "c": 6.5, "beta": 99.62},
+                    "reflections": [{"h": 1, "k": 1, "l": 0}],
+                },
             )
 
     def test_zero_reciprocal_vector(self):
