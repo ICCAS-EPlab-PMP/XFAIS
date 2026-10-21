@@ -11,21 +11,29 @@
         v-for="param in PARAMS"
         :key="param.key"
         class="crp-flag"
-        :class="{ 'crp-flag--fixed': !free[param.key] }"
+        :class="{ 'crp-flag--fixed': !effectiveFree[param.key] }"
         :title="paramTip(param.key)"
       >
         <input
           type="checkbox"
-          :checked="free[param.key]"
+          :checked="effectiveFree[param.key]"
+          :disabled="centerLocked && param.key !== 'dist'"
           @change="onToggle(param.key, ($event.target as HTMLInputElement).checked)"
         />
         <span class="crp-flag-name">{{ param.key }}</span>
         <span class="crp-flag-desc">{{ paramMeaning(param.key) }}</span>
         <span class="crp-flag-state">
-          {{ free[param.key] ? t('calibration.refine.free') : t('calibration.refine.fixed') }}
+          {{ effectiveFree[param.key] ? t('calibration.refine.free') : t('calibration.refine.fixed') }}
         </span>
       </label>
     </div>
+
+    <!-- Fixed-centre notice (com mode): the direct-beam centroid owns the
+         centre, so only the DISTANCE is optimised. / 固定中心提示（com 模式）：
+         中心归直通光质心所有，只优化距离。 -->
+    <p v-if="centerLocked" class="crp-hint crp-hint--locked" data-ai-id="calibration:refine-locked">
+      {{ t('calibration.refine.fixedCenterHint') }}
+    </p>
 
     <!-- Refinement passes / 精化轮数 -->
     <div class="crp-field">
@@ -231,12 +239,29 @@ const props = defineProps<{
   canRun?: boolean
   /** Tri-state convergence flag from the last run (null = not yet run). */
   converged?: boolean | null
+  /**
+   * FIXED-CENTRE session (com mode): the beam centre comes from the direct-beam
+   * centroid, so only `dist` may be free — every other flag is forced fixed and
+   * its checkbox disabled. / 固定中心会话（com 模式）：中心来自直通光质心，
+   * 仅 dist 可放开，其余标志强制固定且复选框禁用。
+   */
+  centerLocked?: boolean
 }>()
 
 const emit = defineEmits<{
   run: [payload: { passes: number }]
   'update:free': [value: CalibFreeFlags]
 }>()
+
+/** Effective flags: with a locked centre only `dist` stays free. */
+const effectiveFree = computed<CalibFreeFlags>(() => {
+  if (!props.centerLocked) return props.free
+  const locked: CalibFreeFlags = { ...props.free, dist: true }
+  for (const p of PARAMS) {
+    if (p.key !== 'dist') locked[p.key] = false
+  }
+  return locked
+})
 
 const { t, locale } = useI18n()
 
@@ -360,6 +385,16 @@ const residualLayout = computed<Partial<PlotLayout>>(() => ({
   background: var(--bg-surface);
   color: var(--text-primary);
   font-size: 0.875rem;
+}
+
+/* Fixed-centre notice / 固定中心提示 */
+.crp-hint--locked {
+  padding: 6px 8px;
+  border: 1px dashed rgba(34, 211, 238, 0.55);
+  border-radius: var(--radius-sm);
+  color: #0e7490;
+  font-size: 0.72rem;
+  line-height: 1.4;
 }
 
 .crp-hint {

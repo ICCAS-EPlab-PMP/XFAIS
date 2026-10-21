@@ -51,8 +51,12 @@
       <!-- ===== Left: setup / controls column / 左侧：控制列 ===== -->
       <aside class="cv-controls">
         <div class="cv-card">
+          <!-- Setup form is reused TWICE in the com mode: step 'setup' renders
+               the direct-beam image phase, step 'setup2' the standard image
+               phase (which also picks the branch). / 设置表单在 com 模式复用两次：
+               setup = 直通光图阶段；setup2 = 标样图阶段（同时选择支路）。 -->
           <CalibSetupForm
-            v-if="step === 'setup'"
+            v-if="step === 'setup' || step === 'setup2'"
             v-model="setupForm"
             :calibrants="calibrants"
             :detectors="detectors"
@@ -60,9 +64,25 @@
             :probing="probing"
             :loading="setupLoading"
             :mask-stale="maskStale"
+            :phase="step === 'setup2' ? 'standard' : (setupForm.mode === 'com' ? 'beam' : 'single')"
+            :standard-mode="comStandardMode ?? 'calibrant'"
             @submit="handleSetup"
             @seed="handleSeedFromPoni"
             @probed="handleProbed"
+            @update:standard-mode="onStandardModeChange"
+          />
+
+          <!-- com mode step 2: box the direct-beam spot → intensity-weighted
+               centroid, which then FIXES the centre for the standard branch.
+               com 模式第 2 步：框出直通光斑 → 强度加权质心，随后固定为该标定
+               中心。 -->
+          <CalibComPanel
+            v-else-if="step === 'com'"
+            :com-mode="comPickMode"
+            :center="comCenter"
+            :busy="comBusy"
+            @update:com-mode="comPickMode = $event"
+            @clear-com="clearComCenter"
           />
 
           <CalibPeakPanel
@@ -105,6 +125,7 @@
             :value-text="ringValueText"
             :unit="ringUnit"
             :default-dist-mm="setupForm.distGuessMm"
+            :fixed-center="comFixedCenter"
             @update:value-text="ringValueText = $event"
             @update:unit="ringUnit = $event"
             @clear="centerPoints = []"
@@ -121,6 +142,7 @@
             :running="refining"
             :can-run="peaks.length > 0"
             :converged="converged"
+            :center-locked="comFixedCenter"
             @run="handleRefine"
           />
 
@@ -294,17 +316,25 @@
           :image-height="imageHeight"
           :rings="rings"
           :peaks="peaks"
-          :interactive="step === 'peaks' || step === 'ring'"
+          :interactive="step === 'peaks' || step === 'ring' || (step === 'com' && comPickMode != null)"
           :ring-guide="canvasGuide"
           :ring-fit="canvasFit"
-          :hint="step === 'ring'
-            ? t('calibration.ring.canvasHint')
-            : (step === 'peaks' && centerPicking ? centerPickHint : undefined)"
+          :hint="step === 'com'
+            ? (comPickMode === 'rect' ? t('calibration.com.canvasRect')
+              : comPickMode === 'poly' ? t('calibration.com.canvasPoly')
+                : t('calibration.com.canvasIdle'))
+            : (step === 'ring'
+                ? t('calibration.ring.canvasHint')
+                : (step === 'peaks' && centerPicking ? centerPickHint : undefined))"
           :mask-overlay="maskOverlay"
           :beam-center="refinedBeamCenter"
+          :region-mode="step === 'com' ? comPickMode : null"
+          :com-region="comRegion"
+          :com-center="comCenter"
           @canvas-click="onCanvasClick"
           @canvas-remove="onCanvasRemove"
           @canvas-dblclick="onCanvasDblClick"
+          @region-selected="onRegionSelected"
         />
         <div v-if="imageSrc" class="cv-canvas-legend">
           <span class="cv-legend-item">{{ t('calibration.canvas.peaks') }}: {{ peaks.length }}</span>
@@ -441,7 +471,7 @@ import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 
 import CalibCanvas from '@/components/calibration/CalibCanvas.vue'
-import type { CalibPeak, CalibRing, CalibRingFit, CalibMaskOverlay } from '@/components/calibration/CalibCanvas.vue'
+import type { CalibPeak, CalibRing, CalibRingFit, CalibMaskOverlay, CalibRegion } from '@/components/calibration/CalibCanvas.vue'
 import { calibPeakRingColor } from '@/components/calibration/CalibCanvas.vue'
 import CalibSetupForm from '@/components/calibration/CalibSetupForm.vue'
 import type { CalibSetupModel, CalibSetupPayload, CalibProbeInfo } from '@/components/calibration/CalibSetupForm.vue'
@@ -452,39 +482,72 @@ import CalibExportDialog from '@/components/calibration/CalibExportDialog.vue'
 import type { CalibExportResult, CalibCitation } from '@/components/calibration/CalibExportDialog.vue'
 import CalibRingStandardPanel from '@/components/calibration/CalibRingStandardPanel.vue'
 import type { CalibRingStandardResult, CalibRingUnit } from '@/components/calibration/CalibRingStandardPanel.vue'
+import CalibComPanel from '@/components/calibration/CalibComPanel.vue'
 import CalibZoomPicker from '@/components/calibration/CalibZoomPicker.vue'
 import PlotlyChart from '@/components/charts/PlotlyChart.vue'
 import type { PlotData, PlotLayout } from 'plotly.js-dist-min'
 
 // === Wizard steps / 向导步骤 ===
 
-/** Steps of BOTH mutually-exclusive modes: the calibrant wizard keeps its
- *  classic four steps; the internal-standard wizard replaces peaks/refine with
- *  ring (内标定标) / preview (几何预览). / 两种互斥模式的步骤：标样向导保持
- *  经典四步；内标向导以 内标定标 / 几何预览 取代 峰拾取 / 精修。 */
-type CalibStep = 'setup' | 'peaks' | 'refine' | 'ring' | 'preview' | 'export'
+/** Steps of the THREE mutually-exclusive modes:
+ *  - calibrant: setup → peaks → refine → export;
+ *  - internal:  setup → ring → preview → export;
+ *  - com (直通光定心): setup (direct-beam image) → com (box → centroid) →
+ *    setup2 (standard image + branch choice) → then EITHER the calibrant
+ *    (peaks/refine) OR the internal-standard (ring/preview) branch, both with
+ *    the centre FIXED — only the distance is optimised.
+ *  三种互斥模式的步骤：标样校正 / 内标定标 / 直通光定心（直通光图 → 框选质心 →
+ *  标样图 + 支路选择 → 标样或内标支路，中心固定、只优化距离）。 */
+type CalibStep = 'setup' | 'com' | 'setup2' | 'peaks' | 'refine' | 'ring' | 'preview' | 'export'
 
 interface CalibStepDef {
   key: CalibStep
   labelKey: string
 }
 
-/** Stepper is MODE-DEPENDENT — recomputed when the setup form's mode flips. */
-const STEPS = computed<CalibStepDef[]>(() =>
-  setupForm.value.mode === 'internal'
-    ? [
-        { key: 'setup', labelKey: 'calibration.steps.load' },
+/** Stepper is MODE-DEPENDENT — recomputed when the setup form's mode flips or
+ *  the com branch is chosen. / 步骤随模式与 com 支路选择变化。 */
+const STEPS = computed<CalibStepDef[]>(() => {
+  const mode = setupForm.value.mode
+  if (mode === 'internal') {
+    return [
+      { key: 'setup', labelKey: 'calibration.steps.load' },
+      { key: 'ring', labelKey: 'calibration.steps.ring' },
+      { key: 'preview', labelKey: 'calibration.steps.preview' },
+      { key: 'export', labelKey: 'calibration.export.title' },
+    ]
+  }
+  if (mode === 'com') {
+    const head: CalibStepDef[] = [
+      { key: 'setup', labelKey: 'calibration.steps.beamImage' },
+      { key: 'com', labelKey: 'calibration.steps.com' },
+      { key: 'setup2', labelKey: 'calibration.steps.standardImage' },
+    ]
+    if (comStandardMode.value === 'internal') {
+      return [
+        ...head,
         { key: 'ring', labelKey: 'calibration.steps.ring' },
         { key: 'preview', labelKey: 'calibration.steps.preview' },
         { key: 'export', labelKey: 'calibration.export.title' },
       ]
-    : [
-        { key: 'setup', labelKey: 'calibration.setup.load' },
+    }
+    if (comStandardMode.value === 'calibrant') {
+      return [
+        ...head,
         { key: 'peaks', labelKey: 'calibration.peaks.title' },
-        { key: 'refine', labelKey: 'calibration.refine.title' },
+        { key: 'refine', labelKey: 'calibration.steps.refineFixed' },
         { key: 'export', labelKey: 'calibration.export.title' },
-      ],
-)
+      ]
+    }
+    return head
+  }
+  return [
+    { key: 'setup', labelKey: 'calibration.setup.load' },
+    { key: 'peaks', labelKey: 'calibration.peaks.title' },
+    { key: 'refine', labelKey: 'calibration.refine.title' },
+    { key: 'export', labelKey: 'calibration.export.title' },
+  ]
+})
 
 const { t, locale } = useI18n()
 const toast = useToast()
@@ -495,7 +558,14 @@ const router = useRouter()
  *  inline bilingual, no i18n key yet); other steps keep their keys.
  *  步骤条文案：第 3 步已改名（内联双语，暂无 i18n 键）；其余沿用现有键。 */
 function stepLabel(s: CalibStepDef): string {
-  if (s.key === 'refine') return isZh.value ? '精修中心位点' : 'Refine center & geometry'
+  // The refine step is titled differently per flow: with a direct-beam fixed
+  // centre only the DISTANCE is optimised, so say so. / 精修步按流程命名：
+  // 直通光固定中心时只优化距离。
+  if (s.key === 'refine') {
+    return setupForm.value.mode === 'com' && comStandardMode.value === 'calibrant'
+      ? t('calibration.steps.refineFixed')
+      : (isZh.value ? '精修中心位点' : 'Refine center & geometry')
+  }
   return t(s.labelKey)
 }
 
@@ -557,6 +627,106 @@ const setupForm = ref<CalibSetupModel>({
 const centerPoints = ref<Array<{ y: number; x: number }>>([])
 /** Circle through the picked points (null below 3 points / degenerate). */
 const centerFit = computed<CalibRingFit | null>(() => fitCircle(centerPoints.value))
+
+// ── Direct-beam centroid (2026-10-21) / 直通光质心定心 ────────────────────────
+// The user boxes the direct-beam spot (rect drag / polygon) → the backend's
+// beam_center_com returns its intensity-weighted centroid → ring_standard then
+// runs with the centre FIXED (≥2 ring points suffice). User flow mirrors the
+// wizard: box first (确定坐标), then the 内标定标 part.
+// 用户框出直通光斑（拖矩形 / 多折框）→ 后端 beam_center_com 返回强度加权质心
+// → ring_standard 以固定中心运行（环上 ≥2 点即可）。流程：先框选定坐标，
+// 再进行内标定标部分。
+/** Armed region mode on the canvas (null = off). / 画布已武装的框选模式。 */
+const comPickMode = ref<'rect' | 'poly' | null>(null)
+/** Confirmed direct-beam centroid (sub-pixel). / 已确认的直通光质心（亚像素）。 */
+const comCenter = ref<{ y: number; x: number } | null>(null)
+/** Confirmed region outline echo (dashed on the canvas). / 已确认区域轮廓回显。 */
+const comRegion = ref<CalibRegion | null>(null)
+/** beam_center_com request in flight. / beam_center_com 请求进行中。 */
+const comBusy = ref(false)
+/** Branch chosen on the com mode's SECOND image (null = not chosen yet). The
+ *  standard step then continues as 标样校正 or 内标定标 — both with the centre
+ *  fixed by the centroid. / com 模式第二张图上选择的支路（null = 尚未选择）：
+ *  标样步骤随后回到标样校正或内标定标——两者中心都由质心固定。 */
+const comStandardMode = ref<'calibrant' | 'internal' | null>(null)
+/** Session of the FIRST (direct-beam) image — the CoM runs against it. / 第一张
+ *  （直通光）图的会话——质心针对它计算。 */
+const comSessionId = ref<string | null>(null)
+/** Dimensions of the direct-beam image, used to warn when the standard image
+ *  has a different shape (pixel coordinates would not transfer). / 直通光图
+ *  尺寸，用于在标样图尺寸不同时告警（像素坐标不再通用）。 */
+const comBeamShape = ref<{ h: number; w: number } | null>(null)
+/** Path of the FIRST (direct-beam) image — restored when going back. / 第一张
+ *  （直通光）图路径——返回该步骤时恢复显示。 */
+const comBeamPath = ref<string | null>(null)
+/** The direct-beam session exists (its 载入并开始 succeeded). / 直通光会话已建立。 */
+const beamReady = ref(false)
+/** The standard session exists (setup2's 载入并开始 succeeded). / 标样会话已建立。 */
+const standardReady = ref(false)
+
+/** TRUE once the com flow owns a fixed centre for the standard branch. */
+const comFixedCenter = computed(() =>
+  setupForm.value.mode === 'com' && comCenter.value != null && comStandardMode.value != null,
+)
+
+/** Drop the confirmed centroid + outline (panel 清除). / 清除已确认质心与轮廓。 */
+function clearComCenter(): void {
+  comCenter.value = null
+  comRegion.value = null
+}
+
+/**
+ * A region was drawn on the canvas → ask the backend for its centre of mass;
+ * on success the centroid becomes the fixed centre for ring_standard and the
+ * armed mode disarms (one region at a time). Plain-clone the region — Vue
+ * proxies cannot cross Electron IPC's structured clone (BUG C idiom).
+ * 画布上画好区域 → 请求后端算质心；成功后质心成为 ring_standard 的固定中心，
+ * 武装模式解除（一次一个区域）。区域逐字段浅拷贝——Vue 代理过不了 IPC
+ * 结构化克隆（BUG C 惯用法）。
+ */
+async function onRegionSelected(region: CalibRegion): Promise<void> {
+  const sid = comSessionId.value
+  if (!sid) {
+    toast.push({ title: t('calibration.com.title'), message: t('calibration.errors.noSession'), tone: 'error' })
+    return
+  }
+  if (comBusy.value) return
+  const plain: CalibRegion = region.kind === 'rect'
+    ? {
+        kind: 'rect',
+        y0: region.y0, y1: region.y1, x0: region.x0, x1: region.x1,
+      }
+    : {
+        kind: 'poly',
+        points: region.points.map(p => ({ y: p.y, x: p.x })),
+      }
+  comBusy.value = true
+  try {
+    const data = await submitAndWait('calibration', {
+      action: 'beam_center_com',
+      sessionId: sid,
+      region: plain,
+    })
+    const cy = numberOrNull(data.centerY)
+    const cx = numberOrNull(data.centerX)
+    if (cy == null || cx == null) throw new Error('beam_center_com returned no centre')
+    comCenter.value = { y: cy, x: cx }
+    comRegion.value = plain
+    comPickMode.value = null
+    if (origImageSize.value) {
+      comBeamShape.value = { h: origImageSize.value.h, w: origImageSize.value.w }
+    }
+    toast.push({
+      title: t('calibration.com.title'),
+      message: t('calibration.com.done', { x: cx.toFixed(2), y: cy.toFixed(2) }),
+      tone: 'success',
+    })
+  } catch (err) {
+    toastError(t('calibration.com.title'), err, t('calibration.com.failed'))
+  } finally {
+    comBusy.value = false
+  }
+}
 
 /**
  * Fit RMS of the picked points in px: mean of |distance_i − radius| (≥3 points
@@ -1043,7 +1213,17 @@ function goStep(target: CalibStep): void {
  */
 const canGoNext = computed<boolean>(() => {
   switch (step.value) {
-    case 'setup': return sessionActive.value && !maskStale.value
+    case 'setup':
+      // com mode's FIRST image only has to create the direct-beam session.
+      // com 模式第一张图只需建立直通光会话。
+      return setupForm.value.mode === 'com'
+        ? beamReady.value
+        : sessionActive.value && !maskStale.value
+    // com step: a confirmed centroid is required to move on. / 需确认质心。
+    case 'com': return comCenter.value != null && beamReady.value
+    // com mode's SECOND image: its own session + applied mask inputs.
+    // com 模式第二张图：自己的会话 + 掩膜输入已应用。
+    case 'setup2': return standardReady.value && !maskStale.value
     case 'peaks': return peaks.value.length >= 4
     case 'refine': return chi2.value != null
     case 'ring': return ringApplied.value
@@ -1061,8 +1241,29 @@ function goNext(): void {
   if (!canGoNext.value) return
   const idx = stepIndex.value
   if (idx < 0 || idx >= STEPS.value.length - 1) return
+  const next = STEPS.value[idx + 1].key
+  // Entering the com mode's SECOND image: the standard frame is a DIFFERENT
+  // file, so clear the path (forces a fresh pick) and hand the centroid over
+  // as the setup's centre seed. Going back to 'com' restores the beam image.
+  // 进入 com 模式第二张图：标样图是另一个文件，故清空路径（强制重选），并把
+  // 质心作为 setup 的中心种子；返回 'com' 时恢复直通光图。
+  if (step.value === 'com' && next === 'setup2') {
+    setupForm.value = {
+      ...setupForm.value,
+      imagePath: '',
+      centerXPx: comCenter.value?.x ?? null,
+      centerYPx: comCenter.value?.y ?? null,
+    }
+    // The form's branch toggle defaults to 标样校正 — adopt that default HERE
+    // so the step rail already shows the branch's steps (otherwise the list
+    // stays at the 3-step head and the peaks/ring step is unreachable).
+    // 表单的支路开关默认「标样校正」——此处即采用该默认值，使步骤栏立刻展开
+    // 支路步骤（否则列表停在 3 步头部，峰拾取/内标步不可达）。
+    if (comStandardMode.value == null) comStandardMode.value = 'calibrant'
+    standardReady.value = false
+  }
   unlockStep(idx + 1)
-  step.value = STEPS.value[idx + 1].key
+  step.value = next
 }
 
 // No existing i18n keys for the wizard nav buttons — inline bilingual for now.
@@ -1189,6 +1390,8 @@ async function handleProbed(imagePath: string): Promise<void> {
 
 async function handleSetup(payload: CalibSetupPayload): Promise<void> {
   setupLoading.value = true
+  const isBeamSetup = setupForm.value.mode === 'com' && step.value === 'setup'
+  const isStandardSetup = setupForm.value.mode === 'com' && step.value === 'setup2'
   try {
     const data = await submitAndWait('calibration', {
       action: 'setup',
@@ -1203,12 +1406,16 @@ async function handleSetup(payload: CalibSetupPayload): Promise<void> {
       maskPath: payload.maskPath,
       maskMin: payload.maskMin,
       maskMax: payload.maskMax,
-      // Beam-centre seed (ring fit or .poni) → backend first-guess poni1/poni2.
-      // Both coordinates are required together. / 束流中心种子（圆环拟合或
-      // .poni）→ 后端首猜 poni1/poni2；两个坐标必须成对提供。
+      // Beam-centre seed (ring fit / .poni / direct-beam centroid) → backend
+      // first-guess poni1/poni2. Both coordinates are required together.
+      // 束流中心种子（圆环拟合 / .poni / 直通光质心）→ 后端首猜 poni1/poni2；
+      // 两个坐标必须成对提供。
       ...(payload.centerX != null && payload.centerY != null
         ? { centerX: payload.centerX, centerY: payload.centerY }
         : {}),
+      // com mode, SECOND image: pin the centre + rotations, optimise dist only.
+      // com 模式第二张图：钉住中心与旋转角，只优化距离。
+      ...(payload.fixedCenter ? { fixedCenter: true } : {}),
     })
     // The backend hands back the session id every later action must carry.
     // 后端返回会话 id，后续所有会话 action 都必须携带。
@@ -1268,6 +1475,51 @@ async function handleSetup(payload: CalibSetupPayload): Promise<void> {
     ringDistDefaulted.value = false
     zoomOpen.value = false
     zoomAnchor.value = null
+
+    if (isBeamSetup) {
+      // DIRECT-BEAM image: this session only serves the CoM. The centroid,
+      // the region and the branch choice all start over.
+      // 直通光图：该会话只服务质心计算；质心、区域与支路选择全部重新开始。
+      comSessionId.value = sid
+      comBeamPath.value = payload.filePath
+      beamReady.value = true
+      standardReady.value = false
+      comStandardMode.value = null
+      comPickMode.value = null
+      clearComCenter()
+      step.value = 'com'
+      return
+    }
+    if (isStandardSetup) {
+      // STANDARD image: the centre came from the first image. A shape change
+      // would silently shift that centre, so warn loudly (pixel coordinates
+      // only transfer between frames of the same detector layout).
+      // 标样图：中心来自第一张图。尺寸变化会让该中心悄悄偏移，故显著告警
+      // （像素坐标仅在相同探测器布局的帧之间通用）。
+      standardReady.value = true
+      const shape = origImageSize.value
+      if (shape && comBeamShape.value
+          && (shape.h !== comBeamShape.value.h || shape.w !== comBeamShape.value.w)) {
+        toast.push({
+          title: t('calibration.com.title'),
+          message: t('calibration.com.shapeMismatch', {
+            bw: comBeamShape.value.w, bh: comBeamShape.value.h,
+            sw: shape.w, sh: shape.h,
+          }),
+          tone: 'warning',
+        })
+      }
+      const nextStep: CalibStep = comStandardMode.value === 'internal' ? 'ring' : 'peaks'
+      // The chosen branch ADDS steps to the rail — unlock the one we land on.
+      // 选定支路会扩展步骤栏——解除落地步骤的锁定。
+      const nextIdx = STEPS.value.findIndex(s => s.key === nextStep)
+      if (nextIdx >= 0) unlockStep(nextIdx)
+      step.value = nextStep
+      return
+    }
+
+    comPickMode.value = null
+    clearComCenter()
     // The next step depends on the mode: calibrant mode goes peak picking,
     // internal-standard mode goes straight to 内标定标.
     // 下一步随模式分岔：标样模式去峰拾取，内标模式直接进「内标定标」。
@@ -1280,13 +1532,43 @@ async function handleSetup(payload: CalibSetupPayload): Promise<void> {
 }
 
 /**
- * Mode switch (标样校正 ↔ 内标定标) is MUTUALLY EXCLUSIVE: the two wizards have
- * different steps and different backends (calibrant refinement vs
- * ring_standard), so an existing session/geometry from the other mode is
- * meaningless. Reset everything and require a fresh 载入并开始.
- * 模式切换（标样校正 ↔ 内标定标）互斥：两种向导步骤不同、后端路径不同
- * （标样精修 vs ring_standard），另一模式的会话/几何毫无意义。全部重置，
- * 需重新「载入并开始」。
+ * Branch switch on the com mode's SECOND image (标样校正 ↔ 内标定标): the two
+ * branches open DIFFERENT backend sessions (a calibrant session vs a bare
+ * internal-standard one), so an existing standard session is invalidated and
+ * the user re-runs 载入并开始 — the direct-beam centre is preserved.
+ * com 模式第二张图的支路切换（标样校正 ↔ 内标定标）：两支路的后端会话类型不同
+ * （含标样 vs 纯内标），既有标样会话作废，需重新「载入并开始」——直通光中心
+ * 保留。
+ */
+function onStandardModeChange(mode: 'calibrant' | 'internal'): void {
+  if (comStandardMode.value === mode) return
+  comStandardMode.value = mode
+  if (standardReady.value) {
+    ringSeq++
+    sessionId.value = null
+    sessionActive.value = false
+    standardReady.value = false
+    resetSessionResults()
+    // The step list changes with the branch — keep the user on setup2 and
+    // lock the branch-specific steps until the standard image is reloaded.
+    // 步骤列表随支路变化——保持在 setup2，并在重新载入标样图前锁住支路步骤。
+    maxStep.value = Math.min(maxStep.value, STEPS.value.findIndex(s => s.key === 'setup2'))
+    step.value = 'setup2'
+    toast.push({
+      title: t('calibration.com.title'),
+      message: t('calibration.com.branchChanged'),
+      tone: 'info',
+    })
+  }
+}
+
+/**
+ * Mode switch (标样校正 ↔ 内标定标 ↔ 直通光定心) is MUTUALLY EXCLUSIVE: the
+ * wizards have different steps and different backends, so an existing
+ * session/geometry from the other mode is meaningless. Reset everything and
+ * require a fresh 载入并开始.
+ * 模式切换（标样校正 ↔ 内标定标 ↔ 直通光定心）互斥：向导步骤与后端路径不同，
+ * 另一模式的会话/几何毫无意义。全部重置，需重新「载入并开始」。
  */
 watch(() => setupForm.value.mode, () => {
   // Supersede any in-flight ring_standard: its response belongs to the other
@@ -1305,6 +1587,14 @@ watch(() => setupForm.value.mode, () => {
   ringValueText.value = ''
   zoomOpen.value = false
   zoomAnchor.value = null
+  comPickMode.value = null
+  clearComCenter()
+  comStandardMode.value = null
+  comSessionId.value = null
+  comBeamPath.value = null
+  comBeamShape.value = null
+  beamReady.value = false
+  standardReady.value = false
 })
 
 /** Clear peaks/results from a previous session before a new setup. */
@@ -1773,6 +2063,9 @@ async function handleRefreshRings(): Promise<void> {
 // instead — through the FIT2D-style zoom window when the zoom toggle is on.
 // 内标（ring 步）：点击改为收集内标环点——开启放大时先经 FIT2D 式放大窗。
 function onCanvasClick(pixel: { row: number; col: number }): void {
+  // The com step owns the canvas for region drawing only — a stray click must
+  // never become a guide point. / com 步骤的画布只用于框选——散点绝不当引导点。
+  if (step.value === 'com') return
   if (step.value === 'ring') {
     if (zoomEnabled.value) {
       // One zoom window at a time. / 同一时间只开一个放大窗。
@@ -2048,10 +2341,15 @@ async function applyRingStandard(): Promise<void> {
     toast.push({ title: t('calibration.ring.title'), message: t('calibration.errors.noSession'), tone: 'error' })
     return
   }
-  if (centerPoints.value.length < 3 || !centerFit.value) {
+  // With the direct-beam centroid FIXED, ≥2 ring points suffice (the centre
+  // no longer comes from the circle fit). / 直通光质心固定中心后环上 ≥2 点
+  // 即可（中心不再来自圆拟合）。
+  const fixedCom = comFixedCenter.value ? comCenter.value : null
+  const minRingPoints = fixedCom ? 2 : 3
+  if (centerPoints.value.length < minRingPoints || (!fixedCom && !centerFit.value)) {
     toast.push({
       title: t('calibration.ring.title'),
-      message: t('calibration.ring.needPoints'),
+      message: fixedCom ? t('calibration.ring.needPointsCom') : t('calibration.ring.needPoints'),
       tone: 'warning',
     })
     return
@@ -2077,6 +2375,10 @@ async function applyRingStandard(): Promise<void> {
   const extra: Record<string, unknown> = value != null
     ? { value, unit: ringUnit.value }
     : {}
+  // Fixed direct-beam centre (2026-10-21): ring_standard keeps the centroid
+  // and derives only the radius from the points. / 固定直通光中心：ring_standard
+  // 保留质心，仅由点选推半径。
+  if (fixedCom) extra.center = { y: fixedCom.y, x: fixedCom.x }
   // Sequence guard (same idiom as integSeq): a response that comes back after
   // the mode was switched / a new session was started must NOT write its
   // geometry into the current wizard. Bumped only when the request really is
@@ -2140,6 +2442,10 @@ async function applyRingStandard(): Promise<void> {
 // 点集的任何变更都是整体替换 ref，浅 watch 即可覆盖。
 watch(centerPoints, invalidateRingFit)
 watch([ringValueText, ringUnit], invalidateRingFit)
+// A new/removed direct-beam centroid redefines the centre the fit would use —
+// the previous fit result is stale either way. / 质心新增或清除都改变了拟合
+// 所用中心——既有拟合结果一律失效。
+watch(comCenter, invalidateRingFit)
 
 function invalidateRingFit(): void {
   ringApplied.value = false
@@ -2157,6 +2463,14 @@ function invalidateRingFit(): void {
 watch(() => setupForm.value.imagePath, () => {
   centerPoints.value = []
   ringValueText.value = ''
+  // Only the FIRST (direct-beam) image owns the centroid; the standard image
+  // on setup2 must keep it (its whole purpose is to be reused there).
+  // 只有第一张（直通光）图拥有质心；setup2 的标样图必须保留它（复用它正是
+  // 该步骤的目的）。
+  if (setupForm.value.mode !== 'com' || step.value === 'setup') {
+    clearComCenter()
+    comPickMode.value = null
+  }
 })
 
 // Entering the internal-standard preview step refreshes the 1D/2D integration
@@ -2166,6 +2480,42 @@ watch(() => setupForm.value.imagePath, () => {
 // session["gr"]。
 watch(step, (s) => {
   if (s === 'preview') void refreshIntegrationPreview()
+  // Region selection only exists on the com step — leaving it disarms any
+  // pending draft. / 区域框选只属于 com 步骤——离开即解除武装。
+  if (s !== 'com') comPickMode.value = null
+  // Going BACK to the com step must show the direct-beam frame again (the
+  // standard image may have replaced it on screen). / 返回 com 步骤时必须重新
+  // 显示直通光图（屏幕上可能已换成标样图）。
+  if (s === 'com' && comBeamPath.value && displayFilePath.value !== comBeamPath.value) {
+    void loadDisplayImage(comBeamPath.value).catch(() => { /* toast inside */ })
+  }
+})
+
+/**
+ * A NEW/CHANGED direct-beam centroid invalidates an already-created standard
+ * session: that session baked the OLD centre into poni1/poni2, and the whole
+ * point of this mode is "centre fixed, distance optimised". Send the user back
+ * to setup2 for a reload (their centre is preserved).
+ * 直通光质心新增/改变会使已建立的标样会话失效：该会话已把旧中心写进
+ * poni1/poni2，而本模式的全部意义就是「中心固定、只优化距离」。把用户带回
+ * setup2 重新载入（质心保留）。
+ */
+watch(comCenter, (cur, prev) => {
+  if (!standardReady.value) return
+  if (cur?.x === prev?.x && cur?.y === prev?.y) return
+  ringSeq++
+  sessionId.value = null
+  sessionActive.value = false
+  standardReady.value = false
+  resetSessionResults()
+  if (step.value !== 'com' && step.value !== 'setup' && step.value !== 'setup2') {
+    step.value = 'setup2'
+  }
+  toast.push({
+    title: t('calibration.com.title'),
+    message: t('calibration.com.centerChanged'),
+    tone: 'info',
+  })
 })
 
 /** Remove radius in image pixels — generous enough for zoomed-out clicking. */
@@ -2220,8 +2570,16 @@ async function handleRefine(payload: { passes: number }): Promise<void> {
 
   refining.value = true
   try {
+    // FIXED-CENTRE session (com mode): the direct-beam centroid owns the
+    // centre and the rotations, so ONLY dist may be free — enforced here as
+    // well as visually in the panel (and again in the backend).
+    // 固定中心会话（com 模式）：中心与旋转角归直通光质心所有，只有 dist 可
+    // 放开——界面与后端各再兜一层。
+    const free = comFixedCenter.value
+      ? { dist: true, poni1: false, poni2: false, rot1: false, rot2: false, rot3: false, wavelength: false }
+      : { ...freeFlags.value }
     const data = await submitAndWait('calibration', sessionPayload('refine', {
-      free: { ...freeFlags.value },
+      free,
       passes: payload.passes,
     }))
 

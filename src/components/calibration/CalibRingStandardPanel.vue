@@ -17,6 +17,14 @@
       </span>
     </label>
 
+    <!-- Fixed centre (com mode's internal-standard branch): the direct-beam
+         centroid already fixes the centre, so only the ring RADIUS (≥2 points)
+         feeds the distance. / 固定中心（com 模式的内标支路）：直通光质心已固定
+         中心，环上 ≥2 点只用于求半径。 -->
+    <p v-if="fixedCenter" class="crs-fixed">
+      {{ t('calibration.ring.fixedCenterHint') }}
+    </p>
+
     <!-- Point count + fit RMS / 点数与拟合 RMS -->
     <div class="crs-stats">
       <span class="crs-stat">{{ t('calibration.ring.points') }}: {{ pointCount }}</span>
@@ -197,6 +205,10 @@ const props = defineProps<{
   /** Session's initial distance guess (mm) — shown as the default the empty
    *  value falls back to. / 会话初始距离猜测（mm）——留空数值时回退的默认值。 */
   defaultDistMm: number
+  /** TRUE when the beam centre is already FIXED by the direct-beam centroid
+   *  (com mode): the ring only supplies the radius, so ≥2 points suffice.
+   *  中心已由直通光质心固定（com 模式）时为 true：环只提供半径，≥2 点即可。 */
+  fixedCenter?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -211,14 +223,18 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 /**
- * ≥3 points suffice to apply: an EMPTY value now means "default distance"
- * (the backend falls back to the session's initial guess). A NON-empty value
- * that does not parse to a positive number is rejected by the PARENT with a
- * warning toast (the backend re-validates regardless).
- * ≥3 点即可拟合：数值留空现在表示「使用默认距离」（后端回退会话初始猜测）。
- * 非空但不是正数的值由父组件以 warning toast 拒绝（后端无论如何会再校验）。
+ * ≥3 points suffice to apply (≥2 once the direct-beam centroid has FIXED the
+ * centre): an EMPTY value now means "default distance" (the backend falls
+ * back to the session's initial guess). A NON-empty value that does not
+ * parse to a positive number is rejected by the PARENT with a warning toast
+ * (the backend re-validates regardless).
+ * ≥3 点即可拟合（直通光质心固定中心后 ≥2 点）：数值留空现在表示「使用默认
+ * 距离」（后端回退会话初始猜测）。非空但不是正数的值由父组件以 warning
+ * toast 拒绝（后端无论如何会再校验）。
  */
-const canApply = computed(() => props.pointCount >= 3 && !props.applying)
+const canApply = computed(() =>
+  props.pointCount >= (props.fixedCenter ? 2 : 3) && !props.applying,
+)
 
 /** {mm} figure for the value-optional hint. / 提示文案中的 {mm} 数值。 */
 const defaultDistMmText = computed(() =>
@@ -278,6 +294,17 @@ function formatPair(x: number | null, y: number | null): string {
   border-radius: var(--radius-sm);
   cursor: pointer;
   user-select: none;
+}
+
+/* Fixed-centre note (com mode) / 固定中心提示（com 模式） */
+.crs-fixed {
+  margin: 0;
+  padding: 6px 8px;
+  border: 1px dashed rgba(34, 211, 238, 0.55);
+  border-radius: var(--radius-sm);
+  font-size: 0.72rem;
+  color: #0e7490;
+  line-height: 1.4;
 }
 
 .crs-zoom input[type='checkbox'] {

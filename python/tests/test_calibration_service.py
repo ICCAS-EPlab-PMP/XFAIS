@@ -1827,3 +1827,234 @@ def test_ring_standard_default_dist(synthetic_edf: str, tmp_path: Path):
         "action": "export_poni", "sessionId": sid, "savePath": str(poni_valued),
     }))
     assert "Dist-default" not in poni_valued.read_text(encoding="utf-8", errors="replace")
+
+
+# ---------------------------------------------------------------------------
+# Direct-beam centre of mass (beam_center_com) + fixed-centre ring_standard
+# 直通光质心定心 + 固定中心内标定标（2026-10-21）
+# ---------------------------------------------------------------------------
+
+#: Ground truth for the direct-beam spot tests. / 直通光光斑测试真值。
+_COM_TRUE = (163.4, 122.7)  # (y, x) in pixels
+
+
+@pytest.fixture(scope="module")
+def spot_edf(tmp_path_factory) -> str:
+    """300×300 frame: direct-beam Gaussian at (163.4, 122.7), σ=6 px, peak
+    9000 counts on a flat 60-count background, plus one hot pixel at (40, 40)
+    far from the spot. / 300×300 图：直通光高斯斑 + 平坦背景 + 远处一个热像素。"""
+    yy, xx = np.mgrid[0:300, 0:300]
+    img = 60.0 + 9000.0 * np.exp(
+        -((yy - _COM_TRUE[0]) ** 2 + (xx - _COM_TRUE[1]) ** 2) / (2 * 6.0 ** 2)
+    )
+    img[40, 40] = 30000.0
+    path = tmp_path_factory.mktemp("com") / "direct_beam.edf"
+    fabio.edfimage.EdfImage(data=img.astype("float32")).write(str(path))
+    return str(path)
+
+
+def _com_session(edf_path: str) -> str:
+    """INTERNAL-standard session (no calibrant) on the spot frame.
+    在光斑图上建立内标（无标样）会话。"""
+    return _ok(_run({
+        "action": "setup",
+        "filePath": edf_path,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+    }))["sessionId"]
+
+
+def test_beam_center_com_rect_and_poly(spot_edf: str):
+    """A rectangle OR polygon drawn around the direct-beam spot recovers the
+    centre to well within a tenth of a pixel — background subtraction removes
+    the flat pedestal that would otherwise drag the centroid toward the box
+    centre. / 方形框或多折框圈住光斑后质心回收误差远小于 0.1 px——扣背景
+    消除了把质心拉向框中心的平台偏置。"""
+    from python.services import calibration as calib_module
+
+    sid = _com_session(spot_edf)
+
+    rect = _ok(_run({
+        "action": "beam_center_com", "sessionId": sid,
+        "region": {"kind": "rect", "y0": 100, "y1": 230, "x0": 60, "x1": 190},
+    }))
+    assert rect["centerY"] == pytest.approx(_COM_TRUE[0], abs=0.05)
+    assert rect["centerX"] == pytest.approx(_COM_TRUE[1], abs=0.05)
+    com = rect["com"]
+    assert com["pixel_count"] > 50 and com["total_weight"] > 0
+    assert com["bg_level"] == pytest.approx(60.0, abs=1.0)
+    # set_center's application path ran: the session carries the seed.
+    # set_center 的落地路径已执行：会话持有种子。
+    assert calib_module._SESSIONS[sid]["center0"] == pytest.approx(
+        (_COM_TRUE[0] * PIXEL_M, _COM_TRUE[1] * PIXEL_M), abs=PIXEL_M
+    )
+
+    cx0, cy0, rad = 123, 163, 60
+    poly_pts = [
+        {"y": cy0 + rad * math.sin(i * math.pi / 3),
+         "x": cx0 + rad * math.cos(i * math.pi / 3)}
+        for i in range(6)
+    ]
+    poly = _ok(_run({
+        "action": "beam_center_com", "sessionId": sid,
+        "region": {"kind": "poly", "points": poly_pts},
+    }))
+    assert poly["centerY"] == pytest.approx(_COM_TRUE[0], abs=0.05)
+    assert poly["centerX"] == pytest.approx(_COM_TRUE[1], abs=0.05)
+
+
+def test_beam_center_com_hot_pixel_inside_region(spot_edf: str):
+    """A 30000-count hot pixel INSIDE the region must not drag the centroid:
+    the 3×3 median pre-filter suppresses it before the moments.
+    区域内的 30000 计数热像素不得拉偏质心：3×3 中值预滤波在矩计算前抑制它。"""
+    sid = _com_session(spot_edf)
+    # Region covering BOTH the spot and the hot pixel at (40, 40).
+    # / 区域同时覆盖光斑与 (40, 40) 的热像素。
+    r = _ok(_run({
+        "action": "beam_center_com", "sessionId": sid,
+        "region": {"kind": "rect", "y0": 20, "y1": 230, "x0": 20, "x1": 190},
+    }))
+    assert r["centerY"] == pytest.approx(_COM_TRUE[0], abs=0.1)
+    assert r["centerX"] == pytest.approx(_COM_TRUE[1], abs=0.1)
+
+
+def test_beam_center_com_error_paths(spot_edf: str):
+    """Background-only region, degenerate polygon, missing region and an out-
+    of-range threshold are all refused with status=error.
+    纯背景区域、退化多边形、缺 region 与超范围阈值均以 status=error 拒绝。"""
+    sid = _com_session(spot_edf)
+    for payload in (
+        {"region": {"kind": "rect", "y0": 0, "y1": 3, "x0": 0, "x1": 3}},  # bg only / 仅背景
+        {"region": {"kind": "poly", "points": [{"y": 1, "x": 1}, {"y": 2, "x": 2}]}},  # <3 verts
+        {"region": None},  # missing / 缺失
+        {"region": {"kind": "rect", "y0": 100, "y1": 230, "x0": 60, "x1": 190},
+         "threshold": 0.95},  # out of range / 超范围
+    ):
+        out = _run({"action": "beam_center_com", "sessionId": sid, **payload})
+        assert out.get("status") == "error", f"expected refusal, got: {out}"
+
+
+def test_ring_standard_fixed_center(spot_edf: str):
+    """With the CoM centre FIXED, ring_standard needs only ≥2 points; the
+    radius is the mean distance to the given centre and the exported SD
+    matches the analytic value r·pixel/tan(2θ). / 中心固定后 ring_standard
+    只需 ≥2 点；半径为到中心的平均距离，SD 与解析值 r·pixel/tan(2θ) 一致。"""
+    sid = _com_session(spot_edf)
+    com = _ok(_run({
+        "action": "beam_center_com", "sessionId": sid,
+        "region": {"kind": "rect", "y0": 100, "y1": 230, "x0": 60, "x1": 190},
+    }))
+    cy, cx = com["centerY"], com["centerX"]
+
+    ring_pts = [
+        {"y": cy + 90.0 * math.sin(a), "x": cx + 90.0 * math.cos(a)}
+        for a in (0.3, 2.2, 4.0)
+    ]
+    two = [dict(p) for p in ring_pts[:2]]
+    fitted = _ok(_run({
+        "action": "ring_standard", "sessionId": sid, "points": two,
+        "center": {"y": cy, "x": cx}, "value": 20.0, "unit": "tth_deg",
+    }))
+    assert fitted["centerSource"] == "com"
+    assert fitted["centerYPx"] == pytest.approx(cy, abs=1e-9)
+    assert fitted["centerXPx"] == pytest.approx(cx, abs=1e-9)
+    assert fitted["radiusPx"] == pytest.approx(90.0, abs=1e-6)
+    # r·mean_pixel / tan(2θ) = 90·172µm / tan(20°) ≈ 42.53 mm.
+    assert fitted["distMm"] == pytest.approx(
+        90.0 * PIXEL_M / math.tan(math.radians(20.0)) * 1e3, rel=1e-6,
+    )
+
+    # One point under a fixed centre is refused; three points WITHOUT a
+    # centre keep the classic Kåsa path (centerSource=circle_fit).
+    # 固定中心下 1 点拒绝；无中心的 3 点保持经典 Kåsa 路径。
+    single = _run({
+        "action": "ring_standard", "sessionId": sid,
+        "points": ring_pts[:1], "center": {"y": cy, "x": cx},
+    })
+    assert single.get("status") == "error"
+    kasa = _ok(_run({
+        "action": "ring_standard", "sessionId": sid, "points": ring_pts,
+    }))
+    assert kasa["centerSource"] == "circle_fit"
+
+
+# ---------------------------------------------------------------------------
+# Fixed-centre session (com mode, second setup) — distance-only optimisation
+# 固定中心会话（直通光模式第二次 setup）——只优化距离
+# ---------------------------------------------------------------------------
+
+#: Centre seed used by the fixed-centre tests (deliberately NOT the truth:
+#: the point is that the session must never move it). / 固定中心测试的种子
+#: （刻意不是真值：重点在于会话绝不许移动它）。
+_FIXED_CENTER = (250.0, 250.0)
+
+
+def test_fixed_center_session_ring_standard_reuses_seed(spot_edf: str):
+    """A session opened with ``fixedCenter`` + a centre seed lets
+    ``ring_standard`` run WITHOUT a centre payload: it reuses the session's
+    center0 as the fixed centre, needs only 2 ring points, and reports
+    centerSource='com'. / 以 fixedCenter + 中心种子建立的会话，ring_standard
+    无需再带 center：自动沿用会话 center0，只需 2 个环点，并回带
+    centerSource='com'。"""
+    sid = _ok(_run({
+        "action": "setup", "filePath": spot_edf,
+        "pixelSizeUm": PIXEL_UM, "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+        "centerX": _FIXED_CENTER[1], "centerY": _FIXED_CENTER[0],
+        "fixedCenter": True,
+    }))["sessionId"]
+    cy, cx = _FIXED_CENTER
+    pts = [
+        {"y": cy + 80.0 * math.sin(a), "x": cx + 80.0 * math.cos(a)}
+        for a in (0.5, 3.4)
+    ]
+    out = _ok(_run({
+        "action": "ring_standard", "sessionId": sid, "points": pts,
+        "value": 20.0, "unit": "tth_deg",
+    }))
+    assert out["centerSource"] == "com"
+    assert out["centerYPx"] == pytest.approx(cy, abs=1e-9)
+    assert out["centerXPx"] == pytest.approx(cx, abs=1e-9)
+    assert out["radiusPx"] == pytest.approx(80.0, abs=1e-6)
+
+
+def test_fixed_center_session_refine_is_distance_only(synthetic_edf: str):
+    """On a fixed-centre session, refine IGNORES any free flag for poni1/poni2/
+    rot*/wavelength (only dist is optimised) and the resulting geometry keeps
+    the seeded centre exactly. / 固定中心会话上 refine 忽略 poni1/poni2/rot*/
+    wavelength 的放开标志（只优化 dist），结果几何严格保持种子中心。"""
+    sid = _ok(_run({
+        "action": "setup", "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME, "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A, "distGuessMm": DIST_MM,
+        "centerX": _FIXED_CENTER[1], "centerY": _FIXED_CENTER[0],
+        "fixedCenter": True,
+    }))["sessionId"]
+    r0 = _first_ring_radius_px()
+    # Guides are computed around the TRUE centre (256,256); the fixed seed is
+    # (250,250) — the ring is still identifiable, which is the point.
+    # 引导点围绕真值中心（256,256），固定种子是 (250,250)——环仍可识别，
+    # 这正是要点。
+    guides = _ring_guide_points(r0, [0.0, 90.0, 180.0])
+    np.random.seed(RNG_SEED)
+    picked = _ok(_run({"action": "ring_pick", "sessionId": sid, "points": guides}))
+    # refine needs ring-assigned peaks (update_peaks), exactly like the UI.
+    # refine 需要已分配环号的峰（update_peaks），与界面流程一致。
+    _ok(_run({
+        "action": "update_peaks", "sessionId": sid,
+        "peaks": [{"y": p["y"], "x": p["x"]} for p in picked["peaks"]],
+    }))
+
+    out = _ok(_run({
+        "action": "refine", "sessionId": sid,
+        # Deliberately ask for EVERYTHING free — the backend must pin the
+        # centre anyway. / 刻意要求全部放开——后端仍须钉住中心。
+        "free": {"dist": True, "poni1": True, "poni2": True,
+                 "rot1": True, "rot2": True, "rot3": True, "wavelength": True},
+        "passes": 1,
+    }))
+    assert out["fixedCenter"] is True
+    geom = out["geometry"]
+    assert geom["center_x_px"] == pytest.approx(_FIXED_CENTER[1], abs=1e-6)
+    assert geom["center_y_px"] == pytest.approx(_FIXED_CENTER[0], abs=1e-6)
