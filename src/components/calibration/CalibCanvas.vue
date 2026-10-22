@@ -3,7 +3,7 @@
     <div
       class="cc-viewport"
       ref="viewportRef"
-      :class="{ 'cc-viewport--add': isInteractive }"
+      :class="{ 'cc-viewport--add': isInteractive || regionMode != null }"
       @mousedown="onMouseDown"
       @mousemove="onMouseMove"
       @mouseup="onMouseUp"
@@ -145,6 +145,23 @@ export interface CalibMaskOverlay {
   grid: number[]
 }
 
+/** Rectangular region in image pixel coordinates (y=row, x=col). */
+export interface CalibRegionRect {
+  kind: 'rect'
+  y0: number
+  y1: number
+  x0: number
+  x1: number
+}
+
+/** Polygon region (≥3 vertices) in image pixel coordinates. */
+export interface CalibRegionPoly {
+  kind: 'poly'
+  points: Array<{ y: number; x: number }>
+}
+
+export type CalibRegion = CalibRegionRect | CalibRegionPoly
+
 const { t, locale } = useI18n()
 
 const props = withDefaults(defineProps<{
@@ -181,6 +198,21 @@ const props = withDefaults(defineProps<{
    * 精修更新。
    */
   beamCenter?: { x: number; y: number } | null
+  /**
+   * Region-selection mode (2026-10-21 direct-beam feature): 'rect' = drag a
+   * rectangle, 'poly' = click vertices (double-click / Enter closes), null =
+   * normal interaction. While armed, left clicks/drags NEVER collect guide
+   * points or pan — they draw the region; the finished region is emitted via
+   * `region-selected`.
+   * 区域框选模式（2026-10-21 直通光功能）：'rect' 拖矩形、'poly' 点顶点
+   * （双击 / 回车闭合），null 为常规交互。武装期间左键点击/拖拽绝不收集
+   * 引导点、不平移——只画区域；完成后经 `region-selected` 发出。
+   */
+  regionMode?: 'rect' | 'poly' | null
+  /** Confirmed direct-beam region outline — dashed cyan echo. */
+  comRegion?: CalibRegion | null
+  /** Direct-beam centroid marker (cyan crosshair) — sub-pixel coordinates. */
+  comCenter?: { x: number; y: number } | null
 }>(), {
   interactive: false,
   hint: '',
@@ -188,6 +220,9 @@ const props = withDefaults(defineProps<{
   ringFit: null,
   maskOverlay: null,
   beamCenter: null,
+  regionMode: null,
+  comRegion: null,
+  comCenter: null,
 })
 
 const emit = defineEmits<{
@@ -195,6 +230,8 @@ const emit = defineEmits<{
   'canvas-remove': [pixel: { row: number; col: number }]
   /** Double-click finishes the current ring (guide clicks already landed). */
   'canvas-dblclick': [pixel: { row: number; col: number }]
+  /** Region selection finished (regionMode armed) — rect or closed polygon. */
+  'region-selected': [region: CalibRegion]
 }>()
 
 /** Clicks collect guide points while interactive; otherwise view-only. */
@@ -266,6 +303,76 @@ function screenToPixel(clientX: number, clientY: number): { x: number; y: number
   }
 }
 
+/** Float (unrounded) variant for region drawing — the centroid is sub-pixel.
+ *  区域绘制用的浮点（不取整）变体——质心本身是亚像素的。 */
+function screenToPixelFloat(clientX: number, clientY: number): { x: number; y: number } | null {
+  const viewport = viewportRef.value
+  if (!viewport) return null
+  const rect = viewport.getBoundingClientRect()
+  return {
+    x: (clientX - rect.left - panX.value) / zoom.value,
+    y: (clientY - rect.top - panY.value) / zoom.value,
+  }
+}
+
+// ── Region selection (direct-beam CoM) / 区域框选（直通光质心） ────────────────
+
+/** Rectangle draft: anchor + current corner (float pixel coords). */
+const draftRect = ref<{ y0: number; x0: number; y1: number; x1: number } | null>(null)
+/** Polygon draft vertices (float pixel coords). */
+const draftPoly = ref<Array<{ y: number; x: number }>>([])
+/** Live cursor position in pixel coords (rubber line), while a mode is armed. */
+const cursorPx = ref<{ x: number; y: number } | null>(null)
+
+const regionArmed = computed(() => props.regionMode != null)
+
+/** Minimum drag size (px, image space) for a rect to count as a selection. */
+const RECT_MIN_PX = 2
+
+function clearRegionDraft(): void {
+  draftRect.value = null
+  draftPoly.value = []
+}
+
+/** Cancel the in-progress draft (Esc) / 取消进行中的草稿（Esc）。 */
+function cancelRegionDraft(): void {
+  clearRegionDraft()
+}
+
+/** Close the polygon draft: ≥3 deduplicated vertices → emit; else reset.
+ *  闭合多折框草稿：去重后 ≥3 顶点才发出；否则重置。 */
+function closePolyDraft(): void {
+  const pts: Array<{ y: number; x: number }> = []
+  for (const p of draftPoly.value) {
+    const prev = pts[pts.length - 1]
+    if (prev && Math.hypot(prev.y - p.y, prev.x - p.x) < 0.5) continue
+    pts.push({ y: p.y, x: p.x })
+  }
+  clearRegionDraft()
+  if (pts.length >= 3) emit('region-selected', { kind: 'poly', points: pts })
+}
+
+/** Region-mode keyboard: Esc cancels, Enter closes the polygon. */
+function onRegionKeydown(e: KeyboardEvent): void {
+  if (!regionArmed.value) return
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    cancelRegionDraft()
+  } else if (e.key === 'Enter' && props.regionMode === 'poly') {
+    e.preventDefault()
+    closePolyDraft()
+  }
+}
+
+watch(() => props.regionMode, () => {
+  clearRegionDraft()
+  cursorPx.value = null
+  nextTick(() => drawOverlay())
+})
+
+onMounted(() => window.addEventListener('keydown', onRegionKeydown))
+onBeforeUnmount(() => window.removeEventListener('keydown', onRegionKeydown))
+
 // ── Zoom ──────────────────────────────────────────────────────────────────────
 
 function zoomIn(): void {
@@ -334,6 +441,18 @@ function onMouseDown(e: MouseEvent): void {
   pressStartY.value = e.clientY
   pressMoved.value = false
 
+  // Region mode: the LEFT button draws the region (rect anchor / no-op for
+  // poly — vertices land on mouseup as clicks); only middle-drag still pans.
+  // 区域模式：左键画区域（矩形锚点；多折框顶点在 mouseup 作为点击落入），
+  // 仅中键拖拽仍可平移。
+  if (regionArmed.value && e.button === 0) {
+    if (props.regionMode === 'rect') {
+      const p = screenToPixelFloat(e.clientX, e.clientY)
+      if (p) draftRect.value = { y0: p.y, x0: p.x, y1: p.y, x1: p.x }
+    }
+    return
+  }
+
   // Pan with middle OR left drag: a stationary left press stays a click
   // (emitted on mouseup), so panning never blocks peak picking.
   // 中键或左键拖拽平移：左键按住不动仍是点击（mouseup 时发出），平移不挡拾取。
@@ -355,6 +474,19 @@ function onMouseMove(e: MouseEvent): void {
     }
   }
 
+  // Rubber-band updates for the region draft (also outside a press, for the
+  // polygon's follow-line). / 区域草稿的橡皮筋更新（多折框跟随线含未按下时）。
+  if (regionArmed.value) {
+    const p = screenToPixelFloat(e.clientX, e.clientY)
+    if (p) {
+      cursorPx.value = p
+      if (draftRect.value && pressed.value && pressedButton.value === 0) {
+        draftRect.value.y1 = p.y
+        draftRect.value.x1 = p.x
+      }
+    }
+  }
+
   if (isPanning.value) {
     panX.value = panOriginX.value + (e.clientX - panStartX.value)
     panY.value = panOriginY.value + (e.clientY - panStartY.value)
@@ -368,6 +500,28 @@ function onMouseUp(e: MouseEvent): void {
 
   if (e.type === 'mouseleave') {
     pressed.value = false
+    return
+  }
+
+  // Region mode: finalize the rect / append a polygon vertex; the generic
+  // click & alt-remove paths never run while armed.
+  // 区域模式：完成矩形 / 追加多折框顶点；武装期间通用点击与 Alt 删除不触发。
+  if (regionArmed.value && e.button === 0) {
+    pressed.value = false
+    if (props.regionMode === 'rect') {
+      const d = draftRect.value
+      draftRect.value = null
+      if (d) {
+        const y0 = Math.min(d.y0, d.y1); const y1 = Math.max(d.y0, d.y1)
+        const x0 = Math.min(d.x0, d.x1); const x1 = Math.max(d.x0, d.x1)
+        if (y1 - y0 >= RECT_MIN_PX && x1 - x0 >= RECT_MIN_PX) {
+          emit('region-selected', { kind: 'rect', y0, y1, x0, x1 })
+        }
+      }
+    } else {
+      const p = screenToPixelFloat(e.clientX, e.clientY)
+      if (p && !pressMoved.value) draftPoly.value = [...draftPoly.value, p]
+    }
     return
   }
 
@@ -390,9 +544,20 @@ function onMouseUp(e: MouseEvent): void {
   }
 }
 
-/** Double-click finishes the current ring (its two clicks already added points). */
+/** Double-click finishes the current ring (its two clicks already added points);
+ *  in region-poly mode it CLOSES the polygon instead. */
 function onDblClick(e: MouseEvent): void {
-  if (!props.imageSrc || !props.interactive) return
+  if (!props.imageSrc) return
+  if (regionArmed.value) {
+    if (props.regionMode === 'poly') {
+      // The double-click's second click already appended a (duplicate) vertex;
+      // closePolyDraft dedupes it. / 双击的第二次点击已落下重复顶点；
+      // closePolyDraft 会去重。
+      closePolyDraft()
+    }
+    return
+  }
+  if (!props.interactive) return
   const pixel = screenToPixel(e.clientX, e.clientY)
   if (!pixel) return
   emit('canvas-dblclick', { row: pixel.y, col: pixel.x })
@@ -473,6 +638,85 @@ function drawOverlay(): void {
         if (tx > x1 + margin || tx + tileW < x0 - margin) continue
         ctx.fillRect(tx, ty, Math.ceil(tileW), Math.ceil(tileH))
       }
+    }
+  }
+
+  // Region selection + direct-beam echo (2026-10-21): drafts (rubber-band
+  // rect / polygon vertices + follow line), the CONFIRMED region outline
+  // (dashed cyan) and its centroid marker — drawn above the mask, below the
+  // rings/peaks. / 区域框选与直通光回显：草稿（橡皮筋矩形 / 多折框顶点 +
+  // 跟随线）、已确认区域轮廓（青色虚线）与质心标记——画在掩膜之上、环/峰之下。
+  const regionStyle = '#22d3ee'
+  const drawRegionPath = (pts: Array<{ y: number; x: number }>, close: boolean): void => {
+    if (pts.length === 0) return
+    ctx.beginPath()
+    ctx.moveTo(pts[0].x, pts[0].y)
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y)
+    if (close) ctx.closePath()
+  }
+  const cr = props.comRegion
+  if (cr) {
+    ctx.save()
+    ctx.strokeStyle = regionStyle
+    ctx.lineWidth = lineW * 1.6
+    ctx.setLineDash([8 / zoom.value, 5 / zoom.value])
+    if (cr.kind === 'rect') {
+      ctx.strokeRect(
+        Math.min(cr.x0, cr.x1), Math.min(cr.y0, cr.y1),
+        Math.abs(cr.x1 - cr.x0), Math.abs(cr.y1 - cr.y0),
+      )
+    } else {
+      drawRegionPath(cr.points, true)
+      ctx.stroke()
+    }
+    ctx.setLineDash([])
+    ctx.restore()
+  }
+  if (draftRect.value) {
+    const d = draftRect.value
+    ctx.save()
+    ctx.fillStyle = 'rgba(34, 211, 238, 0.15)'
+    ctx.strokeStyle = regionStyle
+    ctx.lineWidth = lineW * 1.4
+    const rx = Math.min(d.x0, d.x1), ry = Math.min(d.y0, d.y1)
+    ctx.fillRect(rx, ry, Math.abs(d.x1 - d.x0), Math.abs(d.y1 - d.y0))
+    ctx.strokeRect(rx, ry, Math.abs(d.x1 - d.x0), Math.abs(d.y1 - d.y0))
+    ctx.restore()
+  }
+  if (draftPoly.value.length > 0) {
+    ctx.save()
+    ctx.strokeStyle = regionStyle
+    ctx.lineWidth = lineW * 1.6
+    const follow = cursorPx.value && props.regionMode === 'poly'
+      ? [...draftPoly.value, cursorPx.value]
+      : draftPoly.value
+    drawRegionPath(follow, false)
+    ctx.stroke()
+    for (const p of draftPoly.value) {
+      const vtxR = Math.max(4 / zoom.value, 1.2)
+      ctx.beginPath()
+      ctx.arc(p.x, p.y, vtxR, 0, Math.PI * 2)
+      ctx.fillStyle = regionStyle
+      ctx.fill()
+    }
+    ctx.restore()
+  }
+  // Confirmed centroid (sub-pixel): cyan crosshair — the PRE-fit counterpart
+  // of the magenta refined-centre marker. / 已确认质心（亚像素）：青色十字
+  // ——洋红精修中心标记的拟合前对应物。
+  const cc = props.comCenter
+  if (cc && Number.isFinite(cc.x) && Number.isFinite(cc.y)) {
+    const ccArm = Math.max(10 / zoom.value, 3)
+    ctx.lineCap = 'round'
+    for (const pass of [0, 1]) {
+      ctx.strokeStyle = pass === 0 ? 'rgba(255, 255, 255, 0.9)' : regionStyle
+      ctx.lineWidth = pass === 0 ? lineW * 2.6 : lineW * 1.6
+      ctx.beginPath()
+      ctx.moveTo(cc.x - ccArm, cc.y)
+      ctx.lineTo(cc.x + ccArm, cc.y)
+      ctx.moveTo(cc.x, cc.y - ccArm)
+      ctx.lineTo(cc.x, cc.y + ccArm)
+      ctx.stroke()
     }
   }
 
@@ -606,7 +850,10 @@ function drawOverlay(): void {
 // Redraw when data or zoom changes (pan needs no redraw — CSS transform).
 // 数据或缩放变化时重绘（平移由 CSS transform 处理，无需重绘）。
 watch(
-  () => [props.rings, props.peaks, props.ringGuide, props.ringFit, props.maskOverlay, props.beamCenter, props.imageWidth, props.imageHeight, zoom.value] as const,
+  () => [props.rings, props.peaks, props.ringGuide, props.ringFit, props.maskOverlay,
+    props.beamCenter, props.imageWidth, props.imageHeight, zoom.value,
+    props.comRegion, props.comCenter, props.regionMode,
+    draftRect.value, draftPoly.value, cursorPx.value] as const,
   () => {
     nextTick(() => drawOverlay())
   },

@@ -24,7 +24,12 @@ const store = useToast()
 <style scoped>
 .toast-viewport {
   position: fixed;
-  top: 24px;
+  /* Below the AppShell top bar (visual review 2026-10-21: at 24px the toasts
+   * covered the sticky header's 主页/EN/status row and washed it out at
+   * ~1.06:1 contrast). The shell header measures ~18–106px tall.
+   * 移到顶栏之下（视觉审查 2026-10-21：原 24px 时 toast 盖住 sticky 顶栏的
+   * 主页/EN/状态行，对比度被洗到约 1.06:1）。顶栏实测高约 18–106px。 */
+  top: 120px;
   right: 24px;
   z-index: var(--z-tooltip);
   display: flex;

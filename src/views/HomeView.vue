@@ -14,11 +14,11 @@
         <p class="hero-open-source-notice">{{ t('home.heroPanel.openSourceNotice') }}</p>
         <div class="hero-actions">
           <button
-            class="hero-action primary"
+            :class="availableUpdate ? 'hero-action update-available' : 'hero-action primary'"
             type="button"
-            @click="checkUpdate"
+            @click="availableUpdate ? downloadUpdate() : checkUpdate()"
           >
-            {{ t('home.actions.checkUpdate') }}
+            {{ availableUpdate ? t('home.actions.downloadUpdate') : t('home.actions.checkUpdate') }}
           </button>
           <button
             class="hero-action secondary"
@@ -232,12 +232,19 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
+import {
+  fetchLatestRelease,
+  isNewerVersion,
+  primaryDownloadUrl,
+  type LatestReleaseInfo
+} from '@/lib/updateCheck'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const toast = useToast()
 const transport = useTransport()
 
@@ -384,14 +391,35 @@ const showLogDirectory = async (): Promise<void> => {
   })
 }
 
-const REPO_OWNER = 'ICCAS-EPlab-PMP'
-const REPO_NAME = 'XFAIS'
-const RELEASES_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`
-// 中文模式下载链接（直链 zip），英文模式使用 GitHub Release 页面
-const ZH_DOWNLOAD_URL = 'https://www.polymcrystal.com/download/XFAIS-latest.zip'
+// 有新版本时「检测更新」按钮变红为「下载更新」 / red "Download Update" state when a newer release exists
+const availableUpdate = ref<LatestReleaseInfo | null>(null)
 
-function pickDownloadUrl(releaseUrl: string): string {
-  return locale.value === 'en' ? releaseUrl : ZH_DOWNLOAD_URL
+onMounted(() => {
+  // 每次打开应用静默检查更新：失败不打扰；发现新版则按钮变红并提醒
+  window.setTimeout(() => {
+    void autoCheckUpdate()
+  }, 2500)
+})
+
+async function autoCheckUpdate(): Promise<void> {
+  try {
+    const [meta, info] = await Promise.all([transport.getAppMeta(), fetchLatestRelease()])
+    if (info && isNewerVersion(info.version, meta.appVersion)) {
+      availableUpdate.value = info
+      toast.push({
+        title: t('home.update.newVersionTitle'),
+        message: t('home.update.autoFound', { latest: info.version }),
+        tone: 'success'
+      })
+    }
+  } catch {
+    // 自动检查失败保持静默，不打扰启动
+  }
+}
+
+function downloadUpdate(): void {
+  const url = availableUpdate.value ? primaryDownloadUrl(availableUpdate.value) : ''
+  if (url) window.open(url, '_blank', 'noopener')
 }
 
 async function copyToClipboard(text: string): Promise<void> {
@@ -423,41 +451,30 @@ async function checkUpdate(): Promise<void> {
   })
 
   try {
-    const meta = await transport.getAppMeta()
-    const currentVersion = meta.appVersion
-
-    const resp = await fetch(RELEASES_API, {
-      headers: { Accept: 'application/vnd.github+json' },
-    })
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`)
+    const [meta, info] = await Promise.all([transport.getAppMeta(), fetchLatestRelease()])
+    if (!info) {
+      toast.push({
+        title: t('home.actions.checkUpdate'),
+        message: t('home.update.failed', { error: t('home.update.sourceUnreachable') }),
+        tone: 'error',
+      })
+      return
     }
-    const data = await resp.json() as { tag_name?: string; html_url?: string }
-    const latestTag = data.tag_name ?? ''
-    const latestVersion = latestTag.replace(/^v/, '')
 
-    if (latestVersion && latestVersion !== currentVersion) {
-      const fallbackReleaseUrl = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest`
-      const releaseUrl = data.html_url ?? fallbackReleaseUrl
-      const downloadUrl = pickDownloadUrl(releaseUrl)
+    if (isNewerVersion(info.version, meta.appVersion)) {
+      availableUpdate.value = info
+      const downloadUrl = primaryDownloadUrl(info)
       // 成功检查到新版本时自动复制下载链接到剪贴板
       await copyToClipboard(downloadUrl)
       toast.push({
         title: t('home.update.newVersionTitle'),
-        message: `${t('home.update.newVersion', { current: currentVersion, latest: latestVersion })}\n${downloadUrl}\n${t('home.update.linkCopied')}`,
+        message: `${t('home.update.newVersion', { current: meta.appVersion, latest: info.version })}\n${downloadUrl}\n${t('home.update.linkCopied')}`,
         tone: 'success',
       })
-    } else if (latestVersion) {
-      toast.push({
-        title: t('home.actions.checkUpdate'),
-        message: t('home.update.upToDate', { version: currentVersion }),
-        tone: 'info',
-      })
     } else {
-      // No releases yet
       toast.push({
         title: t('home.actions.checkUpdate'),
-        message: t('home.update.noRelease'),
+        message: t('home.update.upToDate', { version: meta.appVersion }),
         tone: 'info',
       })
     }
@@ -577,6 +594,36 @@ function openFabIOCitation(): void {
 .hero-action.primary:active {
   transform: translateY(0);
   box-shadow: 0 2px 4px rgba(var(--primary-rgb, 37, 99, 235), 0.3);
+}
+
+/* 有新版本可下载：按钮变红并轻微呼吸提示 */
+.hero-action.update-available {
+  background: #dc2626;
+  color: var(--text-inverse);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: update-available-pulse 2s ease-in-out infinite;
+}
+
+.hero-action.update-available:hover {
+  background: #b91c1c;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.4);
+}
+
+.hero-action.update-available:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.3);
+}
+
+@keyframes update-available-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+  }
+
+  50% {
+    box-shadow: 0 0 0 8px rgba(220, 38, 38, 0);
+  }
 }
 
 .hero-panel {

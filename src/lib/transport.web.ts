@@ -89,6 +89,11 @@ export class WebTransport implements ITransport {
 
   private activeTasks: Map<string, PendingTask> = new Map()
 
+  // Reconnect bookkeeping (2026-10-21). / 重连簿记（2026-10-21）。
+  private _reconnectAttempts = 0
+  private _keepaliveTimer: number | undefined
+  private _intentionalClose = false
+
   // Per-task event handler sets
   private progressHandlers: Map<string, Set<ProgressCallback>> = new Map()
   private resultHandlers: Map<string, Set<ResultCallback>> = new Map()
@@ -118,25 +123,114 @@ export class WebTransport implements ITransport {
 
   private async _init(): Promise<void> {
     const wsUrl = await this._discoverWsUrl()
+    await this._connect(wsUrl)
+  }
 
-    this.ws = new WebSocket(wsUrl)
-    this.ws.binaryType = 'arraybuffer'
-    this.ws.addEventListener('message', this.handleMessage)
+  /**
+   * Open one WebSocket and resolve once the session is acquired (or the 10 s
+   * watchdog fires). FIX (2026-10-21): the watchdog is now CLEARED when
+   * session_info arrives — previously it always fired 10 s after a perfectly
+   * good 20 ms handshake, logging a misleading "timed out — proceeding
+   * without session" warning. FIX 2: an app-level keepalive ping (25 s)
+   * prevents idle reverse proxies (nginx default read timeout 60 s) from
+   * killing the socket — the exact failure shape where HTTP uploads still
+   * work but every WS task (image previews) silently dies. FIX 3: unexpected
+   * closes now reconnect with backoff and the app layer is notified via
+   * window events (`xfais:ws-closed` / `xfais:ws-reconnected`); the server
+   * destroys the old session's uploads on disconnect, so a fresh session
+   * means previously uploaded paths may need re-uploading.
+   * 打开一条 WebSocket，会话建立（或 10 秒看门狗超时）后 resolve。修复
+   * （2026-10-21）：①看门狗在 session_info 到达时清除——此前即使 20 ms 握手
+   * 成功，10 秒后仍会打出误导性的“连接超时”警告；②25 秒应用层心跳防止
+   * 反向代理（nginx 默认 60 秒读超时）掐断空闲连接——正是“HTTP 上传仍成功、
+   * 而 WS 任务（图像预览）悄悄全挂”的故障形态；③意外断开改为退避重连，
+   * 并通过 window 事件（xfais:ws-closed / xfais:ws-reconnected）通知应用层；
+   * 服务器断开时会销毁旧会话的上传文件，新会话意味着旧路径可能需要重传。
+   */
+  private _connect(wsUrl: string): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const ws = new WebSocket(wsUrl)
+      this.ws = ws
+      this.ws.binaryType = 'arraybuffer'
+      ws.addEventListener('message', this.handleMessage)
 
-    await new Promise<void>((resolve) => {
-      this.resolveReady = resolve
-
-      const timeout = setTimeout(() => {
+      let settled = false
+      const timeout = window.setTimeout(() => {
+        if (settled) return
+        settled = true
         console.warn(`WebSocket connection to ${wsUrl} timed out — proceeding without session`)
+        this._startKeepalive()
         resolve()
       }, 10_000)
 
-      this.ws.addEventListener('error', () => {
-        clearTimeout(timeout)
-        console.warn(`WebSocket connection to ${wsUrl} failed — proceeding without session`)
+      // session_info → ready. Clears the watchdog FIRST (bug fix ①).
+      // session_info → 就绪。先清看门狗（修复 ①）。
+      this.resolveReady = () => {
+        if (settled) return
+        settled = true
+        window.clearTimeout(timeout)
+        this._reconnectAttempts = 0
+        this._startKeepalive()
         resolve()
+      }
+
+      ws.addEventListener('error', () => {
+        console.warn(`WebSocket connection to ${wsUrl} failed`)
+        if (!settled) {
+          settled = true
+          window.clearTimeout(timeout)
+          resolve()
+        }
       })
+      ws.addEventListener('close', () => this._onClosed(wsUrl))
     })
+  }
+
+  /** App-level keepalive: the server silently ignores unknown message types.
+   *  应用层心跳：服务器对未知消息类型静默忽略。 */
+  private _startKeepalive(): void {
+    this._stopKeepalive()
+    this._keepaliveTimer = window.setInterval(() => {
+      if (this.ws.readyState === WebSocket.OPEN) {
+        try {
+          this.ws.send(JSON.stringify({ type: 'ping' }))
+        } catch {
+          // The close handler owns recovery. / 恢复由 close 处理负责。
+        }
+      }
+    }, 25_000)
+  }
+
+  private _stopKeepalive(): void {
+    if (this._keepaliveTimer !== undefined) {
+      window.clearInterval(this._keepaliveTimer)
+      this._keepaliveTimer = undefined
+    }
+  }
+
+  /** Unexpected close → notify the app layer, then reconnect with backoff.
+   *  意外断开 → 通知应用层，随后按退避重连。 */
+  private _onClosed(wsUrl: string): void {
+    this._stopKeepalive()
+    if (this._intentionalClose) return
+    this._notifyApp('xfais:ws-closed')
+    const attempt = ++this._reconnectAttempts
+    const delay = Math.min(1000 * 2 ** Math.min(attempt - 1, 4), 15_000)
+    console.warn(`[ws] connection lost — reconnect attempt ${attempt} in ${delay} ms`)
+    window.setTimeout(() => {
+      if (this._intentionalClose) return
+      void this._connect(wsUrl).then(() => {
+        if (this.sessionId) this._notifyApp('xfais:ws-reconnected')
+      })
+    }, delay)
+  }
+
+  private _notifyApp(name: string): void {
+    try {
+      window.dispatchEvent(new CustomEvent(name))
+    } catch {
+      // Non-DOM environments (tests). / 非 DOM 环境（测试）。
+    }
   }
 
   // ── WebSocket message handling ──────────────────────────────────────────────
@@ -346,6 +440,18 @@ export class WebTransport implements ITransport {
     const route = COMMAND_ROUTE_MAP[command]
     if (!route) {
       throw new Error(`Unsupported task command: ${command}`)
+    }
+
+    // A dead socket must fail LOUDLY here: sending into a closed/closing
+    // WebSocket either throws opaquely or drops silently — both leave the UI
+    // looking stuck (e.g. an uploaded image that never previews).
+    // 断开的连接必须在此明确报错：向已关闭/正在关闭的 socket 发送要么抛出
+    // 难懂的错、要么无声丢弃——界面都会像卡死（如上传的图像永远不预览）。
+    if (this.ws.readyState !== WebSocket.OPEN) {
+      throw new Error(
+        '与服务器的连接已断开，正在自动重连——请稍候重试；若图像不再显示请重新上传 / ' +
+        'Server connection lost; auto-reconnecting — retry shortly, and re-upload if images stop displaying',
+      )
     }
 
     const taskId = generateUUID()

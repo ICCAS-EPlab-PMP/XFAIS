@@ -40,6 +40,13 @@ Implements the full powder-diffraction calibration workflow on top of pyFAI:
                            单位）→ 圆拟合 → 完整几何，无需标样。数值可选：
                            省略时距离取会话初始猜测（内标模式默认 200 mm），
                            仅束流中心经圆环标定。
+11. ``beam_center_com`` — direct-beam centre from a rect/polygon region's
+                           intensity-weighted centre of mass (background-
+                           subtracted + thresholded); lands through set_center's
+                           exact path and feeds ring_standard's fixed-centre
+                           branch. / 直通光质心定心：方形框/多折框区域内强度
+                           加权质心（扣背景 + 阈值），经 set_center 同一路径
+                           落地，供 ring_standard 固定中心分支使用。
 
 All heavy compute (massif, refine, contours) runs in the default
 ``ThreadPoolExecutor`` so the asyncio event loop is never blocked.
@@ -710,6 +717,12 @@ async def _action_setup(payload: dict, send_progress, cancel_event) -> dict:
             # 由 _guess_integrator 与 _build_refinement 作为首猜中心消费，
             # 优先于 guess_poni() 的椭圆拟合估计。
             "center0": center0,
+            # FIXED-CENTRE session (2026-10-21 direct-beam mode): the centre is
+            # already known from the direct beam, so refine must optimise the
+            # DISTANCE ONLY and ring_standard must reuse center0 as its fixed
+            # centre. / 固定中心会话（2026-10-21 直通光模式）：中心已由直通光
+            # 确定，故 refine 只优化距离、ring_standard 以 center0 为固定中心。
+            "fixed_center": bool(payload.get("fixedCenter")),
             "peaks": [],
             "gr": None,
             "mask": session_mask,
@@ -1272,31 +1285,21 @@ def _refine_residuals(gr: Any) -> List[Dict[str, Any]]:
     return out
 
 
-async def _action_set_center(session: Dict[str, Any], payload: dict) -> dict:
-    """Set the beam-centre FIRST GUESS from a canvas click (2026-10-20 feature).
+async def _apply_center_seed(
+    session: Dict[str, Any], y: float, x: float,
+) -> Dict[str, Any]:
+    """Apply a beam-centre seed (pixel y/x) to the session — shared by
+    ``set_center`` (canvas click) and ``beam_center_com`` (region centroid).
 
-    The click (pixel y/x) becomes the session's ``center0`` seed AND, when a
-    refinement already exists, poni1/poni2 of the live geometry. Because the
-    centre DEFINES the coordinate system every 2θ is measured in, the ring
-    numbers of AUTO-assigned peaks are re-derived under the new centre right
-    away (user-owned ``ring_user`` rings are honored, never renumbered), so
-    the overlay/table stay consistent — the coordinate-system shift the
-    feature request explicitly warned about.
-    以画布点击设置光束中心初猜（2026-10-20 新功能）。点击（像素 y/x）写入会话
-    ``center0`` 种子；已有精修器时同时改写其 poni1/poni2。中心决定了所有 2θ
-    的坐标系，故自动分配的环号立即按新中心重排（用户所有的 ring_user 环号被
-    保留、绝不改号），使环叠加与峰表保持一致——即需求中特别提醒的坐标系变化
-    联动。
+    Writes ``center0`` (poni1, poni2), overrides a live refinement's
+    poni1/poni2, and re-derives the ring numbers of AUTO-assigned peaks under
+    the new centre (user-owned ``ring_user`` rings honored). Internal-standard
+    sessions carry no peaks, so they simply take the centre seed.
+    把光束中心种子（像素 y/x）落到会话——``set_center``（画布点击）与
+    ``beam_center_com``（区域质心）共用。写入 ``center0``（poni1, poni2）、
+    覆写已有精修器的 poni1/poni2，并按新中心重排自动分配的环号（用户所有的
+    ring_user 环号保留）。内标会话无峰，直接接受中心种子。
     """
-    if session.get("internal_standard"):
-        return _internal_mode_error()
-
-    y = _as_float(payload.get("y"))
-    x = _as_float(payload.get("x"))
-    if y is None or x is None:
-        return _err(
-            "y/x (pixel coordinates) required / 需要像素坐标 y/x",
-        )
     pixel1 = float(session["pixel1"])
     pixel2 = float(session["pixel2"])
     poni1 = float(y) * pixel1
@@ -1348,6 +1351,34 @@ async def _action_set_center(session: Dict[str, Any], payload: dict) -> dict:
         "rings_refreshed": rings_refreshed,
         "center": {"y": float(y), "x": float(x)},
     }
+
+
+async def _action_set_center(session: Dict[str, Any], payload: dict) -> dict:
+    """Set the beam-centre FIRST GUESS from a canvas click (2026-10-20 feature).
+
+    The click (pixel y/x) becomes the session's ``center0`` seed AND, when a
+    refinement already exists, poni1/poni2 of the live geometry. Because the
+    centre DEFINES the coordinate system every 2θ is measured in, the ring
+    numbers of AUTO-assigned peaks are re-derived under the new centre right
+    away (user-owned ``ring_user`` rings are honored, never renumbered), so
+    the overlay/table stay consistent — the coordinate-system shift the
+    feature request explicitly warned about.
+    以画布点击设置光束中心初猜（2026-10-20 新功能）。点击（像素 y/x）写入会话
+    ``center0`` 种子；已有精修器时同时改写其 poni1/poni2。中心决定了所有 2θ
+    的坐标系，故自动分配的环号立即按新中心重排（用户所有的 ring_user 环号被
+    保留、绝不改号），使环叠加与峰表保持一致——即需求中特别提醒的坐标系变化
+    联动。
+    """
+    if session.get("internal_standard"):
+        return _internal_mode_error()
+
+    y = _as_float(payload.get("y"))
+    x = _as_float(payload.get("x"))
+    if y is None or x is None:
+        return _err(
+            "y/x (pixel coordinates) required / 需要像素坐标 y/x",
+        )
+    return await _apply_center_seed(session, y, x)
 
 
 async def _action_refine(
@@ -1439,6 +1470,22 @@ async def _action_refine(
     for name in _PARAM_ORDER:
         if name in free_raw:
             free[name] = bool(free_raw[name])
+    # FIXED-CENTRE session (direct-beam mode): the centre AND the rotations are
+    # given — only the sample-detector DISTANCE is optimised. Overriding the
+    # payload here makes the constraint hold even if the client forgets.
+    # 固定中心会话（直通光模式）：中心与旋转角都已给出——只优化样品-探测器
+    # 距离。此处覆写载荷，客户端漏传也能保证约束成立。
+    fixed_center_session = bool(session.get("fixed_center"))
+    if fixed_center_session:
+        for name in ("poni1", "poni2", "rot1", "rot2", "rot3", "wavelength"):
+            free[name] = False
+        free["dist"] = True
+        if session.get("center0") is None:
+            return _err(
+                "This session is centre-fixed but carries no centre seed — "
+                "restart the wizard with the direct-beam centre",
+                "该会话为固定中心但缺少中心种子——请带直通光中心重新建立会话",
+            )
     fix = [name for name in _PARAM_ORDER if not free[name]]
     # Remember which rotations the user actually engaged — never-engaged ones
     # are pinned to exactly 0 by _build_refinement and exported as 0.0.
@@ -1482,6 +1529,10 @@ async def _action_refine(
         "geometry": geometry,
         "chi2": chi2,
         "residuals": residuals,
+        # True → this run optimised the distance ONLY (fixed-centre session);
+        # the UI labels the result accordingly. / True 时本次只优化了距离
+        # （固定中心会话）；界面据此标注结果。
+        "fixedCenter": fixed_center_session,
         # Auto ring refresh before refining (BUGFIX 2026-10-13): the updated
         # peak list + how many ring numbers were corrected. 精修前自动环号
         # 重排：更新后的峰列表 + 修正的环号数量。
@@ -2230,6 +2281,241 @@ _MIN_STANDARD_DIST_M: float = 1e-5
 #: 直接拒绝而非产出无意义的 .poni。
 _MAX_STANDARD_DIST_M: float = 50.0
 
+#: Default relative threshold for ``beam_center_com``: pixels whose background-
+#: subtracted weight falls below this fraction of the ROI maximum are dropped
+#: (classic T-CoG tail cut — it also removes the residual background pedestal).
+#: beam_center_com 的默认相对阈值：扣背景后权重低于 ROI 最大值该比例的像素被
+#: 丢弃（经典 T-CoG 尾部截断——顺带清掉残余背景台阶）。
+_COM_DEFAULT_THRESHOLD: float = 0.05
+
+#: Border width (pixels) of a rectangular ROI used for the background estimate.
+#: 矩形 ROI 背景估计所用的边缘宽度（像素）。
+_COM_BORDER_PX: int = 3
+
+
+def _polygon_mask(verts: np.ndarray, y0: int, y1: int, x0: int, x1: int) -> np.ndarray:
+    """Even-odd point-in-polygon over the integer grid [y0,y1)×[x0,x1).
+
+    Vectorized ray casting: for every pixel centre (row, col) a ray is cast
+    toward +x and the polygon edge crossings are counted XOR-wise (vertices on
+    the ray are handled by the standard half-open edge rule y_min ≤ y < y_max).
+    / 在整数网格 [y0,y1)×[x0,x1) 上做奇偶规则多边形内判定（向量化射线法，
+    半开边规则 y_min ≤ y < y_max 处理顶点在射线上的退化情形）。
+    """
+    rows = np.arange(y0, y1, dtype=np.float64)[:, None]
+    cols = np.arange(x0, x1, dtype=np.float64)[None, :]
+    inside = np.zeros((y1 - y0, x1 - x0), dtype=bool)
+    n = len(verts)
+    for i in range(n):
+        ay, ax = verts[i]
+        by, bx = verts[(i + 1) % n]
+        # Half-open edge rule: an edge [a,b] counts crossings only when the
+        # ray's y lies in [min, max). / 半开边规则：仅当射线 y 落在 [min, max)
+        # 时该边计入穿越。
+        ylo, yhi = (ay, by) if ay < by else (by, ay)
+        cond = (rows >= ylo) & (rows < yhi)
+        if not cond.any():
+            continue
+        # x intersection of the edge at each row. / 各行上边的交点 x。
+        with np.errstate(invalid="ignore", divide="ignore"):
+            t = (rows - ay) / (by - ay)
+        xint = ax + t * (bx - ax)
+        inside ^= cond & (cols < xint)
+    return inside
+
+
+def _region_center_of_mass(
+    data: np.ndarray, region: Dict[str, Any], threshold_frac: float,
+) -> Dict[str, Any]:
+    """Intensity-weighted centre of mass inside a rect / polygon region.
+
+    Pipeline (classic direct-beam centroid, cf. ISO 11146 first moments):
+    3×3 median pre-filter (hot pixels) → boundary-median background subtraction
+    → clip at 0 → relative threshold → weighted mean of the integer pixel
+    coordinates (the same coordinate convention canvas clicks use, so the
+    result feeds poni1/poni2 exactly like ``set_center``).
+
+    直通光质心：方形框/多折框区域内的强度加权质心。3×3 中值滤波抑制热像素 →
+    边界中位数估计背景并扣除 → 负值截 0 → 相对阈值去尾 → 像素整数坐标加权平均
+    （与画布点击同一坐标约定，结果与 set_center 同路写入 poni1/poni2）。
+
+    Raises ValueError (bilingual message) on unusable input. / 输入不可用时
+    抛 ValueError（双语信息）。
+    """
+    from scipy import ndimage  # lazy: keeps the module import light / 惰性导入
+
+    h, w = data.shape
+    kind = str(region.get("kind") or "")
+
+    def _bad(msg_en: str, msg_zh: str) -> ValueError:
+        return ValueError(f"{msg_en} / {msg_zh}")
+
+    if kind == "rect":
+        y0 = _as_float(region.get("y0"))
+        y1 = _as_float(region.get("y1"))
+        x0 = _as_float(region.get("x0"))
+        x1 = _as_float(region.get("x1"))
+        if None in (y0, y1, x0, x1):
+            raise _bad(
+                "rect region needs y0/y1/x0/x1", "方形框区域需要 y0/y1/x0/x1",
+            )
+        ya, yb = sorted((int(math.floor(y0)), int(math.ceil(y1))))
+        xa, xb = sorted((int(math.floor(x0)), int(math.ceil(x1))))
+        ya, xa = max(0, ya), max(0, xa)
+        yb, xb = min(h, yb), min(w, xb)
+        mask = np.ones((yb - ya, xb - xa), dtype=bool)
+    elif kind == "poly":
+        raw_pts = region.get("points") or []
+        verts: List[tuple] = []
+        for p in raw_pts:
+            if isinstance(p, dict):
+                py_, px_ = _as_float(p.get("y")), _as_float(p.get("x"))
+            elif isinstance(p, (list, tuple)) and len(p) >= 2:
+                py_, px_ = _as_float(p[0]), _as_float(p[1])
+            else:
+                continue
+            if py_ is not None and px_ is not None:
+                verts.append((py_, px_))
+        if len(verts) < 3:
+            raise _bad(
+                "polygon region needs at least 3 vertices",
+                "多折框区域需要至少 3 个顶点",
+            )
+        vy = np.array([v[0] for v in verts], dtype=np.float64)
+        vx = np.array([v[1] for v in verts], dtype=np.float64)
+        ya = max(0, int(math.floor(vy.min())))
+        yb = min(h, int(math.ceil(vy.max())))
+        xa = max(0, int(math.floor(vx.min())))
+        xb = min(w, int(math.ceil(vx.max())))
+        mask = _polygon_mask(
+            np.column_stack([vy, vx]), ya, yb, xa, xb,
+        )
+    else:
+        raise _bad(
+            f"Unknown region kind {kind!r}: expected 'rect' or 'poly'",
+            f"未知区域类型 {kind!r}：应为 'rect' 或 'poly'",
+        )
+
+    if (yb - ya) < 2 or (xb - xa) < 2:
+        raise _bad(
+            "Region is too small (need ≥2×2 pixels inside the image)",
+            "区域过小（图像内需 ≥2×2 像素）",
+        )
+
+    roi = np.asarray(data[ya:yb, xa:xb], dtype=np.float64)
+    roi = np.nan_to_num(roi, nan=0.0, posinf=0.0, neginf=0.0)
+    # Hot-pixel suppression BEFORE any statistics. / 统计前先抑制热像素。
+    roi = ndimage.median_filter(roi, size=3, mode="nearest")
+
+    # Background from the region's boundary pixels (perimeter ring for a rect;
+    # the polygon's mask edge for a poly) — the dimmest, spot-free population.
+    # 背景取区域边界像素（矩形取边框；多折框取掩膜边缘）——最暗、无光斑的群体。
+    if kind == "rect":
+        border = np.zeros_like(mask)
+        b = min(_COM_BORDER_PX, (mask.shape[0] - 1) // 2, (mask.shape[1] - 1) // 2)
+        b = max(1, b)
+        border[:b, :] = True
+        border[-b:, :] = True
+        border[:, :b] = True
+        border[:, -b:] = True
+    else:
+        eroded = ndimage.binary_erosion(mask, iterations=1)
+        border = mask & ~eroded
+    border_vals = roi[border]
+    if border_vals.size == 0:
+        raise _bad(
+            "Region boundary is empty — cannot estimate the background",
+            "区域边界为空——无法估计背景",
+        )
+    bg = float(np.median(border_vals))
+
+    weights = np.clip(roi - bg, 0.0, None)
+    weights[~mask] = 0.0
+    wmax = float(weights.max())
+    if not math.isfinite(wmax) or wmax <= 0.0:
+        raise _bad(
+            "No positive signal above the background inside the region",
+            "区域内没有高于背景的有效信号",
+        )
+    weights[weights < threshold_frac * wmax] = 0.0
+
+    total = float(weights.sum())
+    if not math.isfinite(total) or total <= 0.0:
+        raise _bad(
+            "All pixels fell below the intensity threshold — lower it or re-select",
+            "所有像素都低于强度阈值——请调低阈值或重新框选",
+        )
+    yy, xx = np.mgrid[ya:yb, xa:xb]
+    cy = float((weights * yy).sum() / total)
+    cx = float((weights * xx).sum() / total)
+    var = float((weights * ((yy - cy) ** 2 + (xx - cx) ** 2)).sum() / total)
+    return {
+        "cy": cy,
+        "cx": cx,
+        "pixel_count": int(np.count_nonzero(weights)),
+        "total_weight": total,
+        "bg_level": bg,
+        "sigma_px": math.sqrt(max(var, 0.0)),
+        "kind": kind,
+    }
+
+
+async def _action_beam_center_com(session: Dict[str, Any], payload: dict) -> dict:
+    """Direct-beam centre from a region's centre of mass (2026-10-21 feature).
+
+    The user boxes the direct-beam spot with a RECTANGLE or POLYGON on the
+    canvas; the intensity-weighted centroid (background-subtracted,
+    thresholded — see ``_region_center_of_mass``) becomes the beam-centre seed
+    through EXACTLY ``set_center``'s application path (center0 seed, live
+    poni1/poni2 override, ring re-assignment for auto-assigned peaks), so the
+    internal-standard wizard can then fix the centre and calibrate distance
+    from one known ring. Same-pixel convention as canvas clicks — sub-pixel by
+    construction.
+    直通光质心定心（2026-10-21）：用户用方形框/多折框框出直通光斑，强度加权
+    质心（扣背景 + 阈值，见 ``_region_center_of_mass``）经 ``set_center`` 的
+    同一落地路径成为光束中心（center0 种子、poni1/poni2 覆写、自动环号重排），
+    供内标定标固定中心后由已知环标定距离。坐标约定与画布点击一致，天然亚像素。
+
+    Payload keys / 载荷键：
+      sessionId (str, required)
+      region    ({kind:'rect',y0,y1,x0,x1} | {kind:'poly',points:[{y,x}...]},
+                required) in image pixel coordinates / 图像像素坐标
+      threshold (float, optional, 0 ≤ t < 0.9; default 0.05) relative
+                intensity tail cut / 相对强度尾部截断阈值
+    """
+    region = payload.get("region")
+    if not isinstance(region, dict):
+        return _err(
+            "region (rect or polygon) is required / 需要 region（方形框或多折框）",
+        )
+    threshold = _as_float(payload.get("threshold"))
+    if threshold is None:
+        threshold = _COM_DEFAULT_THRESHOLD
+    if not (math.isfinite(threshold) and 0.0 <= threshold < 0.9):
+        return _err(
+            "threshold must be in [0, 0.9) / 阈值必须在 [0, 0.9) 内",
+        )
+    try:
+        com = await _run_blocking(
+            _region_center_of_mass, session["data"], region, threshold,
+        )
+    except ValueError as exc:
+        return _err(str(exc))
+    cy, cx = com.pop("cy"), com.pop("cx")
+
+    # Apply through set_center's exact path (center0 + poni + ring refresh).
+    # 经 set_center 的同一路径落地（center0 + poni + 环号重排）。
+    result = await _apply_center_seed(session, cy, cx)
+    if result.get("status") != "ok":
+        return result
+    session["com_center"] = {
+        "y": cy, "x": cx, "threshold": threshold, **com,
+    }
+    result["centerY"] = cy
+    result["centerX"] = cx
+    result["com"] = com
+    return result
+
 
 async def _action_ring_standard(
     session: Dict[str, Any], payload: dict, send_progress, cancel_event,
@@ -2301,7 +2587,46 @@ async def _action_ring_standard(
             continue
         if py_ is not None and px_ is not None:
             pts.append((py_, px_))
-    if len(pts) < 3:
+
+    # OPTIONAL fixed centre (2026-10-21 direct-beam feature): when the beam
+    # centre was already determined from the direct beam's centre of mass
+    # (``beam_center_com``), it OVERRIDES the circle fit — the points then only
+    # fix the ring radius (mean distance to the given centre, ≥2 points), which
+    # is far more robust than a 3-point Kåsa fit on a sparsely picked ring.
+    # 可选固定中心（2026-10-21 直通光功能）：光束中心已由直通光质心
+    # （beam_center_com）确定时以它为准，点选仅定环半径（到固定中心的平均
+    # 距离，≥2 点）——比稀疏点选上的 3 点 Kåsa 拟合稳健得多。
+    center_raw = payload.get("center")
+    fixed_cy: Optional[float] = None
+    fixed_cx: Optional[float] = None
+    if isinstance(center_raw, dict):
+        fixed_cy = _as_float(center_raw.get("y"))
+        fixed_cx = _as_float(center_raw.get("x"))
+    have_fixed_center = fixed_cy is not None and fixed_cx is not None
+    if isinstance(center_raw, dict) and not have_fixed_center:
+        return _err(
+            "center needs both finite y and x / center 需要同时提供有限的 y 与 x",
+        )
+    # Fixed-centre SESSION (direct-beam mode): reuse the session's center0 seed
+    # as the fixed centre when the payload carries none — the wizard's second
+    # setup already transferred the direct-beam centroid here. Done BEFORE the
+    # point-count checks so the ≥2-point rule applies.
+    # 固定中心会话（直通光模式）：载荷未带中心时直接采用会话 center0 种子——
+    # 向导第二次 setup 已把直通光质心写入该会话。必须在点数据校验之前完成，
+    # 使 ≥2 点规则生效。
+    if not have_fixed_center and session.get("fixed_center") and session.get("center0") is not None:
+        c0 = session["center0"]
+        fixed_cy = float(c0[0]) / float(session["pixel1"])
+        fixed_cx = float(c0[1]) / float(session["pixel2"])
+        have_fixed_center = True
+
+    if have_fixed_center and len(pts) < 2:
+        return _err(
+            "Ring standard with a fixed centre needs at least 2 points on "
+            "the ring",
+            "固定中心的内标定标需要环上至少 2 个有效点",
+        )
+    if not have_fixed_center and len(pts) < 3:
         return _err(
             "Ring standard needs at least 3 finite points on the ring",
             "内标定标需要环上至少 3 个有效点",
@@ -2335,12 +2660,19 @@ async def _action_ring_standard(
     pixel1 = float(session["pixel1"])
     pixel2 = float(session["pixel2"])
 
+
     ys = np.array([p[0] for p in pts], dtype=np.float64)
     xs = np.array([p[1] for p in pts], dtype=np.float64)
-    try:
-        cy, cx, radius = await _run_blocking(_fit_circle, ys, xs)
-    except Exception as exc:  # noqa: BLE001 — surfaced to the frontend
-        return _err(f"Circle fit failed: {exc}", f"圆拟合失败：{exc}")
+    if have_fixed_center:
+        # Fixed centre: radius = mean distance of the points to the centre.
+        # 固定中心：半径 = 各点到中心的平均距离。
+        cy, cx = float(fixed_cy), float(fixed_cx)
+        radius = float(np.mean(np.hypot(ys - cy, xs - cx)))
+    else:
+        try:
+            cy, cx, radius = await _run_blocking(_fit_circle, ys, xs)
+        except Exception as exc:  # noqa: BLE001 — surfaced to the frontend
+            return _err(f"Circle fit failed: {exc}", f"圆拟合失败：{exc}")
     _check_cancel(cancel_event)
     if not (math.isfinite(cy) and math.isfinite(cx)
             and math.isfinite(radius) and radius > 0.0):
@@ -2440,6 +2772,10 @@ async def _action_ring_standard(
         # 距离取自 dist0（未提供环数值）时为 True——_write_poni_sync 据此在
         # 导出的 .poni 中写标注。
         "dist_defaulted": dist_defaulted,
+        # Where the centre came from: 'com' (direct-beam centroid, fixed) or
+        # 'circle_fit' (Kåsa on the picked points). / 中心来源：'com'（直通光
+        # 质心，固定）或 'circle_fit'（点选 Kåsa 拟合）。
+        "center_source": "com" if have_fixed_center else "circle_fit",
     }
 
     await _progress(send_progress, 1.0, "Standard ring fitted / 内标环拟合完成")
@@ -2449,6 +2785,10 @@ async def _action_ring_standard(
         "centerYPx": float(cy),
         "radiusPx": float(radius),
         "rmsPx": rms_px,
+        # 'com' = the centre was FIXED from the direct-beam centroid payload;
+        # 'circle_fit' = Kåsa on the picked points. / 'com' = 中心由直通光质心
+        # 载荷固定；'circle_fit' = 点选 Kåsa 拟合。
+        "centerSource": "com" if have_fixed_center else "circle_fit",
         # unit/value are None on the default-distance branch (no ring value
         # was provided). / 默认距离分支下 unit/value 为 None（未提供环数值）。
         "unit": unit,
@@ -2510,7 +2850,7 @@ async def handle_calibration(payload: dict, send_progress, cancel_event) -> dict
     if action not in {
         "setup", "detect_peaks", "update_peaks", "refine", "set_center",
         "ring_overlay", "export_poni", "pick_peak", "ring_pick",
-        "ring_standard", "integrate_preview",
+        "ring_standard", "integrate_preview", "beam_center_com",
     }:
         return _err(f"Unknown action: {action!r}", f"未知操作：{action!r}")
     if session is None and action != "setup":
@@ -2535,6 +2875,8 @@ async def handle_calibration(payload: dict, send_progress, cancel_event) -> dict
         return await _action_refine(session, payload, send_progress, cancel_event)
     if action == "set_center":
         return await _action_set_center(session, payload)
+    if action == "beam_center_com":
+        return await _action_beam_center_com(session, payload)
     if action == "ring_overlay":
         return await _action_ring_overlay(session, payload, send_progress, cancel_event)
     if action == "integrate_preview":

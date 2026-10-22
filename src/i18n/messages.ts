@@ -82,6 +82,7 @@ export const messages = {
         openPlaceholder: '打开占位工作区',
         showLogs: '显示日志目录',
         checkUpdate: '检测更新',
+        downloadUpdate: '下载更新',
         citePyFAI: '引用 pyFAI',
         citeCalib2: '引用 calib2',
         citeFabIO: '引用 fabIO'
@@ -89,9 +90,10 @@ export const messages = {
       update: {
         checking: '正在检查更新...',
         newVersionTitle: '发现新版本',
-        newVersion: '当前版本 {current}，最新版本 {latest}，请前往 Release 页面下载',
+        newVersion: '当前版本 {current}，最新版本 {latest}，点击红色「下载更新」按钮即可下载',
+        autoFound: '检测到新版本 {latest}，请点击「下载更新」按钮获取',
         upToDate: '当前版本 {version} 已是最新',
-        noRelease: '尚未发布任何版本，请稍后再试',
+        sourceUnreachable: '无法访问更新源，请检查网络后重试',
         failed: '检查更新失败：{error}',
         linkCopied: '下载链接已自动复制到剪贴板'
       },
@@ -1460,6 +1462,8 @@ export const messages = {
     subtitle: '基于 pyFAI 精化引擎的 Debye–Scherrer 环校正向导，无需外部 calib2 窗口',
     setup: {
       imageFile: '校正图像',
+      beamImage: '直通光图像',
+      standardImage: '标样图像',
       selectImage: '选择图像',
       uploadImage: '上传图像',
       uploadCalibrant: '上传 .D',
@@ -1493,7 +1497,11 @@ export const messages = {
     mode: {
       label: '校正模式',
       calibrant: '标样校正',
-      internal: '内标定标'
+      internal: '内标定标',
+      com: '直通光定心',
+      comBeamHint: '第一步：载入直通光图（用于求光束中心），随后框选光斑',
+      standardBranch: '标样图后续流程',
+      standardBranchHint: '载入标样图后回到以下任一流程；两者都以直通光中心为固定值、只优化距离'
     },
     // Stepper names for the internal-standard wizard (calibrant mode keeps the
     // existing step keys; 导出 reuses calibration.export.title in both).
@@ -1502,7 +1510,33 @@ export const messages = {
     steps: {
       load: '加载',
       ring: '内标定标',
-      preview: '几何预览'
+      preview: '几何预览',
+      beamImage: '直通光图',
+      com: '质心定心',
+      standardImage: '标样图',
+      refineFixed: '优化距离'
+    },
+    // Direct-beam centroid mode (third wizard mode) / 直通光定心（第三种模式）
+    com: {
+      title: '直通光定心',
+      hint: '框选直通光斑区域，以其强度加权质心作为光束中心（扣背景 + 阈值，抗热像素）',
+      rect: '方形框',
+      poly: '多折框',
+      clear: '清除',
+      hintRect: '在图上拖出覆盖直通光斑的矩形（中键拖动仍可平移）',
+      hintPoly: '依次点击多折框顶点，双击或回车闭合（Esc 取消）',
+      hintIdle: '选择 方形框 或 多折框 开始框选',
+      running: '正在计算质心…',
+      result: '质心中心 (px)',
+      empty: '尚未确定中心',
+      done: '直通光质心已定心：({x}, {y})',
+      failed: '直通光质心定心失败',
+      canvasRect: '拖出覆盖直通光斑的矩形框；松手即计算质心',
+      canvasPoly: '依次点击多折框顶点；双击 / 回车闭合；Esc 取消',
+      canvasIdle: '先选择框选方式',
+      shapeMismatch: '标样图尺寸 ({sw}×{sh}) 与直通光图 ({bw}×{bh}) 不同——像素中心不再通用，请确认两图使用同一探测器布局',
+      centerChanged: '直通光中心已改变——请重新载入标样图以应用新中心',
+      branchChanged: '已切换标样支路——请重新载入标样图'
     },
     // Internal-standard step-2 panel / 内标定标第 2 步面板
     ring: {
@@ -1535,6 +1569,8 @@ export const messages = {
       exportDefaultDistWarning: '注意：距离为默认值 {mm} mm，未经环数值标定；导出的 .poni 文件将写入此标注',
       exportToastNote: '（距离为默认值 {mm} mm，已在 .poni 中标注）',
       canvasHint: '点击添加同一环上的点；右键删最近点；回车 / 双击拟合并计算几何',
+      fixedCenterHint: '中心已由直通光质心固定：环上点 ≥2 个即可（只求半径、只优化距离）',
+      needPointsCom: '中心已由直通光质心固定，环上至少再点 2 个点',
       previewTitle: '几何预览（内标）',
       previewHint: '几何由内标环直接计算，无精修；下方为 1D / 2D 积分预览，导出 .poni 后可去积分',
       noGeometry: '尚无几何：请返回内标定标步骤完成拟合',
@@ -1575,6 +1611,7 @@ export const messages = {
       residuals: '每峰残差 (°)',
       notConverged: '精化未收敛，请检查峰与初始距离',
       needPeaks: '请先拾取至少 4 个峰',
+      fixedCenterHint: '固定中心模式：中心与旋转角已由直通光质心确定，仅优化样品-探测器距离',
       done: '精化完成',
       centerX: '光束中心 X (px)',
       centerY: '光束中心 Y (px)'
@@ -1679,6 +1716,7 @@ export const messages = {
         openPlaceholder: 'Open Placeholder Workspace',
         showLogs: 'Show Log Directory',
         checkUpdate: 'Check for Updates',
+        downloadUpdate: 'Download Update',
         citePyFAI: 'Cite pyFAI',
         citeCalib2: 'Cite calib2',
         citeFabIO: 'Cite fabIO'
@@ -1686,9 +1724,10 @@ export const messages = {
       update: {
         checking: 'Checking for updates...',
         newVersionTitle: 'New Version Available',
-        newVersion: 'Current version {current}, latest version {latest}. Please visit the Release page to download.',
+        newVersion: 'Current version {current}, latest version {latest}. Click the red "Download Update" button to get it.',
+        autoFound: 'New version {latest} detected. Click the "Download Update" button to get it.',
         upToDate: 'You are on the latest version ({version})',
-        noRelease: 'No releases have been published yet. Please check back later.',
+        sourceUnreachable: 'Could not reach any update source. Please check your network and try again.',
         failed: 'Update check failed: {error}',
         linkCopied: 'The download link has been copied to your clipboard'
       },
@@ -3054,6 +3093,8 @@ export const messages = {
     subtitle: 'Debye–Scherrer ring calibration wizard powered by the pyFAI refinement engine — no external calib2 window',
     setup: {
       imageFile: 'Calibration image',
+      beamImage: 'Direct-beam image',
+      standardImage: 'Standard image',
       selectImage: 'Select image',
       uploadImage: 'Upload image',
       uploadCalibrant: 'Upload .D',
@@ -3087,16 +3128,46 @@ export const messages = {
     mode: {
       label: 'Calibration mode',
       calibrant: 'Calibrant',
-      internal: 'Internal standard'
+      internal: 'Internal standard',
+      com: 'Direct-beam centre',
+      comBeamHint: 'Step 1: load the direct-beam image (used to find the beam centre), then box the spot',
+      standardBranch: 'Standard-image branch',
+      standardBranchHint: 'After loading the standard image, continue with either branch below — both keep the direct-beam centre FIXED and optimise the distance only'
     },
     // Stepper names for the internal-standard wizard (calibrant mode keeps the
     // existing step keys; the export step reuses calibration.export.title in
-    // both modes). / 内标向导的步骤名（标样模式沿用原有键；“导出”两种模式
-    // 都复用 calibration.export.title）。
+    // both). / 内标向导步骤名（标样模式沿用原有键；导出均复用
+    // calibration.export.title）。
     steps: {
       load: 'Load',
       ring: 'Internal standard',
-      preview: 'Geometry preview'
+      preview: 'Geometry preview',
+      beamImage: 'Beam image',
+      com: 'Centroid',
+      standardImage: 'Standard image',
+      refineFixed: 'Fit distance'
+    },
+    // Direct-beam centroid mode (third wizard mode) / 直通光定心（第三种模式）
+    com: {
+      title: 'Direct-beam centre',
+      hint: 'Box the direct-beam spot; its intensity-weighted centroid becomes the beam centre (background-subtracted, thresholded, hot-pixel safe)',
+      rect: 'Rectangle',
+      poly: 'Polygon',
+      clear: 'Clear',
+      hintRect: 'Drag a rectangle over the direct-beam spot (middle-drag still pans)',
+      hintPoly: 'Click polygon vertices; double-click or Enter closes (Esc cancels)',
+      hintIdle: 'Pick Rectangle or Polygon to start',
+      running: 'Computing centroid…',
+      result: 'Centroid (px)',
+      empty: 'No centre yet',
+      done: 'Direct-beam centroid set: ({x}, {y})',
+      failed: 'Direct-beam centroid failed',
+      canvasRect: 'Drag a box over the direct-beam spot; release computes the centroid',
+      canvasPoly: 'Click polygon vertices; double-click / Enter closes; Esc cancels',
+      canvasIdle: 'Choose a selection shape first',
+      shapeMismatch: 'Standard image is {sw}×{sh} but the beam image was {bw}×{bh} — pixel centre no longer transfers; confirm both frames share the same detector layout',
+      centerChanged: 'Direct-beam centre changed — reload the standard image to apply it',
+      branchChanged: 'Standard branch switched — reload the standard image'
     },
     // Internal-standard step-2 panel / 内标定标第 2 步面板
     ring: {
@@ -3129,6 +3200,8 @@ export const messages = {
       exportDefaultDistWarning: 'Note: the distance is the default {mm} mm, not calibrated from a ring value; the exported .poni file will carry this annotation',
       exportToastNote: '(distance defaulted to {mm} mm, annotated in the .poni)',
       canvasHint: 'Click to add points on one ring; right-click removes the nearest; Enter / double-click fits and computes the geometry',
+      fixedCenterHint: 'Centre fixed by the direct-beam centroid: ≥2 points on the ring suffice (radius only, distance-only optimisation)',
+      needPointsCom: 'With the centre fixed by the centroid, pick at least 2 more points on the ring',
       previewTitle: 'Geometry preview (internal standard)',
       previewHint: 'The geometry comes straight from the standard ring — no refinement; the 1D / 2D integration preview follows, and the .poni can be exported for integration',
       noGeometry: 'No geometry yet: go back to the internal-standard step and fit',
@@ -3169,6 +3242,7 @@ export const messages = {
       residuals: 'Per-peak residuals (°)',
       notConverged: 'Refinement did not converge — check peaks and the initial distance',
       needPeaks: 'Pick at least 4 peaks first',
+      fixedCenterHint: 'Fixed-centre mode: the centre and rotations come from the direct-beam centroid — only the sample-detector distance is optimised',
       done: 'Refinement complete',
       centerX: 'Beam center X (px)',
       centerY: 'Beam center Y (px)'

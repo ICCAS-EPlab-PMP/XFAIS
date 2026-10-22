@@ -1,10 +1,11 @@
 <template>
   <div class="calib-setup-form">
-    <!-- Mode selector: 标样校正 (calibrant, default) vs 内标定标 (internal
-         standard). The two modes are MUTUALLY EXCLUSIVE — the parent resets
-         the whole wizard on a switch, so the user must 载入并开始 again.
-         模式选择：标样校正（默认）vs 内标定标。两种模式互斥——切换时父组件
-         重置整个向导，需重新「载入并开始」。 -->
+    <!-- Mode selector: 标样校正 (calibrant) / 内标定标 (internal standard) /
+         直通光定心 (direct-beam centroid, the THIRD mode). The three modes are
+         MUTUALLY EXCLUSIVE — the parent resets the whole wizard on a switch, so
+         the user must 载入并开始 again.
+         模式选择：标样校正 / 内标定标 / 直通光定心（第三种模式）。三种模式互斥
+         ——切换时父组件重置整个向导，需重新「载入并开始」。 -->
     <div class="csf-field">
       <label class="csf-label">{{ t('calibration.mode.label') }}</label>
       <div class="csf-unit-toggle csf-mode-toggle" role="group" :aria-label="t('calibration.mode.label')">
@@ -20,12 +21,46 @@
           data-ai-id="calibration:mode-internal"
           @click="patch({ mode: 'internal' })"
         >{{ t('calibration.mode.internal') }}</button>
+        <button
+          type="button"
+          :class="['csf-unit-btn', { 'csf-unit-btn--active': model.mode === 'com' }]"
+          data-ai-id="calibration:mode-com"
+          @click="patch({ mode: 'com' })"
+        >{{ t('calibration.mode.com') }}</button>
       </div>
+      <p v-if="isBeamPhase" class="csf-hint">{{ t('calibration.mode.comBeamHint') }}</p>
+    </div>
+
+    <!-- SECOND-IMAGE phase of the direct-beam mode: the standard image is
+         loaded here and the user chooses which calibration branch continues —
+         标样校正 (calibrant rings + refine) or 内标定标 (one known ring) —
+         both with the direct-beam centre FIXED and only the distance optimised.
+         直通光模式的第二次上传：在此载入标样图，并选择后续走标样校正（环 + 精修）
+         还是内标定标（单个已知环）——两条支路都以直通光中心为固定值、只优化距离。 -->
+    <div v-if="isStandardPhase" class="csf-field">
+      <label class="csf-label">{{ t('calibration.mode.standardBranch') }}</label>
+      <div class="csf-unit-toggle csf-mode-toggle" role="group" :aria-label="t('calibration.mode.standardBranch')">
+        <button
+          type="button"
+          :class="['csf-unit-btn', { 'csf-unit-btn--active': standardMode === 'calibrant' }]"
+          data-ai-id="calibration:standard-calibrant"
+          @click="$emit('update:standardMode', 'calibrant')"
+        >{{ t('calibration.mode.calibrant') }}</button>
+        <button
+          type="button"
+          :class="['csf-unit-btn', { 'csf-unit-btn--active': standardMode === 'internal' }]"
+          data-ai-id="calibration:standard-internal"
+          @click="$emit('update:standardMode', 'internal')"
+        >{{ t('calibration.mode.internal') }}</button>
+      </div>
+      <p class="csf-hint">{{ t('calibration.mode.standardBranchHint') }}</p>
     </div>
 
     <!-- Image file / 标定图像 -->
     <div class="csf-field">
-      <label class="csf-label">{{ t('calibration.setup.imageFile') }}</label>
+      <label class="csf-label">
+        {{ isBeamPhase ? t('calibration.setup.beamImage') : (isStandardPhase ? t('calibration.setup.standardImage') : t('calibration.setup.imageFile')) }}
+      </label>
       <div class="csf-path-row">
         <!-- Web/server mode: transport.selectFiles opens the browser picker and
              uploads the file, returning the server-side path — the user never
@@ -52,10 +87,11 @@
     <!-- Calibrant source: ONE selector, mutually exclusive built-in vs local .D —
          same segmented-toggle pattern as the mode switch above. / 标样来源：
          内置标样与本地 .D 文件互斥的分段开关，与上方模式开关同款。
-         GREYED OUT in internal-standard mode: that mode needs no calibrant at
-         all (the geometry comes from ring_standard). / 内标模式下整块灰度
-         禁用：该模式不需要标样（几何由 ring_standard 算出）。 -->
-    <div class="csf-field" :class="{ 'csf-field--disabled': isInternal }">
+         HIDDEN whenever the active branch needs no calibrant: internal-standard
+         mode (ring_standard), the direct-beam image phase, and the com mode's
+         internal-standard branch. / 当前支路不需要标样时整块隐藏：内标模式、
+         直通光模式的直通光图阶段与其内标支路。 -->
+    <div v-if="showCalibrant" class="csf-field" :class="{ 'csf-field--disabled': isInternal }">
       <label class="csf-label">{{ t('calibration.setup.calibrantSource') }}</label>
       <div class="csf-unit-toggle csf-mode-toggle" role="group" :aria-label="t('calibration.setup.calibrantSource')">
         <button
@@ -159,8 +195,11 @@
       />
     </div>
 
-    <!-- Mask (REQ 1: prevent wrong picks) / 掩膜（防止拾取错误） -->
-    <div class="csf-field">
+    <!-- Mask (REQ 1: prevent wrong picks) / 掩膜（防止拾取错误）
+         Hidden on the direct-beam image phase: no peak picking happens there
+         (the CoM centres on the bright spot by itself). / 直通光图阶段隐藏：
+         该阶段不做寻峰（质心法自带热点抑制）。 -->
+    <div v-if="!isBeamPhase" class="csf-field">
       <label class="csf-label">{{ maskFileLabel }}</label>
       <div class="csf-path-row">
         <button
@@ -182,7 +221,7 @@
     </div>
 
     <!-- Mask intensity bounds (optional) / 掩膜强度上下限（可选） -->
-    <div class="csf-field csf-field--pair">
+    <div v-if="!isBeamPhase" class="csf-field csf-field--pair">
       <label class="csf-field-pair-item">
         <span class="csf-label">{{ maskMinLabel }}</span>
         <NumberField
@@ -247,7 +286,7 @@
          预设按钮与提示在折叠区内；数值仍原样随 setup 载荷下发。内标模式下
          隐藏：该模式的 SD 由第 2 步的标准环算出（后端契约仍要求
          distGuessMm > 0，表单保持现值即可）。 -->
-    <details v-if="!isInternal" class="csf-details csf-details--sd">
+    <details v-if="showSdGuess" class="csf-details csf-details--sd">
       <summary class="csf-details-summary">{{ sdGroupLabel }}</summary>
       <div class="csf-field csf-field--inner">
         <label class="csf-label">{{ t('calibration.setup.distGuess') }} (mm)</label>
@@ -319,10 +358,22 @@ import { useToast } from '@/lib/toast'
 import NumberField from '@/components/common/NumberField.vue'
 
 /** Wizard mode: 'calibrant' = classic 标样校正; 'internal' = 内标定标 (one
- *  known ring computes the geometry, no calibrant / no refinement).
+ *  known ring computes the geometry, no calibrant / no refinement);
+ *  'com' = 直通光定心 (two uploads: direct-beam image → box → centre of mass,
+ *  then the standard image branches back into calibrant or internal standard
+ *  with that centre FIXED and only the distance optimised).
  *  向导模式：calibrant = 标样校正；internal = 内标定标（单个已知环直接算
- *  几何，无标样、无精修）。 */
-export type CalibMode = 'calibrant' | 'internal'
+ *  几何，无标样、无精修）；com = 直通光定心（两次上传：直通光图 → 框选质心，
+ *  随后标样图回到标样校正或内标定标，中心固定、只优化距离）。 */
+export type CalibMode = 'calibrant' | 'internal' | 'com'
+
+/** Which phase of the com mode this form instance is rendering:
+ *  'single'   — the ordinary single-image setup (calibrant/internal modes);
+ *  'beam'     — com mode, FIRST image (the direct-beam frame);
+ *  'standard' — com mode, SECOND image (the calibrant/standard frame).
+ *  com 模式下本表单所处阶段：single = 普通单图；beam = 直通光图（第一张）；
+ *  standard = 标样图（第二张）。 */
+export type CalibSetupPhase = 'single' | 'beam' | 'standard'
 
 /** Editable setup model — owned by the parent (v-model). */
 export interface CalibSetupModel {
@@ -383,6 +434,13 @@ export interface CalibSetupPayload {
    */
   centerX: number | null
   centerY: number | null
+  /**
+   * TRUE on the com mode's SECOND setup: the backend then pins poni1/poni2 and
+   * the rotations and optimises the DISTANCE ONLY (fixed-centre session).
+   * com 模式第二次 setup 时置 true：后端钉住 poni1/poni2 与旋转角，只优化
+   * 距离（固定中心会话）。
+   */
+  fixedCenter?: boolean
 }
 
 /**
@@ -415,6 +473,10 @@ const props = defineProps<{
    * True 时显示“掩膜已修改”徽标，需重新加载以应用。
    */
   maskStale?: boolean
+  /** Com-mode phase this form renders (default 'single'). / com 模式阶段。 */
+  phase?: CalibSetupPhase
+  /** Standard branch chosen on the com mode's SECOND image (default 'calibrant'). */
+  standardMode?: 'calibrant' | 'internal'
 }>()
 
 const emit = defineEmits<{
@@ -423,6 +485,7 @@ const emit = defineEmits<{
   seed: [poniPath: string]
   /** Fired when the image path changes (dialog pick or input blur). */
   probed: [imagePath: string]
+  'update:standardMode': [value: 'calibrant' | 'internal']
 }>()
 
 const { t, locale } = useI18n()
@@ -496,10 +559,31 @@ function onNullableNumberInput(field: 'maskMin' | 'maskMax', value: number | nul
 
 const hasDetector = computed(() => props.modelValue.detector.trim().length > 0)
 
-/** Internal-standard mode is active → the calibrant block is irrelevant
- *  (greyed out) and must not gate submission.
- *  内标模式激活 → 标样区无关（灰度禁用），且不参与提交校验。 */
-const isInternal = computed(() => props.modelValue.mode === 'internal')
+// Com-mode phases (default 'single'): 'beam' = the direct-beam image, where no
+// calibrant exists yet; 'standard' = the second image whose branch the user
+// picks. / com 模式阶段（默认 single）：beam = 直通光图（尚无标样）；standard
+// = 第二张标样图（用户选择支路）。
+const isBeamPhase = computed(() =>
+  props.modelValue.mode === 'com' && (props.phase ?? 'single') === 'beam',
+)
+const isStandardPhase = computed(() =>
+  props.modelValue.mode === 'com' && (props.phase ?? 'single') === 'standard',
+)
+const standardMode = computed(() => props.standardMode ?? 'calibrant')
+
+/** Internal-standard branch is active (internal mode, or the com mode's
+ *  internal branch) → no calibrant, no distance guess. / 内标支路激活（内标
+ *  模式或 com 模式的内标支路）→ 无标样、无距离猜测。 */
+const isInternal = computed(() =>
+  props.modelValue.mode === 'internal'
+  || (isStandardPhase.value && standardMode.value === 'internal'),
+)
+
+/** Show the calibrant selector only where a calibrant is actually consumed. */
+const showCalibrant = computed(() => !isInternal.value && !isBeamPhase.value)
+
+/** Distance guess is a CALIBRANT-mode input (internal uses the ring). */
+const showSdGuess = computed(() => showCalibrant.value)
 
 /** Calibrant source segment: 'builtin' (registry name) vs 'file' (.D) —
  *  mutually exclusive like the wizard mode switch; switching clears the
@@ -623,12 +707,13 @@ function emitProbed(path?: string): void {
 const canSubmit = computed(() => {
   const m = props.modelValue
   if (!m.imagePath.trim()) return false
-  // Internal-standard mode skips the calibrant requirement — the geometry is
-  // computed from one known ring instead. Otherwise exactly ONE source must
-  // be filled, per the selected segment. / 内标模式跳过标样必填；其余按所选
-  // 来源分段二选一必填。
-  if (!isInternal.value && calibrantSource.value === 'builtin' && !m.calibrant) return false
-  if (!isInternal.value && calibrantSource.value === 'file' && !m.calibrantPath.trim()) return false
+  // Branches without a calibrant (internal standard, and the com mode's
+  // direct-beam image / internal branch) skip the calibrant requirement —
+  // their geometry comes from one known ring or from the CoM centre.
+  // 无标样支路（内标、com 模式的直通光图与内标支路）跳过标样必填——几何来自
+  // 单个已知环或质心中心。
+  if (showCalibrant.value && calibrantSource.value === 'builtin' && !m.calibrant) return false
+  if (showCalibrant.value && calibrantSource.value === 'file' && !m.calibrantPath.trim()) return false
   if (!hasDetector.value && !(m.pixelSizeUm > 0)) return false
   if (!(m.wavelengthA > 0)) return false
   // The initial distance guess is a CALIBRANT-mode input (hidden in internal
@@ -636,7 +721,7 @@ const canSubmit = computed(() => {
   // form's current value, so the backend contract is unchanged.
   // 初始距离猜测是标样模式的输入（内标模式隐藏，其 SD 由 ring_standard
   // 算出）；载荷仍携带表单当前值，后端契约不变。
-  if (!isInternal.value && !(m.distGuessMm > 0)) return false
+  if (showSdGuess.value && !(m.distGuessMm > 0)) return false
   return true
 })
 
@@ -727,7 +812,9 @@ function submit(): void {
   // Otherwise the payload follows the selected source segment: exactly one of
   // name / .D file is sent. / 内标模式一律不下发标样（无论灰度输入框里残留
   // 什么）——后端据此建立内标会话；其余按来源分段二选一下发。
-  const internal = m.mode === 'internal'
+  // Branch-specific calibrant rule: only where a calibrant is consumed.
+  // 分支相干的标样规则：仅在实际使用标样的支路下发。
+  const internal = !showCalibrant.value
   emit('submit', {
     filePath: m.imagePath.trim(),
     calibrant: internal || calibrantSource.value === 'file' ? null : (m.calibrant || null),
@@ -736,13 +823,19 @@ function submit(): void {
     pixelSizeUm: hasDetector.value ? null : m.pixelSizeUm,
     wavelengthA: m.wavelengthA,
     distGuessMm: m.distGuessMm,
-    maskPath: m.maskPath.trim() || null,
-    maskMin: m.maskMin,
-    maskMax: m.maskMax,
-    // Beam-centre seed (ring fit / manual) — both null unless set.
-    // 束流中心种子（圆环拟合/手填）——未设置时两者皆为 null。
+    // Masks belong to the peak-picking phases (beam phase hides the inputs, so
+    // nothing stale can leak into that session).
+    // 掩膜属于寻峰阶段（直通光图阶段隐藏输入，不会把残留值带进该会话）。
+    maskPath: isBeamPhase.value ? null : (m.maskPath.trim() || null),
+    maskMin: isBeamPhase.value ? null : m.maskMin,
+    maskMax: isBeamPhase.value ? null : m.maskMax,
+    // Beam-centre seed (ring fit / manual / direct-beam CoM) — both null
+    // unless set. / 束流中心种子（圆环拟合/手动/直通光质心）——未设置时皆 null。
     centerX: m.centerXPx,
     centerY: m.centerYPx,
+    // com mode's SECOND setup → fixed-centre session (distance only).
+    // com 模式第二次 setup → 固定中心会话（只优化距离）。
+    ...(isStandardPhase.value ? { fixedCenter: true } : {}),
   })
 }
 </script>
