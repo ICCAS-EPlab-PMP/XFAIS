@@ -225,7 +225,13 @@ function sampleXs(x0: number, x1: number, n: number): Float64Array {
 export interface KbResult {
   /** Kβ as a fraction [0,1]. / Kβ（0–1）。 */
   kb: number
-  areas: { beta300: number; a110: number; a040: number; a130: number }
+  /** The four intensities actually used in the ratio. / 实际代入公式的四个强度值。 */
+  values: { beta300: number; a110: number; a040: number; a130: number }
+  /** Intensity source of this Kβ — Turner-Jones' original uses AREAS; the
+   * height variant (v0.3.4, 2026-10-22 user request: 有人提出 Kβ 可能按峰高
+   * 给出) is reported alongside, clearly labelled. / 本 Kβ 的强度来源——
+   * Turner-Jones 原式用面积；峰高法（2026-10-22 用户要求）并列给出并明确标注。 */
+  source: 'area' | 'height'
 }
 
 export const KB_ROLES: Array<{ key: KbRole; label: string; hint: string }> = [
@@ -236,23 +242,25 @@ export const KB_ROLES: Array<{ key: KbRole; label: string; hint: string }> = [
 ]
 
 /**
- * Turner-Jones β-phase fraction from fitted AREAS:
- *   Kβ = Aβ(300) / [Aα(110) + Aα(040) + Aα(130) + Aβ(300)]
- * Returns null until all four roles are assigned. 用拟合面积按 Turner-Jones
- * 公式计算 Kβ；四项全部指派后才返回结果。
+ * Turner-Jones β-phase fraction from the four assigned intensities — the SAME
+ * ratio for both sources, only the intensity differs:
+ *   Kβ = Iβ(300) / [Iα(110) + Iα(040) + Iα(130) + Iβ(300)]
+ * `source='area'`（Turner-Jones 原式，拟合面积）或 `'height'`（峰高法，
+ * 2026-10-22 用户要求并列给出）。四项全部指派后才返回结果。
  */
 export function kbFractionOf(
-  areasByRole: { beta300: number | null; a110: number | null; a040: number | null; a130: number | null },
+  intensitiesByRole: { beta300: number | null; a110: number | null; a040: number | null; a130: number | null },
+  source: 'area' | 'height' = 'area',
 ): KbResult | null {
-  const { beta300, a110, a040, a130 } = areasByRole
+  const { beta300, a110, a040, a130 } = intensitiesByRole
   if (beta300 == null || a110 == null || a040 == null || a130 == null) return null
-  const areas = {
+  const values = {
     beta300: Math.abs(beta300),
     a110: Math.abs(a110),
     a040: Math.abs(a040),
     a130: Math.abs(a130),
   }
-  const denom = areas.beta300 + areas.a110 + areas.a040 + areas.a130
+  const denom = values.beta300 + values.a110 + values.a040 + values.a130
   if (denom <= 0) return null
-  return { kb: areas.beta300 / denom, areas }
+  return { kb: values.beta300 / denom, values, source }
 }

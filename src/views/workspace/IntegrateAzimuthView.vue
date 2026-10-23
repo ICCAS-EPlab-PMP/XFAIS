@@ -350,7 +350,9 @@
               :loading="thumbLoading"
               :sync-with-main="false"
               :columns-per-row="thumbColsPerRow"
+              deletable
               @select="handleThumbSelect"
+              @remove="removeFileAt"
               @prev-page="handleThumbPrevPage"
               @next-page="handleThumbNextPage"
               @jump-to-page="handleThumbJumpToPage"
@@ -1241,6 +1243,43 @@ function handleThumbSelect(index: number): void {
     h5Selection.value = { dataset: '', channel: 0, frame: 0 }
     loadPreview(fPath)
   }
+}
+
+/**
+ * Remove ONE imported file (2026-10-22 user request: the thumbnail ✕ button
+ * deletes unneeded files so they no longer take part in display or azimuth
+ * integration). Falls back to the clear-all cleanup when the list empties;
+ * otherwise clamps the selection, refreshes the preview when the selected file
+ * was removed, and reloads the current thumbnail page (items carry global
+ * indices). Cached azimuth curves belong to the old file list, so they are
+ * dropped too.
+ * 删除单个已导入文件（2026-10-22 用户要求：缩略图 ✕ 删除不需要的文件，不再
+ * 参与展示与积分）。删空时走清空流程；否则收敛选中索引、选中项被删时刷新
+ * 预览，并重载当前页缩略图（条目带全局索引）。旧结果曲线对应旧文件清单，
+ * 一并清空。
+ */
+function removeFileAt(index: number): void {
+  if (index < 0 || index >= files.value.length) return
+  files.value.splice(index, 1)
+  if (files.value.length === 0) {
+    clearAllFiles()
+    return
+  }
+  chartTraces.value = []
+  exportData.value = null
+  errorMessage.value = null
+  const wasSelected = selectedPreviewIndex.value === index
+  if (selectedPreviewIndex.value >= files.value.length) {
+    selectedPreviewIndex.value = files.value.length - 1
+  }
+  if (wasSelected) {
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+    const path = files.value[selectedPreviewIndex.value]
+    if (path) loadPreview(path)
+  }
+  thumbCurrentPage.value = Math.min(thumbCurrentPage.value, thumbTotalPages.value)
+  void loadThumbnailPage()
 }
 
 function handleThumbPrevPage(): void {

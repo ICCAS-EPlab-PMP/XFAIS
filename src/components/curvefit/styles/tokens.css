@@ -37,18 +37,23 @@
   --border: #e2e8f0; /* = app --border (inlined: self-reference is a cycle) */
   --border-strong: var(--border-hover, #cbd5e1);
 
-  /* text */
+  /* text — 2026-10-23 visual review: the mapped muted greys failed WCAG AA
+     on the panel backgrounds (#94a3b8 ≈2.3:1, #64748b ≈4.34:1 on #f1f5f9).
+     Workbench-scope overrides; both now ≥4.5:1 on white AND #f1f5f9. /
+     工作台作用域覆盖：次级/弱化文字在面板底色上一律满足 4.5:1。 */
   --text-1: var(--text-primary, #1e293b);
-  --text-2: var(--text-secondary, #64748b);
-  --text-3: var(--text-muted, #94a3b8);
-  --status-text: var(--text-secondary, #64748b);
+  --text-2: #52607a;
+  --text-3: #5f6c82;
+  --status-text: #52607a;
 
   /* semantic */
   --accent: var(--primary-light, #3b82f6);
   --accent-soft: rgba(59, 130, 246, 0.12);
   --accent-line: rgba(59, 130, 246, 0.45);
-  --success: #16a34a;
-  --success-soft: rgba(22, 163, 74, 0.12);
+  /* #16a34a was 3.0:1 on the chip background (R² status text). /
+     原 #16a34a 在信息片底上仅 3.0:1。 */
+  --success: #15803d;
+  --success-soft: rgba(21, 128, 61, 0.12);
   --warning: #d97706;
   --warning-soft: rgba(217, 119, 6, 0.12);
   --danger: var(--error, #ef4444);

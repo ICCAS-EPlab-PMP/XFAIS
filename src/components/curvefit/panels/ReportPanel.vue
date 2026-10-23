@@ -3,6 +3,7 @@
  *  （结晶度 / 取向 / Kβ 已独立为左侧「聚合物」步骤，见 PolymerPanel.vue。） */
 import { computed } from 'vue'
 import AppIcon from '../AppIcon.vue'
+import HelpTip from '../HelpTip.vue'
 import { PEAK_FN_MAP, BASELINE_FN_MAP } from '@/lib/pwcore/shared/registry'
 import { useFit } from '@/lib/curvefit/stores/fit'
 import { usePeaks } from '@/lib/curvefit/stores/peaks'
@@ -58,10 +59,17 @@ const peakRows = computed(() =>
       })),
       area: res?.area,
       fwhm: res?.fwhm,
+      center: res?.center,
+      height: res?.height,
       share: res && totalArea.value > 0 ? Math.abs(res.area) / totalArea.value : undefined,
     }
   }),
 )
+
+/** Summary-line quantity: fitted value, or an em dash before the fit exists. */
+function qty(v: number | undefined): string {
+  return v !== undefined && Number.isFinite(v) ? fmtSig(v, 5) : '—'
+}
 
 /** Background (baseline) parameters, fitted alongside the peaks. */
 const baselineRow = computed(() => {  const bl = pk.baseline
@@ -102,7 +110,16 @@ defineExpose({ exportParams, exportDataFit, exportReport })
 
 <template>
   <div class="panel">
-    <div class="panel-title"><AppIcon name="report" :size="13" />报告</div>
+    <div class="panel-title">
+      <AppIcon name="report" :size="13" />报告
+      <!-- 2026-10-23 用户要求：统计量说明改为标题行的 ? 图标。 -->
+      <span class="pt-help">
+        <HelpTip
+          :size="17"
+          text="R² 决定系数（越接近 1 拟合越好）；调整 R² 按自由度惩罚参数个数；Fit Std Err 为残差标准误；F 值 / SSE 衡量整体拟合优度；自由度 = 参与点 − 参数数；迭代显示收敛（停止）或达到上限。"
+        />
+      </span>
+    </div>
     <div class="content">
       <template v-if="s">
         <div class="cards">
@@ -144,13 +161,20 @@ defineExpose({ exportParams, exportDataFit, exportReport })
 
         <div class="sec-label">峰参数</div>
         <div class="ptable">
-          <div v-for="r in peakRows" :key="r.p.id" class="pblock">
-            <div class="phead">
-              <span class="dot" :style="{ background: r.p.color }" />
-              <b>#{{ r.index }} {{ r.fnName }}</b>
-              <span v-if="!r.p.enabled" class="off">已停用</span>
-              <span class="share num">{{ r.share !== undefined ? '占比 ' + (r.share * 100).toFixed(1) + ' %' : '' }}</span>
-            </div>
+          <!-- 2026-10-23 用户要求：逐峰参数明细默认折叠，点开看全部参数与标准误。 -->
+          <details v-for="r in peakRows" :key="r.p.id" class="pblock peak-det">
+            <summary class="phead peak-sum">
+              <span class="sum-top">
+                <span class="chev"><AppIcon name="chevronDown" :size="12" /></span>
+                <span class="dot" :style="{ background: r.p.color }" />
+                <b>#{{ r.index }} {{ r.fnName }}</b>
+                <span v-if="!r.p.enabled" class="off">已停用</span>
+                <span class="share num">{{ r.share !== undefined ? '占比 ' + (r.share * 100).toFixed(1) + '%' : '' }}</span>
+              </span>
+              <span class="sum-nums num">
+                c {{ qty(r.center) }} · FWHM {{ qty(r.fwhm) }} · h {{ qty(r.height) }} · A {{ qty(r.area) }}
+              </span>
+            </summary>
             <table class="table">
               <thead>
                 <tr><th>参数</th><th class="r">值</th><th class="r">±σ</th><th class="lockcol"></th></tr>
@@ -166,13 +190,9 @@ defineExpose({ exportParams, exportDataFit, exportReport })
                     <span v-if="pm.locked" class="lockmark">锁定</span>
                   </td>
                 </tr>
-                <tr v-if="r.area !== undefined">
-                  <td colspan="2">area {{ fmtSig(r.area, 8) }} · FWHM {{ fmtSig(r.fwhm ?? 0, 6) }}</td>
-                  <td colspan="2" class="r hint"></td>
-                </tr>
               </tbody>
             </table>
-          </div>
+          </details>
         </div>
 
         <div class="sec-label">导出</div>
@@ -193,6 +213,64 @@ defineExpose({ exportParams, exportDataFit, exportReport })
 <style scoped>
 .content {
   padding: 2px 12px 12px;
+}
+/* 2026-10-23 用户要求：逐峰参数默认折叠（<details>），summary 只显示关键量。 */
+.peak-det > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: background-color var(--speed-fast) ease;
+}
+.peak-det > summary::-webkit-details-marker {
+  display: none;
+}
+.peak-det > summary:hover {
+  background: var(--bg-3);
+}
+.phead.peak-sum {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.sum-top {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+.chev {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  color: var(--text-3);
+  transition: transform var(--speed-fast) ease;
+}
+.peak-det[open] .chev {
+  transform: rotate(180deg);
+}
+.sum-nums {
+  padding-left: 19px;
+  font-size: var(--fs-small);
+  color: var(--text-2);
+  line-height: 1.45;
+}
+/* 侧栏仅 330px 且 overflow:auto，默认居中/向上的气泡会被裁剪——
+   标题行气泡贴右向下展开。 */
+.pt-help {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+.panel-title :deep(.help-pop) {
+  left: auto;
+  right: 0;
+  top: calc(100% + 6px);
+  bottom: auto;
+  width: 252px;
+  max-width: 252px;
+  transform: translateY(2px) !important;
+  text-transform: none;
+  letter-spacing: normal;
 }
 .cards {
   display: grid;

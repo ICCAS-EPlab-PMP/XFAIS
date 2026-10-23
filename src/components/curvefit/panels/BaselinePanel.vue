@@ -9,6 +9,7 @@
  */
 import { computed, onBeforeUnmount, watch } from 'vue'
 import AppIcon from '../AppIcon.vue'
+import HelpTip from '../HelpTip.vue'
 import ParamRow from '../ParamRow.vue'
 import { BASELINE_FN_MAP } from '@/lib/pwcore/shared/registry'
 import {
@@ -155,15 +156,23 @@ function fitBaselineOnly(): void {
 
 <template>
   <div class="panel">
-    <div class="panel-title"><AppIcon name="baseline" :size="13" />基线</div>
+    <div class="panel-title">
+      <AppIcon name="baseline" :size="13" />基线
+      <!-- 2026-10-23 用户要求：两条路线的说明改为标题行的 ? 图标。 -->
+      <span class="pt-help">
+        <HelpTip
+          :size="17"
+          text="两条路线二选一：路线 A 在拟合前把基线从数据中扣除（预处理）；路线 B 让参数化基线作为模型的一部分参与联合拟合。"
+        />
+      </span>
+    </div>
     <div class="content">
-      <p class="hint route-note">
-        两条路线二选一：<b>路线 A</b> 在拟合前把基线从数据中扣除（预处理）；
-        <b>路线 B</b> 让参数化基线作为模型的一部分参与联合拟合。
-      </p>
-
       <!-- ============================ route A ============================ -->
-      <div class="sec-label">路线 A：自动拟合 Baseline（预处理扣除）</div>
+      <div class="sec-label route-head">
+        <span class="route-letter">A</span>
+        <span class="route-title">自动拟合 Baseline</span>
+        <span class="route-tag">预处理扣除</span>
+      </div>
 
       <div class="route-card">
         <label class="inline">
@@ -218,11 +227,14 @@ function fitBaselineOnly(): void {
       </div>
 
       <template v-if="bl.active.value">
-        <div class="sec-label">手动点选</div>
+        <div class="sec-label sec-head">
+          手动点选
+          <HelpTip
+            :size="14"
+            text="图上：单击点 = 加入/退出基线；向右拖 = 排除一段；向左拖 = 恢复一段。每次操作立即重新拟合。"
+          />
+        </div>
         <div class="route-card">
-          <p class="hint point-hint">
-            图上：<b>单击点</b> = 加入/退出基线；<b>向右拖</b> = 排除一段；<b>向左拖</b> = 恢复一段。每次操作立即重新拟合。
-          </p>
           <div class="row-btns">
             <button class="btn sm" :disabled="!sp.ready.value" @click="bl.detect()">
               <AppIcon name="baseline" :size="13" />重新自动检测
@@ -253,7 +265,17 @@ function fitBaselineOnly(): void {
       </template>
 
       <!-- ============================ route B ============================ -->
-      <div class="sec-label">路线 B：参与拟合的参数化基线</div>
+      <div class="sec-label sec-head route-head">
+        <span class="route-letter">B</span>
+        <span class="route-title">参与拟合的参数化基线</span>
+        <!-- 2026-10-23 用户要求：预拟合/As-If 说明改为 ? 图标。 -->
+        <span class="pt-help">
+          <HelpTip
+            :size="14"
+            text="预拟合 = 仅拟合基线并打开扣除预览（用于放峰）；正式拟合始终以原始数据 + 基线联合建模（原版 As-If 语义）。"
+          />
+        </span>
+      </div>
 
       <label class="inline">
         <span class="k">函数</span>
@@ -295,7 +317,6 @@ function fitBaselineOnly(): void {
           <AppIcon name="fit" :size="13" />预拟合基线（放峰视图）
         </button>
       </div>
-      <p class="hint">预拟合 = 仅拟合基线并打开扣除预览；正式拟合始终以原始数据 + 基线联合建模（原版 As-If 语义）。</p>
 
       <div class="sec-label">预览</div>
       <label class="checkbox">
@@ -308,9 +329,64 @@ function fitBaselineOnly(): void {
 </template>
 
 <style scoped>
-.route-note {
-  margin: 4px 0 10px;
-  line-height: 1.5;
+/* 2026-10-23 用户要求：路线 A/B 标签加粗加大，一眼可辨。 */
+.route-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 14px;
+}
+.route-letter {
+  flex: none;
+  font-size: 1.15rem;
+  font-weight: 800;
+  line-height: 1;
+  color: var(--accent);
+}
+.route-title {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text-1);
+}
+.route-tag {
+  font-size: var(--fs-small);
+  font-weight: 400;
+  color: var(--text-2);
+}
+/* 2026-10-23 用户要求：区块标题行右侧放 ? 图标。 */
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+.pt-help {
+  display: inline-flex;
+  align-items: center;
+}
+.panel-title .pt-help,
+.sec-head .pt-help {
+  margin-left: auto;
+}
+/* 侧栏仅 330px 且 overflow:auto，默认居中/向上的气泡会被裁剪——
+   标题行气泡贴右向下展开，区块气泡贴右向上展开。 */
+.panel-title :deep(.help-pop) {
+  left: auto;
+  right: 0;
+  top: calc(100% + 6px);
+  bottom: auto;
+  width: 252px;
+  max-width: 252px;
+  transform: translateY(2px) !important;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.sec-head :deep(.help-pop) {
+  left: auto;
+  right: 0;
+  width: 240px;
+  max-width: 240px;
+  transform: translateY(2px) !important;
 }
 .route-card {
   display: flex;
@@ -333,12 +409,6 @@ function fitBaselineOnly(): void {
 .stats b {
   color: var(--text-1);
   font-weight: 600;
-}
-.point-hint {
-  line-height: 1.55;
-}
-.point-hint b {
-  color: var(--text-1);
 }
 .content {
   padding: 2px 12px 12px;

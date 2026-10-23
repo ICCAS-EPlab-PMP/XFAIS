@@ -392,6 +392,18 @@ export function revokeCurves(): void {
   resultVersion.value++
 }
 
+/**
+ * Commit an EXTERNALLY produced FitResult (2026-10-23: viewing a batch-fitted
+ * curve in the workbench) — restores curves / stats / per-peak results for
+ * display WITHOUT an undo entry or toast (the result belongs to the batch,
+ * not to this session's undo history).
+ * 提交外部拟合结果（2026-10-23：在工作台查看某条批量拟合曲线）——恢复曲线/
+ * 统计/逐峰结果供显示，不进撤销栈、不弹 toast。
+ */
+export function applyExternalResult(res: FitResult): void {
+  applyResult(res, null, false)
+}
+
 /** 停止并保留: finish at the current best and resolve normally. */
 export function stopFit(): void {
   if (status.value !== 'running') return
@@ -464,6 +476,7 @@ export function useFit() {
     curves, autoRefit,
     startFit, stopFit, abortFit,
     setRobust, resetFitState,
+    applyExternalResult,
     enabledCount,
     flattenModel,
   }

@@ -470,7 +470,9 @@
               :loading="thumbLoading"
               :sync-with-main="false"
               :columns-per-row="thumbColsPerRow"
+              deletable
               @select="handleThumbSelect"
+              @remove="removeFileAt"
               @prev-page="handleThumbPrevPage"
               @next-page="handleThumbNextPage"
               @jump-to-page="handleThumbJumpToPage"
@@ -1958,6 +1960,45 @@ function handleThumbSelect(index: number): void {
   if (fPath) {
     loadPreview(fPath)
   }
+}
+
+/**
+ * Remove ONE input file (2026-10-22 user request: the thumbnail ✕ button
+ * deletes unneeded files so they no longer take part in display or fiber
+ * integration). Falls back to the clear-all cleanup when the list empties;
+ * otherwise clamps the selection, refreshes the preview when the selected file
+ * was removed, and reloads the current thumbnail page (items carry global
+ * indices). The batch input set changed, so every cached batch result is
+ * invalidated the same way clearAllFiles() does it.
+ * 删除单个输入文件（2026-10-22 用户要求：缩略图 ✕ 删除不需要的文件，不再
+ * 参与展示与积分）。删空时走清空流程；否则收敛选中索引、选中项被删时刷新
+ * 预览，并重载当前页缩略图（条目带全局索引）。批量输入集已变，按
+ * clearAllFiles() 的做法使全部批结果缓存失效。
+ */
+function removeFileAt(index: number): void {
+  if (index < 0 || index >= files.value.length) return
+  files.value.splice(index, 1)
+  if (files.value.length === 0) {
+    clearAllFiles()
+    return
+  }
+  result.value = null
+  batchCachePath.value = null
+  resultSummaries.value = []
+  currentResultIndex.value = 0
+  resultThumbnailItems.value = []
+  resultContrast.value = null
+  roi1dResult.value = null
+  const wasSelected = selectedPreviewIndex.value === index
+  if (selectedPreviewIndex.value >= files.value.length) {
+    selectedPreviewIndex.value = files.value.length - 1
+  }
+  if (wasSelected) {
+    const path = files.value[selectedPreviewIndex.value]
+    if (path) loadPreview(path)
+  }
+  thumbCurrentPage.value = Math.min(thumbCurrentPage.value, thumbTotalPages.value)
+  void loadThumbnailPage()
 }
 
 function handleThumbPrevPage(): void {

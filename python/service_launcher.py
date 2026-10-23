@@ -4666,6 +4666,11 @@ async def _handle_bg_subtract_batch(
     total = len(files)
     success_count = 0
     failed_files: list[str] = []
+    # Absolute paths of successfully exported files — the web frontend feeds
+    # these to /api/download so browser users get their results back.
+    # 成功导出文件的绝对路径列表——web 前端将其交给 /api/download，让浏览器
+    # 用户能取回结果（浏览器无法浏览服务器目录）。
+    output_files: list[str] = []
     start_time = time.time()
 
     for i, fpath in enumerate(files):
@@ -4676,6 +4681,7 @@ async def _handle_bg_subtract_batch(
                 "success_count": success_count,
                 "failed_count": len(failed_files),
                 "failed_files": failed_files,
+                "output_files": output_files,
                 "output_dir": output_dir,
                 "elapsed": round(time.time() - start_time, 2),
             }
@@ -4736,6 +4742,7 @@ async def _handle_bg_subtract_batch(
                         hf.create_dataset("data", data=data, compression="gzip")
 
                 await _run_blocking(_save_h5, out_path, result)
+            output_files.append(out_path)
             success_count += 1
 
         except Exception as exc:
@@ -4750,6 +4757,7 @@ async def _handle_bg_subtract_batch(
         "success_count": success_count,
         "failed_count": len(failed_files),
         "failed_files": failed_files,
+        "output_files": output_files,
         "output_dir": output_dir,
         "elapsed": round(elapsed, 2),
     }
@@ -4779,8 +4787,18 @@ async def _handle_bg_subtract_preview(
     payload: dict[str, Any],
     send_progress: Callable[[float, str], Awaitable[None]],
     cancel_event: asyncio.Event,
+    do_subtract: bool = False,
 ) -> dict[str, Any]:
-    """Preview an image file (sample / background / result). 预览图像文件。"""
+    """Preview an image file (sample / background / result). 预览图像文件。
+
+    With ``do_subtract=True`` (the ``preview_result`` action) the sample is
+    actually background-subtracted before rendering, honoring ``bg_path``
+    and ``transmission`` from the payload; without a loadable background it
+    falls back to rendering the raw sample.
+    ``do_subtract=True``（``preview_result`` 动作）时先真实扣除背景再渲染，
+    使用载荷中的 ``bg_path`` 与 ``transmission``；背景不可加载时回退渲染
+    原始样品图。
+    """
     # Accept multiple param names for compatibility / 兼容多种参数名
     file_path = (
         payload.get("file_path")
@@ -4807,6 +4825,34 @@ async def _handle_bg_subtract_preview(
 
     if cancel_event.is_set():
         return {"status": "cancelled", "message": "Cancelled by user"}
+
+    if do_subtract:
+        # preview_result: subtract before rendering; fall back to the raw
+        # sample when no usable background is available. / preview_result：
+        # 先扣除再渲染；背景不可用时回退原始样品图。
+        bg_path_prev = payload.get("bg_path") or ""
+        if bg_path_prev and os.path.isfile(bg_path_prev):
+            await send_progress(0.4, "Subtracting background...")
+            bg_result = await _run_blocking(ImageLoader.load, bg_path_prev)
+            if isinstance(bg_result, tuple):
+                bg_data = bg_result[0]
+            elif isinstance(bg_result, dict):
+                bg_data = bg_result.get("data")
+            else:
+                bg_data = bg_result
+            if bg_data is not None:
+                try:
+                    transmission = float(payload.get("transmission", 1.0))
+                except (TypeError, ValueError):
+                    transmission = 1.0
+                if transmission <= 0:
+                    transmission = 1.0
+                data = await _run_blocking(
+                    BgSubtractor.subtract_with_reference,
+                    data, bg_data, transmission,
+                )
+        if cancel_event.is_set():
+            return {"status": "cancelled", "message": "Cancelled by user"}
 
     await send_progress(0.6, "Rendering preview...")
     stats = ImageRenderer.compute_stats(data)
@@ -4863,7 +4909,16 @@ async def handle_bg_subtract(
 
     if action == "subtract":
         return await _handle_bg_subtract_single(payload, send_progress, cancel_event)
-    elif action in ("preview_result", "preview_sample", "preview_background"):
+    elif action == "preview_result":
+        # Result preview must render the SUBTRACTED image, not the raw sample
+        # (legacy behaviour rendered the sample untouched, which masked the
+        # missing export and showed the wrong panel). / 结果预览必须渲染扣除
+        # 后的图像，而非原图（旧行为原样渲染样品图，既掩盖了不导出缺陷，
+        # 面板显示也是错的）。
+        return await _handle_bg_subtract_preview(
+            payload, send_progress, cancel_event, do_subtract=True,
+        )
+    elif action in ("preview_sample", "preview_background"):
         return await _handle_bg_subtract_preview(payload, send_progress, cancel_event)
     elif action == "ionchamber_match":
         return await _handle_bg_ionchamber_match(payload, send_progress, cancel_event)

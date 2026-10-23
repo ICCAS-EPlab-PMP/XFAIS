@@ -6,6 +6,7 @@
  */
 import { computed, ref } from 'vue'
 import AppIcon from '../AppIcon.vue'
+import HelpTip from '../HelpTip.vue'
 import ParamRow from '../ParamRow.vue'
 import type { PeakFnId } from '@/lib/pwcore/shared/registry'
 import { PEAK_FN_MAP } from '@/lib/pwcore/shared/registry'
@@ -182,7 +183,16 @@ function onParam(key: string, v: number): void {
 
 <template>
   <div class="panel">
-    <div class="panel-title"><AppIcon name="peak" :size="13" />放峰 · 自动拟合</div>
+    <div class="panel-title">
+      <AppIcon name="peak" :size="13" />放峰 · 自动拟合
+      <!-- 2026-10-23 用户要求：放峰/锚点的操作说明改为标题行的 ? 图标。 -->
+      <span class="pt-help">
+        <HelpTip
+          :size="17"
+          text="手动：图上左键单击任意位置放峰（数据峰正上方也可以）。每个峰 3–4 个锚点：主锚（峰位/幅值）、左右半高锚（宽度；不对称峰左右独立）、25% 形状锚（4 参数峰）。单击主锚开/关；右键主锚打开峰调整；Alt+左键点数据点 = 排除该点。"
+        />
+      </span>
+    </div>
     <div class="content">
       <div class="autofit-card">
         <div class="sec-label">一键 自动拟合（放峰 + 拟合）</div>
@@ -218,13 +228,6 @@ function onParam(key: string, v: number): void {
         <p class="hint">放置后立即可在图上拖锚点微调 —— 拟合会自动跟随每次调整（Adjust Fit）。</p>
       </div>
 
-      <p class="hint body">
-        手动：图上<b>左键单击任意位置</b>放峰（数据峰正上方也可以）。每个峰 3–4 个锚点：
-        <b>主锚</b>（峰位/幅值）、<b>左右半高锚</b>（宽度；不对称峰左右独立）、
-        <b>25% 形状锚</b>（4 参数峰）。单击主锚开/关；右键主锚 峰调整；
-        <b>Alt+左键</b>点数据点 = 排除该点。
-      </p>
-
       <div class="sec-label">峰列表（{{ pk.list.value.length }}）</div>
       <div v-if="rows.length === 0" class="hint none">尚未放峰 —— 切到图上点击即可创建第一个峰。</div>
       <div class="cards">
@@ -257,12 +260,10 @@ function onParam(key: string, v: number): void {
           </button>
         </div>
       </div>
-      <p v-if="rows.length > 0" class="hint tip">
-        单击峰卡片选中后，可直接在下方编辑参数；锁定项不进入拟合参数向量。
-      </p>
-
-      <div v-if="selectedPeak && selectedMeta" class="sec-label">
+      <!-- 2026-10-23 用户要求：选峰/锁定的说明改为区块标题行的 ? 图标。 -->
+      <div v-if="selectedPeak && selectedMeta" class="sec-label sec-head">
         参数 · #{{ selectedIndex }} {{ selectedMeta.name }}
+        <HelpTip :size="14" text="单击峰卡片选中后，可直接在下方编辑参数；锁定项不进入拟合参数向量。" />
       </div>
       <div v-if="selectedPeak && selectedMeta" class="param-editor">
         <ParamRow
@@ -366,13 +367,40 @@ function onParam(key: string, v: number): void {
   flex: 1;
   min-width: 0;
 }
-.hint b {
-  color: var(--text-1);
+/* 2026-10-23 用户要求：区块标题行右侧放 ? 图标。 */
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
 }
-/* Body-level explanation (placement / Alt+click exclusion): --text-3 is only
-   ~2.6:1 on the white panel, so the main how-to paragraph uses --text-2. */
-.hint.body {
-  color: var(--text-2);
+.pt-help {
+  display: inline-flex;
+  align-items: center;
+}
+.panel-title .pt-help,
+.sec-head .pt-help {
+  margin-left: auto;
+}
+/* 侧栏仅 330px 且 overflow:auto，默认居中/向上的气泡会被裁剪——
+   标题行气泡贴右向下展开，区块气泡贴右向上展开。 */
+.panel-title :deep(.help-pop) {
+  left: auto;
+  right: 0;
+  top: calc(100% + 6px);
+  bottom: auto;
+  width: 252px;
+  max-width: 252px;
+  transform: translateY(2px) !important;
+  text-transform: none;
+  letter-spacing: normal;
+}
+.sec-head :deep(.help-pop) {
+  left: auto;
+  right: 0;
+  width: 240px;
+  max-width: 240px;
+  transform: translateY(2px) !important;
 }
 .none {
   padding: 6px 0;
@@ -457,9 +485,6 @@ function onParam(key: string, v: number): void {
 }
 .tool.danger:hover {
   color: var(--danger);
-}
-.tip {
-  margin-top: 8px;
 }
 .locks {
   margin-top: 8px;

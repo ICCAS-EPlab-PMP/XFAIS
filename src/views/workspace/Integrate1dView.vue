@@ -233,7 +233,9 @@
               :loading="thumbLoading"
               :sync-with-main="false"
               :columns-per-row="thumbColsPerRow"
+              deletable
               @select="handleThumbSelect"
+              @remove="removeFileAt"
               @prev-page="handleThumbPrevPage"
               @next-page="handleThumbNextPage"
               @jump-to-page="handleThumbJumpToPage"
@@ -1026,6 +1028,37 @@ function handleThumbSelect(index: number): void {
     h5Selection.value = { dataset: '', channel: 0, frame: 0 }
     loadPreview(filePath)
   }
+}
+
+/**
+ * Remove ONE imported file (2026-10-22 user request: the thumbnail ✕ button —
+ * unneeded images must no longer take part in display / integration). Falls
+ * back to the clear-all cleanup when the list empties; otherwise clamps the
+ * selection, refreshes the preview when the selected file was removed, and
+ * reloads the current thumbnail page (items carry global indices).
+ * 删除单个已导入文件（2026-10-22 用户要求：缩略图 ✕ 按钮——不需要的图像
+ * 不再参与展示与积分）。删空时走清空流程；否则收敛选中索引、选中项被删时
+ * 刷新预览，并重载当前页缩略图（条目带全局索引）。
+ */
+function removeFileAt(index: number): void {
+  if (index < 0 || index >= files.value.length) return
+  files.value.splice(index, 1)
+  if (files.value.length === 0) {
+    clearAllFiles()
+    return
+  }
+  const wasSelected = selectedPreviewIndex.value === index
+  if (selectedPreviewIndex.value >= files.value.length) {
+    selectedPreviewIndex.value = files.value.length - 1
+  }
+  if (wasSelected) {
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+    const path = files.value[selectedPreviewIndex.value]
+    if (path) loadPreview(path)
+  }
+  thumbCurrentPage.value = Math.min(thumbCurrentPage.value, thumbTotalPages.value)
+  void loadThumbnailPage()
 }
 
 function handleThumbPrevPage(): void {

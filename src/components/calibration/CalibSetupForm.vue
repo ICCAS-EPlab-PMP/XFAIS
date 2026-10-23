@@ -175,8 +175,11 @@
         class="csf-select"
         @change="patch({ detector: ($event.target as HTMLSelectElement).value })"
       >
-        <!-- Empty option = manual pixel size (field below) / 空选项 = 手动像素尺寸（下方输入） -->
-        <option value="">{{ t('calibration.setup.pixelSize') }}</option>
+        <!-- Empty option = manual pixel size (field below). Its own label —
+             NOT the pixelSize key, which read as a duplicate of the field
+             label below (2026-10-22 visual review). / 空选项 = 手动像素尺寸
+             （下方输入）。用专用文案，不再复用 pixelSize 键造成视觉重复。 -->
+        <option value="">{{ t('calibration.setup.noDetectorManual') }}</option>
         <option v-for="name in detectorOptions" :key="name" :value="name">{{ name }}</option>
       </select>
       <p v-if="probing" class="csf-hint">{{ t('calibration.setup.loading') }}</p>
@@ -185,7 +188,9 @@
 
     <!-- Pixel size in µm (only when no detector name) / 像素尺寸 µm（无探测器时显示） -->
     <div v-show="!hasDetector" class="csf-field">
-      <label class="csf-label">{{ t('calibration.setup.pixelSize') }} (µm)</label>
+      <!-- Unit "(µm)" already lives in the i18n label — do not append it again
+           (2026-10-22 visual review: it rendered as「像素尺寸 (µm) (µm)」). -->
+      <label class="csf-label">{{ t('calibration.setup.pixelSize') }}</label>
       <NumberField
         :model-value="model.pixelSizeUm"
         class="csf-input"

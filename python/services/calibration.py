@@ -809,9 +809,12 @@ async def _action_detect_peaks(
     await _progress(send_progress, 0.0, "Detecting peaks / 正在自动寻峰")
     _check_cancel(cancel_event)
 
-    sensitivity = _as_float(payload.get("sensitivity"), 0.5)
+    # Default 0.2 since 2026-10-22 (user report: 0.5 made massif peak
+    # recognition too wide; the advanced UI area is now expanded by default).
+    # 默认 0.2（2026-10-22 用户反馈 0.5 下峰识别过宽；高级区已默认展开）。
+    sensitivity = _as_float(payload.get("sensitivity"), 0.2)
     if sensitivity is None:
-        sensitivity = 0.5
+        sensitivity = 0.2
     sensitivity = min(max(sensitivity, 0.0), 1.0)
 
     def _massif_pick(session: Dict[str, Any], beyond_mask: bool, cutoff: float,
@@ -2137,11 +2140,18 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
         positions never block extraction. 收整环且禁用掩码（越过掩码值提取，
         Ring 工具）。
     Threshold is calib2's adaptive rule (RingExtractor._extract): band
-    mean+std, relaxed to band mean when fewer than ``_RING_PICK_MIN_PIXELS``
-    candidates survive — replacing the old global ``0.2·max`` cutoff that
-    silently starved faint rings (harvest zero → the STEP 1 empty-push bug).
-    阈值采用 calib2 的自适应规则（环带 mean+std，候选不足时放宽到 mean），
-    取代原先一刀切的全局 0.2·max 截断（弱环收空 → 触发 STEP 1 空推送缺陷）。
+    mean+std, relaxed toward the band mean when fewer than
+    ``_RING_PICK_MIN_PIXELS`` candidates survive — replacing the old global
+    ``0.2·max`` cutoff that silently starved faint rings (harvest zero → the
+    STEP 1 empty-push bug). Since 2026-10-23 the **sensitivity slider drives
+    this rule too** (it previously only affected the full-image auto-detect,
+    so tuning it during ring picking did nothing — user feedback): the std
+    term is scaled by k = 1.6·(1 − sensitivity), relaxed in two steps
+    (k → k/2 → 0) when candidates starve.
+    阈值采用 calib2 的自适应规则（环带 mean+std，候选不足时分级放宽到
+    mean）。2026-10-23 起**灵敏度滑杆同样作用于环带收峰**（此前它只影响
+    全图自动拾取，环选时调灵敏度毫无效果——用户反馈）：std 项按
+    k = 1.6·(1 − 灵敏度) 缩放，候选不足时两级放宽（k → k/2 → 0）。
 
     Internal-standard sessions are deliberately NOT refused here: the harvest
     needs no calibrant, the internal-standard wizard uses ring_standard instead
@@ -2161,6 +2171,13 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
         return _err("Ring picking needs at least 3 points on the ring", "环选需要环上至少 3 个点")
     tol = _as_float(payload.get("tolPx"), 15.0) or 15.0
     keep = int(_as_float(payload.get("keep"), float(_RING_PICK_KEEP)) or _RING_PICK_KEEP)
+    # The sensitivity slider now drives the band threshold (2026-10-23 user
+    # feedback: "环带收峰不受灵敏度影响/效果差"). / 灵敏度接入环带阈值。
+    sensitivity = _as_float(payload.get("sensitivity"), 0.2)
+    if sensitivity is None:
+        sensitivity = 0.2
+    sensitivity = min(max(sensitivity, 0.0), 1.0)
+    k_thr = 1.6 * (1.0 - sensitivity)
     mode = str(payload.get("extractMode") or "")
     if not mode:
         mode = "beyond_mask" if payload.get("beyondMask") else "contiguous"
@@ -2192,13 +2209,18 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
         pick_mask = None if beyond else _massif_mask(session, False)
         valid_band = band if pick_mask is None else (band & ~pick_mask)
 
-        # calib2-style adaptive cutoff from the band's own statistics.
-        # 基于环带自身统计的 calib2 式自适应阈值。
+        # calib2-style adaptive cutoff from the band's own statistics, with the
+        # sensitivity-scaled std term and a TWO-step relaxation (k → k/2 → 0)
+        # when candidates starve. / 基于环带统计的自适应阈值；std 项按灵敏度
+        # 缩放，候选不足时两级放宽。
         sub = data[valid_band]
         mean = float(np.nanmean(sub))
         std = float(np.nanstd(sub))
-        upper = mean + std
+        upper = mean + k_thr * std
         area = valid_band & (data > upper)
+        if int(area.sum()) < _RING_PICK_MIN_PIXELS:
+            upper = mean + 0.5 * k_thr * std
+            area = valid_band & (data > upper)
         if int(area.sum()) < _RING_PICK_MIN_PIXELS:
             upper = mean
             area = valid_band & (data > upper)

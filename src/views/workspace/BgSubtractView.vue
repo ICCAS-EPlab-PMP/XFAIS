@@ -291,6 +291,13 @@
         <!-- Export settings / 导出设置 -->
         <div class="bgs-card">
           <h3 class="bgs-card-title">{{ t('bgSubtract.export') }}</h3>
+          <!-- Web mode cannot pick a server-side folder; results download
+               automatically instead — say so, or the dead dir picker reads
+               as broken. / web 模式无法选择服务器目录，结果改为自动下载
+               ——必须说明，否则点不动的目录按钮像坏了。 -->
+          <div v-if="!transport.isDesktop()" class="bgs-match-warning">
+            {{ t('bgSubtract.webExportNote') }}
+          </div>
           <FileDialogButton
             v-model="outputDir"
             mode="openFolder"
@@ -541,6 +548,8 @@ interface BatchResult {
   success_count: number
   failed_count: number
   failed_files: string[]
+  /** Absolute paths of exported files (web mode downloads these). */
+  output_files?: string[]
   output_dir: string
   elapsed: number
 }
@@ -660,10 +669,19 @@ const currentSamplePaths = computed(() => {
 
 const canSubtract = computed(() => {
   if (state.value === 'running') return false
-  if (mode.value === 'single') {
-    return samplePaths.value.length > 0 && !!bgPath.value
-  }
-  return batchFolderFiles.value.length > 0 && !!bgPath.value && !!outputDir.value
+  // Desktop requires an explicit output dir in BOTH modes: single-file runs
+  // must also land on disk (the legacy single path computed a preview but
+  // never saved — user report 2026-10-23 "subtracted but nothing exported").
+  // Web mode has NO folder picker (browsers cannot browse the server), so
+  // single mode there must not require one: results are saved next to the
+  // uploaded samples and auto-downloaded via /api/download.
+  // 桌面模式两种方式都要求显式输出目录：单文件执行同样要落盘（旧单文件
+  // 路径只算不存，2026-10-23 用户报告"发生了扣除但不导出"的根因）。
+  // web 模式没有目录选择器（浏览器无法浏览服务器目录），单文件模式不
+  // 要求输出目录：结果保存到样品上传目录旁并经 /api/download 自动下载。
+  const requireOutDir = transport.isDesktop() || mode.value === 'batch'
+  return currentSamplePaths.value.length > 0 && !!bgPath.value
+    && (!requireOutDir || !!outputDir.value)
 })
 
 // Publish progress to the workspace-state bridge for the AI guided tour
@@ -1188,17 +1206,23 @@ async function handleSubtract(): Promise<void> {
 
   const params: Record<string, unknown> = mode.value === 'single'
     ? {
-        action: samplePaths.value.length > 1 ? 'batch' : 'subtract',
-        sample_path: samplePaths.value.length === 1 ? samplePaths.value[0] : undefined,
+        // All single-mode runs (1 file or many) go through the batch action:
+        // it is the only path that saves "_subtracted" files to disk. The
+        // legacy 'subtract' action computed a preview and never exported —
+        // fixed after the 2026-10-23 user report "subtracted but not
+        // exported". / 单文件模式（无论选几张）统一走 batch 动作：只有
+        // 它会把 "_subtracted" 结果落盘。旧 'subtract' 动作只算预览从不
+        // 导出——2026-10-23 用户报告"发生了扣除但不导出"后修复。
+        action: 'batch',
         // IMPORTANT: spread into a plain array — passing the reactive Proxy
         // directly makes Electron's structured-clone IPC throw
         // "An object could not be cloned." Matches Integrate1dView convention.
         // 重要：展开为普通数组——直接传响应式 Proxy 会导致 Electron 结构化克隆
         // IPC 抛出 "An object could not be cloned."，与 Integrate1dView 保持一致。
-        data_files: samplePaths.value.length > 1 ? [...samplePaths.value] : undefined,
+        data_files: [...samplePaths.value],
         bg_path: bgPath.value,
-        output_dir: samplePaths.value.length > 1 ? outputDir.value : undefined,
-        output_format: samplePaths.value.length > 1 ? outputFormat.value : undefined,
+        output_dir: outputDir.value,
+        output_format: outputFormat.value,
         ionchamber_folder: transmissionSource.value === 'ionchamber'
           ? ionchamberFolder.value ?? undefined
           : undefined,
@@ -1275,26 +1299,47 @@ async function handleSubtract(): Promise<void> {
     })
 
     cleanupResult = transport.onTaskResult(response.taskId, (payload) => {
-      const isBatch = mode.value === 'batch' || samplePaths.value.length > 1
-      if (isBatch) {
-        const data = payload.data as BatchResult
-        batchResult.value = data
-        toast.push({
-          title: t('bgSubtract.successTitle'),
-          message: t('bgSubtract.batchComplete', {
+      // Every run goes through the batch action now, so the result is always
+      // a BatchResult. 现在所有执行都走 batch 动作，结果恒为 BatchResult。
+      const data = payload.data as BatchResult
+      batchResult.value = data
+      // Refresh the result panel after every run — preview_result now
+      // renders the actual subtracted image instead of the raw sample.
+      // 每次执行后刷新结果面板——preview_result 现在渲染真实扣除结果，
+      // 而非原始样品图。
+      loadResultPanel()
+      generateThumbnails()
+      const summaryText = mode.value === 'single' && samplePaths.value.length === 1
+        ? t('bgSubtract.subtractComplete')
+        : t('bgSubtract.batchComplete', {
             success: data.success_count,
             failed: data.failed_count,
-          }),
-          tone: 'success',
-        })
-      } else {
-        loadResultPanel()
-        generateThumbnails()
-        toast.push({
-          title: t('bgSubtract.successTitle'),
-          message: t('bgSubtract.subtractComplete'),
-          tone: 'success',
-        })
+          })
+      toast.push({
+        title: t('bgSubtract.successTitle'),
+        // Always tell the user WHERE files went — a bare "done" toast with
+        // no files in the expected place reads as a silent failure
+        // (2026-10-23 report). / 始终告知导出去向——只说"完成"而目录里
+        // 没文件，用户会当成静默失败。
+        message: !transport.isDesktop() && (data.output_files?.length ?? 0) > 0
+          ? t('bgSubtract.exportedDownload', { count: data.output_files!.length })
+          : `${summaryText} → ${data.output_dir ?? ''}`,
+        tone: 'success',
+      })
+      // Web mode: fetch the exported files back through /api/download —
+      // the browser cannot browse the server-side output location.
+      // web 模式：经 /api/download 取回导出文件——浏览器无法浏览服务器
+      // 侧的输出位置（桌面模式用户直接去输出目录拿）。
+      if (!transport.isDesktop() && data.output_files?.length) {
+        for (const serverPath of data.output_files) {
+          transport.downloadFile(serverPath, extractFileName(serverPath)).catch(() => {
+            toast.push({
+              title: t('bgSubtract.errorTitle'),
+              message: `${extractFileName(serverPath)}: download failed`,
+              tone: 'error',
+            })
+          })
+        }
       }
       taskId.value = null
       state.value = 'done'

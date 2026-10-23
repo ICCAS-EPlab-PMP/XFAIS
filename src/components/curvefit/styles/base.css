@@ -229,6 +229,10 @@
 }
 :is(.cf-wb, .backdrop, .pop) .checkbox input:checked + .box svg {
   opacity: 1;
+  /* 2026-10-23 visual review: the check glyph inherits .checkbox's --text-2
+     and was nearly invisible on the accent fill (1.3:1). White check. /
+     勾号原先继承 --text-2，在蓝底上几乎不可见；改为白色。 */
+  color: #fff;
 }
 
 /* Segmented control */

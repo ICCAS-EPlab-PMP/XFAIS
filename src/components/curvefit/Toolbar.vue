@@ -8,6 +8,7 @@ import AppIcon from './AppIcon.vue'
 import Dropdown, { type MenuItem } from './Dropdown.vue'
 import SmoothDialog from './SmoothDialog.vue'
 import DetectDialog from './DetectDialog.vue'
+import BatchDialog from './BatchDialog.vue'
 import type { SmoothMethod } from '@/lib/pwcore/shared/types'
 import { platform } from '@/lib/curvefit/platform/platform'
 import { useSpectrum } from '@/lib/curvefit/stores/spectrum'
@@ -16,8 +17,9 @@ import { usePeaks } from '@/lib/curvefit/stores/peaks'
 import { canRedo, canUndo, redo, undo } from '@/lib/curvefit/stores/undo'
 import { pushToast } from '@/lib/curvefit/stores/toast'
 import { useUi } from '@/lib/curvefit/stores/ui'
-import { DEMO_LABELS, importFromPlatform, loadDemoSet } from '@/lib/curvefit/stores/session'
-import { buildDataFitCsv, buildPeakParamsCsv, buildReportTxt, saveTextFile } from '@/lib/curvefit/utils/exporters'
+import { DEMO_LABELS, loadDemoSet } from '@/lib/curvefit/stores/session'
+import { importMultiple } from '@/lib/curvefit/stores/batch'
+import { buildDataFitCsv, buildFitCurveCsv, buildPeakParamsCsv, buildReportTxt, saveTextFile } from '@/lib/curvefit/utils/exporters'
 
 const sp = useSpectrum()
 const fit = useFit()
@@ -28,6 +30,8 @@ const fitRunning = computed(() => fit.status.value === 'running')
 
 const smoothMethod = ref<SmoothMethod | null>(null)
 const detectMethod = ref<'residual' | 'deriv2' | null>(null)
+/** 批量拟合对话框（v0.3.4）：以当前峰模型为模板逐条拟合其余曲线。 */
+const batchOpen = ref(false)
 
 const demoItems: MenuItem[] = DEMO_LABELS.map((d) => ({ id: d.id, label: d.label }))
 
@@ -44,7 +48,8 @@ const detectItems: MenuItem[] = [
 
 const exportItems: MenuItem[] = [
   { id: 'params', label: '参数 CSV', icon: 'export' },
-  { id: 'datafit', label: '数据+拟合 CSV', icon: 'export' },
+  { id: 'datafit', label: '数据+拟合 CSV（含逐峰分量）', icon: 'export' },
+  { id: 'fitcurve', label: '拟合曲线 CSV（密采样）', icon: 'export' },
   { id: 'png', label: '图表 PNG', icon: 'chart' },
   { id: 'report', label: '报告 TXT', icon: 'file' },
 ]
@@ -79,7 +84,22 @@ async function onExport(id: string): Promise<void> {
       return
     }
     await saveTextFile('pw_data_fit.csv', buildDataFitCsv())
-    pushToast('success', '数据+拟合 CSV 已导出')
+    pushToast(
+      fit.curves.value ? 'success' : 'warn',
+      fit.curves.value ? '数据+拟合 CSV 已导出（含逐峰分量列）' : '已导出数据列（尚未拟合：fit/分量列为空）',
+    )
+  } else if (id === 'fitcurve') {
+    if (!sp.ready.value) {
+      pushToast('warn', '没有数据')
+      return
+    }
+    const csv = buildFitCurveCsv()
+    if (!csv) {
+      pushToast('warn', '尚无模型曲线可导出：请先放峰或启用基线')
+      return
+    }
+    await saveTextFile('pw_fit_curve.csv', csv)
+    pushToast('success', '拟合曲线 CSV 已导出（基线 + 逐分量 + 总曲线，密采样）')
   } else if (id === 'report') {
     await saveTextFile('pw_report.txt', buildReportTxt())
     pushToast('success', '报告 TXT 已导出')
@@ -112,7 +132,11 @@ function onRedo(): void {
 
 <template>
   <div class="toolbar">
-    <button class="btn" title="导入 PRN / CSV / TXT 数据" @click="importFromPlatform">
+    <button
+      class="btn"
+      title="导入 PRN / CSV / TXT 数据（可多选：多条自动进入批量模式，底部曲线条切换）"
+      @click="importMultiple"
+    >
       <AppIcon name="import" :size="15" />导入数据
     </button>
     <Dropdown label="示例数据" :items="demoItems" @select="loadDemoSet" />
@@ -121,6 +145,15 @@ function onRedo(): void {
 
     <Dropdown label="平滑" :items="smoothItems" :disabled="!sp.ready.value" @select="onSmooth" />
     <Dropdown label="自动寻峰" :items="detectItems" :disabled="!sp.ready.value" @select="onDetect" />
+    <button
+      class="btn"
+      :disabled="!sp.ready.value"
+      title="以当前峰模型为模板，批量拟合其余导入的曲线（峰位小幅移动、背景与数据窗口同当前）"
+      data-ai-id="curvefit:batch-open"
+      @click="batchOpen = true"
+    >
+      <AppIcon name="data" :size="14" />批量拟合
+    </button>
 
     <span class="vsep" />
 
@@ -150,6 +183,7 @@ function onRedo(): void {
 
     <SmoothDialog v-if="smoothMethod" :method="smoothMethod" @close="smoothMethod = null" />
     <DetectDialog v-if="detectMethod" :method="detectMethod" @close="detectMethod = null" />
+    <BatchDialog v-if="batchOpen" @close="batchOpen = false" />
   </div>
 </template>
 

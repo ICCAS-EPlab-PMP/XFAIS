@@ -1,33 +1,26 @@
 <script setup lang="ts">
-/** 数据页：文件信息、点数、范围、权重、排除点管理、显示偏好。 */
-import { computed, ref } from 'vue'
+/** 数据页：导入入口、文件信息、点数、范围、权重、排除点管理、显示偏好。
+ *  2026-10-23：粘贴框按用户要求移除（统一走「导入数据」多选导入）。 */
+import { computed } from 'vue'
 import AppIcon from '../AppIcon.vue'
+import HelpTip from '../HelpTip.vue'
 import { useSpectrum } from '@/lib/curvefit/stores/spectrum'
 import { useUi } from '@/lib/curvefit/stores/ui'
 import { useFit } from '@/lib/curvefit/stores/fit'
+import { useBatch } from '@/lib/curvefit/stores/batch'
 import { pushCommand } from '@/lib/curvefit/stores/undo'
 import { pushToast } from '@/lib/curvefit/stores/toast'
-import { importFromText } from '@/lib/curvefit/stores/session'
 import { fmtSig } from '@/lib/curvefit/utils/format'
 
 const sp = useSpectrum()
 const ui = useUi()
 const fit = useFit()
+const batch = useBatch()
 
 const xRange = computed(() => (sp.ready.value ? `${fmtSig(sp.meta.xMin, 6)} … ${fmtSig(sp.meta.xMax, 6)}` : '—'))
 const yRange = computed(() => (sp.ready.value ? `${fmtSig(sp.meta.yMin, 6)} … ${fmtSig(sp.meta.yMax, 6)}` : '—'))
 
-// -- paste intake -----------------------------------------------------------
-const pasteText = ref('')
-
-function onParse(): void {
-  const text = pasteText.value.trim()
-  if (!text) return
-  const before = sp.dataVersion.value
-  importFromText(text)
-  // A successful import bumps dataVersion; keep the text on parse failure.
-  if (sp.dataVersion.value !== before) pasteText.value = ''
-}
+const queueCount = computed(() => batch.entries.value.length)
 
 function restoreAll(): void {
   const m = sp.mask.value
@@ -49,23 +42,21 @@ function restoreAll(): void {
 
 <template>
   <div class="panel">
-    <div class="panel-title"><AppIcon name="data" :size="13" />数据</div>
+    <div class="panel-title">
+      <AppIcon name="data" :size="13" />数据
+      <HelpTip
+        :size="17"
+        text="流程：导入数据（可多选，多条进入批量模式）→ 基线 → 放峰 → 拟合 → 报告。可直接导入 X-FAIS 积分结果：CSV/TXT 多曲线表会按强度列自动拆成多条曲线（首条作参考、其余进批量队列），.xy 按空行分段成多条。多条曲线时：底部曲线条点击切换参考曲线；工具栏「批量拟合」以当前曲线为模板逐条拟合，完成后点曲线条即可查看每条的拟合效果。"
+      />
+    </div>
     <div class="content">
-      <div class="sec-label">粘贴数据</div>
-      <div class="paste">
-        <textarea
-          v-model="pasteText"
-          class="field paste-area"
-          rows="4"
-          spellcheck="false"
-          placeholder="每行两个数 x y，逗号/空格/制表符分隔"
-        />
-        <div class="row-btns">
-          <button class="btn sm" :disabled="!pasteText.trim()" @click="onParse">
-            <AppIcon name="data" :size="13" />解析
-          </button>
-        </div>
-      </div>
+      <!-- 2026-10-23：粘贴录入移除，统一走多选导入。 -->
+      <button class="btn primary import-btn" @click="batch.importMultiple()">
+        <AppIcon name="import" :size="13" />导入数据（可多选）
+      </button>
+      <p v-if="queueCount > 0" class="batch-hint">
+        批量模式：队列 {{ queueCount }} 条 — 底部曲线条点击切换；工具栏「批量拟合」运行
+      </p>
 
       <div class="kv"><span class="k">名称</span><span class="v" :title="sp.meta.title">{{ sp.meta.title || '—' }}</span></div>
       <div class="kv"><span class="k">来源</span><span class="v">{{ sp.meta.source || '—' }}</span></div>
@@ -123,6 +114,22 @@ function restoreAll(): void {
   justify-content: flex-end;
   margin-top: 8px;
 }
+/* Import entry + batch-mode hint (2026-10-23: paste intake removed). /
+ * 导入入口 + 批量模式提示。 */
+.import-btn {
+  width: 100%;
+  justify-content: center;
+}
+.batch-hint {
+  margin: 0 0 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  font-size: var(--fs-small);
+  color: var(--text-1);
+  line-height: 1.5;
+}
 /* Exclusion gate notice: warning-tinted card with the one-click restore. /
    排除点门禁提示：警示色卡片 + 一键恢复按钮。 */
 .excl-notice {
@@ -150,20 +157,5 @@ function restoreAll(): void {
 }
 .checkbox {
   margin: 2px 0;
-}
-.paste {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.paste .paste-area {
-  width: 100%;
-  height: auto;
-  min-height: 76px;
-  padding: 6px 8px;
-  font-family: var(--mono);
-  font-size: 11px;
-  line-height: 1.45;
-  resize: vertical;
 }
 </style>

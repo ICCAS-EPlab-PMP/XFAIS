@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.3'
+      version: 'v0.3.4'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.3.3',
+      kicker: '桌面集成版 v0.3.4',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -532,6 +532,7 @@ export const messages = {
       outputFolderPlaceholder: '（在 PNG 生成器中指定）',
       thumbnailsPerRow: '每行缩略图',
       noThumbnails: '无缩略图数据',
+      removeFileFromList: '删除该文件：不再参与展示与积分等处理',
       loadingImage: '加载图像中…',
       statsTitle: '统计 / Stats',
       statMin: '最小值',
@@ -994,6 +995,8 @@ export const messages = {
       successTitle: '成功',
       batchComplete: '批处理完成',
       subtractComplete: '扣除完成',
+      exportedDownload: '已导出 {count} 个文件，已开始下载',
+      webExportNote: '浏览器模式：无需选择输出目录，扣除结果将自动下载到本机。',
       matchThreshold: '匹配阈值',
       matchRegex: '正则表达式',
       matchRegexHint: '可选：用于过滤文件名',
@@ -1473,6 +1476,7 @@ export const messages = {
       calibrantName: '内置标样',
       detector: '探测器（pyFAI 名称，可选）',
       pixelSize: '像素尺寸 (µm)',
+      noDetectorManual: '无（手动输入像素尺寸）',
       wavelength: '波长 (Å)',
       energy: '能量 (keV)',
       unitToggle: '输入单位',
@@ -1591,6 +1595,8 @@ export const messages = {
       auto: '自动拾取',
       autoHint: 'Massif 峰群搜索；灵敏度越高找到的峰越多',
       sensitivity: '灵敏度',
+      bandTol: '环带 ±dr (px)',
+      bandTolHint: '完成本环在所选环 ±dr 像素的环带内收峰（2026-10-23 起灵敏度同样作用于环带阈值：越高收得越多）',
       clear: '清空',
       empty: '尚无峰，请自动拾取或手动点击图像添加',
       addMode: '添加模式：开启',
@@ -1638,7 +1644,7 @@ export const messages = {
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.3'
+      version: 'v0.3.4'
     },
     shell: {
       sections: {
@@ -1672,7 +1678,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.3.3',
+      kicker: 'Desktop Edition v0.3.4',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -2166,6 +2172,7 @@ export const messages = {
       outputFolderPlaceholder: '(Specify in PNG Generator)',
       thumbnailsPerRow: 'Thumbnails Per Row',
       noThumbnails: 'No Thumbnail Data',
+      removeFileFromList: 'Remove this file: excluded from display and integration',
       loadingImage: 'Loading image…',
       statsTitle: 'Stats',
       statMin: 'Min',
@@ -2628,6 +2635,8 @@ export const messages = {
       successTitle: 'Success',
       batchComplete: 'Batch Complete',
       subtractComplete: 'Subtraction Complete',
+      exportedDownload: 'Exported {count} file(s); download started',
+      webExportNote: 'Browser mode: no output directory needed — subtracted results download automatically.',
       matchThreshold: 'Match Threshold',
       matchRegex: 'Regex Pattern',
       matchRegexHint: 'Optional: filter file names',
@@ -3104,6 +3113,7 @@ export const messages = {
       calibrantName: 'Built-in calibrant',
       detector: 'Detector (pyFAI name, optional)',
       pixelSize: 'Pixel size (µm)',
+      noDetectorManual: 'None (enter pixel size manually)',
       wavelength: 'Wavelength (Å)',
       energy: 'Energy (keV)',
       unitToggle: 'Input unit',
@@ -3222,6 +3232,8 @@ export const messages = {
       auto: 'Auto-pick',
       autoHint: 'Massif peak-group search; higher sensitivity finds more peaks',
       sensitivity: 'Sensitivity',
+      bandTol: 'Ring band ±dr (px)',
+      bandTolHint: 'Finish-ring harvests peaks within ±dr pixels of the picked ring (since 2026-10-23 the sensitivity also drives the band threshold: higher finds more)',
       clear: 'Clear',
       empty: 'No peaks yet — auto-pick or click the image to add them manually',
       addMode: 'Add mode: ON',
