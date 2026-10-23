@@ -554,7 +554,9 @@
               :loading="isLoadingThumbnails"
               :sync-with-main="thumbSyncWithMain"
               :columns-per-row="thumbColsPerRow"
+              :deletable="isBatchMode"
               @select="navigateToFrame"
+              @remove="removeFileAt"
               @prev-page="handleThumbPrevPage"
               @next-page="handleThumbNextPage"
               @jump-to-page="handleThumbJumpToPage"
@@ -1879,6 +1881,48 @@ async function navigateToFrame(frameIdx: number): Promise<void> {
     isLoadingFullRes.value = false
     errorMessage.value = err instanceof Error ? err.message : String(err)
     state.value = 'error'
+  }
+}
+
+/**
+ * Remove ONE file from the batch list (2026-10-22 user request: the thumbnail ✕
+ * button deletes unneeded files so they no longer take part in display).
+ * In batch mode the strip indexes files, so currentFrame mirrors the file index;
+ * removing an entry clamps currentFileIndex, reloads that file's preview (which
+ * re-syncs totalFrames with the file count) and refetches the thumbnail page
+ * holding it. An empty selection mirrors re-selecting no files.
+ * 删除批处理清单中的一个文件（2026-10-22 用户要求：缩略图 ✕ 删除不需要的
+ * 文件，不再参与展示与积分）。批模式下缩略图索引即文件索引、currentFrame
+ * 与文件索引一致；删除后收敛 currentFileIndex、重载该文件预览（totalFrames
+ * 随之与文件数同步），并重取该文件所在的缩略图页。删空时等同重新选择空
+ * 文件集。
+ */
+async function removeFileAt(index: number): Promise<void> {
+  if (!isBatchMode.value || index < 0 || index >= selectedFiles.value.length) return
+  selectedFiles.value.splice(index, 1)
+
+  if (selectedFiles.value.length === 0) {
+    await handleFileSelected(null, true)
+    return
+  }
+
+  if (currentFileIndex.value >= selectedFiles.value.length) {
+    currentFileIndex.value = selectedFiles.value.length - 1
+  }
+  if (isBatchMode.value) {
+    totalFrames.value = selectedFiles.value.length
+    currentFrame.value = currentFileIndex.value
+  }
+
+  // Strip items are keyed by file index — drop the stale page before reloading.
+  resetThumbnailStripState()
+  await handleFileSelected(selectedFiles.value[currentFileIndex.value] ?? null, false)
+
+  // Batch thumbnails are file previews; single-file frame thumbnails are
+  // repopulated by the open_file result handler above.
+  if (isBatchMode.value) {
+    thumbCurrentPage.value = getThumbnailPageForIndex(currentFileIndex.value)
+    void loadThumbnailPage(thumbCurrentPage.value)
   }
 }
 

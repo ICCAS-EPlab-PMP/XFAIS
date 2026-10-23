@@ -23,6 +23,10 @@
         </aside>
       </div>
       <StatusBar />
+      <!-- Bottom curve strip (2026-10-23): multi-curve info chips — click to
+           switch the reference curve / view a batch result. /
+           底部曲线条：多曲线信息片，点击切换参考曲线 / 查看批量结果。 -->
+      <CurveStrip />
 
       <PeakAdjustPopover />
       <ToastStack />
@@ -62,6 +66,7 @@ import Toolbar from '@/components/curvefit/Toolbar.vue'
 import StepsRail from '@/components/curvefit/StepsRail.vue'
 import PlotArea from '@/components/curvefit/PlotArea.vue'
 import StatusBar from '@/components/curvefit/StatusBar.vue'
+import CurveStrip from '@/components/curvefit/CurveStrip.vue'
 import PeakAdjustPopover from '@/components/curvefit/PeakAdjustPopover.vue'
 import ToastStack from '@/components/curvefit/ToastStack.vue'
 import DataPanel from '@/components/curvefit/panels/DataPanel.vue'
@@ -185,8 +190,17 @@ watch(
    铬条（参考程序为无边框全屏；本应用外壳可滚动，故用 calc 高度 + 下限——
    uPlot 经 ResizeObserver 自适应）。 */
 .cf-wb-shell {
-  height: calc(100vh - 215px);
-  min-height: 620px;
+  /* +35px for the bottom curve strip (2026-10-23 visual review: the strip
+     was clipped by the viewport when the queue is non-empty). /
+     为底部曲线条加高（视觉审查：队列非空时曲线条被视口裁切）。 */
+  height: calc(100vh - 250px);
+  /* 620 → 500 (2026-10-23 re-review): the old floor OVERRODE the calc on
+     short viewports (800px → calc 550 < 620), pushing the strip out of the
+     first screen — the exact bug the height bump tried to fix. 500 keeps
+     uPlot usable while letting the shell shrink far enough. /
+     下限 620→500：原下限在矮视口下压过 calc（800px 时 calc 550<620），
+     反而把曲线条推出首屏——正是加高想修的问题。500 兼顾图区可用性。 */
+  min-height: 500px;
   display: flex;
   flex-direction: column;
   overflow: hidden;

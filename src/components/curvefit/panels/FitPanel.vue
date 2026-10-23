@@ -2,6 +2,7 @@
 /** 拟合页：引擎选项 + Fast/Full 模式 + 迭代遥测面板 + r² 进度条。 */
 import { computed } from 'vue'
 import AppIcon from '../AppIcon.vue'
+import HelpTip from '../HelpTip.vue'
 import type { RobustMethod } from '@/lib/pwcore/shared/types'
 import { startFit, stopFit, useFit } from '@/lib/curvefit/stores/fit'
 import { useSpectrum } from '@/lib/curvefit/stores/spectrum'
@@ -78,10 +79,18 @@ function onMaxIter(e: Event): void {
           step="1"
         />
         <span class="num val">{{ fit.options.convDigits }}</span>
+        <!-- 2026-10-23 用户要求：收敛说明改为 ? 图标。 -->
+        <HelpTip :size="14" text="χ² 连续 5 次迭代稳定到该有效位数即收敛（原版默认 6）。" />
       </div>
-      <p class="hint">χ² 连续 5 次迭代稳定到该有效位数即收敛（原版默认 6）。</p>
 
-      <div class="sec-label">稳健方法</div>
+      <div class="sec-label sec-head">
+        稳健方法
+        <!-- 2026-10-23 用户要求：稳健模式的说明改为 ? 图标。 -->
+        <HelpTip
+          :size="14"
+          text="LS 最小二乘（默认）；LAD 最小绝对偏差（抗离群）；Lorentz 损失（手册推荐抗离群）；P7 Lim = Pearson VII 限差（最强抗离群，手册 p.6-79）。"
+        />
+      </div>
       <div class="seg">
         <button
           v-for="r in ROBUST"
@@ -94,7 +103,14 @@ function onMaxIter(e: Event): void {
         </button>
       </div>
 
-      <div class="sec-label">峰函数约束 <span class="lbl-hint">（相对初始估计的最大变化 %）</span></div>
+      <div class="sec-label sec-head">
+        峰函数约束 <span class="lbl-hint">（相对初始估计的最大变化 %）</span>
+        <!-- 2026-10-23 用户要求：软约束说明改为 ? 图标。 -->
+        <HelpTip
+          :size="14"
+          text="软约束：迭代可短暂越界并逐步挣脱；“违约”遥测持续偏高时说明需要放宽（原版建议保持 a0/a1 开启）。a0 幅值 / a1 中心 / a2 宽度 / a3、a4 形状（原版默认关）。"
+        />
+      </div>
       <div class="constraints">
         <label v-for="row in CONSTRAINT_ROWS" :key="row.key" class="crow" :title="row.hint">
           <input
@@ -113,7 +129,6 @@ function onMaxIter(e: Event): void {
           />
         </label>
       </div>
-      <p class="hint">软约束：迭代可短暂越界并逐步挣脱；"违约"遥测持续偏高时说明需要放宽（原版建议保持 a0/a1 开启）。</p>
 
       <div class="sec-label">更新模式</div>
       <div class="seg">
@@ -164,6 +179,25 @@ function onMaxIter(e: Event): void {
 <style scoped>
 .content {
   padding: 2px 12px 12px;
+}
+/* 2026-10-23 用户要求：区块/参数行的说明改为 ? 图标。 */
+.sec-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  position: relative;
+}
+.sec-head .pt-help {
+  margin-left: auto;
+}
+/* 侧栏仅 330px 且 overflow:auto，默认居中气泡会被裁剪——贴右展开。 */
+.sec-head :deep(.help-pop),
+.slider-row :deep(.help-pop) {
+  left: auto;
+  right: 0;
+  width: 240px;
+  max-width: 240px;
+  transform: translateY(2px) !important;
 }
 .lbl-hint {
   font-weight: 400;
@@ -232,6 +266,7 @@ function onMaxIter(e: Event): void {
   align-items: center;
   gap: 10px;
   margin: 8px 0 2px;
+  position: relative;
 }
 .slider {
   flex: 1;

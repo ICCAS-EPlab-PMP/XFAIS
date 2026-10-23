@@ -45,6 +45,25 @@
 
     <p class="cpp-hint">{{ ringHint }}</p>
 
+    <!-- Ring-band half-width ±dr (2026-10-23 user feedback: the harvest band
+         was a hidden 15 px constant AND the sensitivity slider had no effect
+         on ring picking). Both now live here in the open. /
+         环带半宽 ±dr（2026-10-23 用户反馈：收峰环带此前是隐藏的 15px 常量，
+         且灵敏度对环选毫无作用）。两项设置都放在明处。 -->
+    <div class="cpp-row cpp-band-row" :title="t('calibration.peaks.bandTolHint')">
+      <label class="cpp-band-label">{{ t('calibration.peaks.bandTol') }}</label>
+      <input
+        type="number"
+        class="cpp-band-input"
+        min="2"
+        max="80"
+        step="1"
+        :value="bandTol"
+        data-ai-id="calibration:band-tol"
+        @change="onBandTolInput"
+      />
+    </div>
+
     <!-- Ring-picking controls / 环选控制 -->
     <div class="cpp-row">
       <button
@@ -109,9 +128,12 @@
       </label>
     </div>
 
-    <!-- Advanced (collapsed): full-image auto detection only / 高级（折叠）：
-         仅保留全图自动拾取，先按理论环分配再重新分组 -->
-    <details class="cpp-advanced">
+    <!-- Advanced (open by default since 2026-10-22, user request: peak
+         recognition was too wide at the old default sensitivity and the knob
+         was hidden in the collapsed area): full-image auto detection only /
+         高级（2026-10-22 起默认展开，用户要求：原默认灵敏度下峰识别偏宽，
+         而旋钮藏在折叠区）：仅保留全图自动拾取，先按理论环分配再重新分组 -->
+    <details class="cpp-advanced" open>
       <summary class="cpp-advanced-summary">{{ advancedLabel }}</summary>
       <div class="cpp-advanced-body">
         <div class="cpp-field">
@@ -256,6 +278,12 @@ const props = withDefaults(defineProps<{
   peaks: CalibPeak[]
   sensitivity: number
   /**
+   * Ring-band half-width ±dr (px) sent to ring_pick's tolPx. 2026-10-23:
+   * previously a hidden backend constant (15 px). / 环带半宽 ±dr（px），
+   * 此前是后端隐藏常量。
+   */
+  bandTol?: number
+  /**
    * Current ring number (calib2-style, 1-based in the UI; the parent converts
    * to the 0-based backend index for ring_pick's assignRing).
    * 当前环号（界面 1 起；父组件换算为 0 起的后端 assignRing）。
@@ -283,11 +311,13 @@ const props = withDefaults(defineProps<{
   beyondMask: false,
   removeExisting: false,
   refreshing: false,
+  bandTol: 15,
 })
 
 const emit = defineEmits<{
   auto: []
   'update:sensitivity': [value: number]
+  'update:bandTol': [value: number]
   'update:currentRing': [value: number]
   clear: []
   'finish-ring': []
@@ -407,6 +437,17 @@ function onRingInput(e: Event): void {
     return
   }
   emit('update:currentRing', raw)
+}
+
+/** Ring-band ±dr input: clamp to 2..80 px; invalid snaps back. / 环带 ±dr
+ *  输入：钳制在 2–80 px，非法输入回弹。 */
+function onBandTolInput(e: Event): void {
+  const raw = Number.parseFloat((e.target as HTMLInputElement).value)
+  if (!Number.isFinite(raw)) {
+    ;(e.target as HTMLInputElement).value = String(props.bandTol ?? 15)
+    return
+  }
+  emit('update:bandTol', Math.min(80, Math.max(2, Math.round(raw))))
 }
 
 /**
@@ -571,6 +612,37 @@ function onRingEdit(oldRing: number, e: Event): void {
 }
 
 .cpp-spinner-input:focus {
+  outline: none;
+  border-color: var(--border-focus);
+}
+
+/* Ring-band ±dr row / 环带 ±dr 行 */
+.cpp-band-row {
+  align-items: center;
+  gap: 8px;
+}
+
+.cpp-band-label {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.cpp-band-input {
+  width: 64px;
+  padding: 3px 6px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.cpp-band-input:focus {
   outline: none;
   border-color: var(--border-focus);
 }
@@ -798,6 +870,9 @@ function onRingEdit(oldRing: number, e: Event): void {
   padding: 16px 12px;
   text-align: center;
   font-size: 0.8rem;
-  color: var(--text-muted);
+  /* --text-muted was 2.56:1 on white (2026-10-23 visual review) — the empty
+     state is guidance copy, use the readable secondary colour. /
+     空态是引导文案，用可读的次级色（原 muted 仅 2.56:1）。 */
+  color: var(--text-secondary);
 }
 </style>

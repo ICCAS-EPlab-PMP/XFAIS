@@ -62,6 +62,14 @@
           loading="lazy"
           draggable="false"
         />
+        <button
+          v-if="deletable"
+          type="button"
+          class="ts-del"
+          :title="t('viewer.removeFileFromList')"
+          :data-testid="`thumb-del-${item.index}`"
+          @click.stop="emit('remove', item.index)"
+        >✕</button>
         <span class="ts-label">{{ truncatedLabel(item) }}</span>
       </div>
     </div>
@@ -154,16 +162,22 @@ const props = withDefaults(defineProps<{
   pageSize: number
   loading?: boolean
   syncWithMain?: boolean
+  /** Show a per-thumbnail delete (✕) button at the top-right corner
+   * (2026-10-22 user request: remove unneeded imported images so they no
+   * longer take part in display / integration). / 缩略图右上角删除按钮。 */
+  deletable?: boolean
 }>(), {
   selectedIndex: -1,
   columnsPerRow: 5,
   maxLabelLength: 24,
   loading: false,
   syncWithMain: false,
+  deletable: false,
 })
 
 const emit = defineEmits<{
   'select': [index: number]
+  'remove': [index: number]
   'prev-page': []
   'next-page': []
   'jump-to-page': [page: number]
@@ -296,6 +310,7 @@ function onJumpToPage(event: Event): void {
 
 /* Thumbnail card / 缩略图卡片 */
 .ts-thumb {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -308,6 +323,43 @@ function onJumpToPage(event: Event): void {
     border-color var(--transition-fast),
     transform var(--transition-fast);
   user-select: none;
+}
+
+/* Per-thumbnail delete button (top-right corner, only with deletable) /
+ * 缩略图右上角删除按钮（deletable 时才渲染） */
+.ts-del {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+  transition:
+    opacity var(--transition-fast),
+    color var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.ts-thumb:hover .ts-del,
+.ts-del:focus-visible {
+  opacity: 1;
+}
+
+.ts-del:hover {
+  color: #d92d20;
+  border-color: #d92d20;
 }
 
 .ts-thumb:hover {

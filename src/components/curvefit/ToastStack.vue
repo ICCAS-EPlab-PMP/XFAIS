@@ -27,8 +27,12 @@ const ICON: Record<ToastKind, string> = {
 <style scoped>
 .stack {
   position: fixed;
-  right: 14px;
-  bottom: 36px;
+  /* 2026-10-23 visual review: bottom-right covered the report panel's peak
+     cards (side column 330 px + ~49 px page margin) — anchor fully LEFT of
+     the side panel. / 原右下角遮挡报告面板逐峰卡；完全移到侧栏(330px+
+     ~49px 页边距)左侧。 */
+  right: 392px;
+  bottom: 14px;
   display: flex;
   flex-direction: column;
   gap: 8px;

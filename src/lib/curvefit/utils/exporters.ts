@@ -4,10 +4,12 @@
  */
 import type { PeakResult } from '@/lib/pwcore/shared/types'
 import { BASELINE_FN_MAP, PEAK_FN_MAP } from '@/lib/pwcore/shared/registry'
+import { evalModelCurve } from '@/lib/fitEngine'
 import { platform } from '../platform/platform'
 import { useSpectrum } from '../stores/spectrum'
 import { usePeaks } from '../stores/peaks'
 import { useFit } from '../stores/fit'
+import { useBatch } from '../stores/batch'
 import { csvEscape, fmtMs, fmtSci, fmtSig, timeStamp } from '../utils/format'
 
 /** Parameter CSV: one row per (peak, parameter). */
@@ -76,7 +78,10 @@ export function buildPeakParamsCsv(): string {
   return rows.join('\r\n')
 }
 
-/** Data + model CSV: x, y, weight, mask, fit, baseline, residual. */
+/** Data + model CSV: x, y, weight, mask, fit, baseline, residual + EVERY
+ * fitted component curve (v0.3.4, 2026-10-22 user report: the export did not
+ * carry all fitted curve x/y — the per-peak components were missing).
+ * 数据+拟合 CSV：在原有列之外补上每个拟合分量的完整 x/y 曲线列。 */
 export function buildDataFitCsv(): string {
   const sp = useSpectrum()
   const fit = useFit()
@@ -86,7 +91,20 @@ export function buildDataFitCsv(): string {
   const mv = sp.mask.value
   const curves = fit.curves.value
   if (!xv || !yv || !mv) return ''
-  const head = ['x', 'y', 'weight', 'included', 'fit', 'baseline', 'residual']
+  // Component curves come from the last fit RESULT (aligned with its enabled
+  // peak order); they are full-length like x, so the columns line up.
+  const lastRes = fit.lastResult.value
+  const comps = lastRes?.yComps ?? []
+  const head = [
+    'x',
+    'y',
+    'weight',
+    'included',
+    'fit',
+    'baseline',
+    'residual',
+    ...comps.map((_, i) => `p${i + 1}`),
+  ]
   const rows: string[] = [head.join(',')]
   for (let i = 0; i < xv.length; i++) {
     rows.push(
@@ -98,9 +116,70 @@ export function buildDataFitCsv(): string {
         curves ? fmtSig(curves.yFit[i] ?? Number.NaN, 12) : '',
         curves ? fmtSig(curves.yBase[i] ?? Number.NaN, 12) : '',
         curves ? fmtSig(curves.residual[i] ?? Number.NaN, 12) : '',
+        ...comps.map((c) => fmtSig(c[i] ?? Number.NaN, 12)),
       ].join(','),
     )
   }
+  if (comps.length > 0 && lastRes) {
+    rows.push('')
+    lastRes.peaks.forEach((r, i) => {
+      rows.push(`# p${i + 1}=${PEAK_FN_MAP.get(r.fn)?.name ?? r.fn} center=${fmtSig(r.center, 10)}`)
+    })
+  }
+  return rows.join('\r\n')
+}
+
+/**
+ * Fitted-curve CSV (v0.3.4, 2026-10-22 user report: 「拟合的曲线数据不能导
+ * 出」): the model evaluated on a DENSE uniform grid over the full x range —
+ * baseline, every enabled component and the total, using the CURRENT (post
+ * fit) parameters. x resolution: at least the data grid, capped for file size.
+ * 拟合曲线 CSV（密采样）：当前模型（拟合后的参数）在全程均匀密网格上的
+ * 基线、逐分量与总曲线。
+ */
+export function buildFitCurveCsv(): string {
+  const sp = useSpectrum()
+  const pk = usePeaks()
+  const xv = sp.x.value
+  if (!xv || xv.length < 2) return ''
+  const enabled = pk.list.value.filter((p) => p.enabled)
+  const useBase = pk.baseline.enabled && pk.baseline.fn !== 'none'
+  if (enabled.length === 0 && !useBase) return ''
+
+  const n = Math.min(20000, Math.max(2000, xv.length))
+  const x0 = sp.meta.xMin
+  const x1 = sp.meta.xMax
+  const xs = new Float64Array(n)
+  for (let i = 0; i < n; i++) xs[i] = x0 + ((x1 - x0) * i) / (n - 1)
+
+  const model = evalModelCurve(xs, pk.list.value, {
+    fn: pk.baseline.fn,
+    p: { ...pk.baseline.p },
+    locked: { ...pk.baseline.locked },
+    enabled: useBase,
+  })
+  const head = ['x', 'baseline', ...model.comps.map((_, i) => `p${i + 1}`), 'model']
+  const rows: string[] = [head.join(',')]
+  for (let i = 0; i < n; i++) {
+    rows.push(
+      [
+        fmtSig(xs[i], 12),
+        fmtSig(model.base[i], 12),
+        ...model.comps.map((c) => fmtSig(c[i], 12)),
+        fmtSig(model.total[i], 12),
+      ].join(','),
+    )
+  }
+  rows.push('')
+  rows.push(`# source=${sp.meta.title} points=${n} range=[${fmtSig(x0, 8)}, ${fmtSig(x1, 8)}]`)
+  model.compsIds.forEach((id, i) => {
+    const spec = pk.list.value.find((p) => p.id === id)
+    if (spec) {
+      rows.push(
+        `# p${i + 1}=${PEAK_FN_MAP.get(spec.fn)?.name ?? spec.fn} center=${fmtSig(spec.p.a1 ?? 0, 10)}`,
+      )
+    }
+  })
   return rows.join('\r\n')
 }
 
@@ -178,4 +257,108 @@ export function buildReportTxt(): string {
 /** Save text through the platform layer. */
 export async function saveTextFile(defaultName: string, content: string): Promise<boolean> {
   return platform.saveDataFile(defaultName, content)
+}
+
+// ---------------------------------------------------------------------------
+// Batch fitting exports (v0.3.4, 2026-10-22) / 批量拟合导出
+// ---------------------------------------------------------------------------
+
+/**
+ * Batch summary CSV: one row per (file, peak) with center/height/FWHM/area
+ * (± stderr) and the per-file fit stats repeated on every row (spreadsheet
+ * friendly). Failed files get a single row with their error.
+ * 批量汇总 CSV：每（文件×峰）一行，含参数±标准误；每行重复该文件的拟合
+ * 统计（便于筛选透视）。失败文件占一行错误信息。
+ */
+export function buildBatchSummaryCsv(): string {
+  const batch = useBatch()
+  const rs = batch.results.value
+  if (!rs || rs.length === 0) return ''
+  const head = [
+    'file',
+    'peak',
+    'fn',
+    'center',
+    'center_err',
+    'height',
+    'height_err',
+    'fwhm',
+    'area',
+    'r2',
+    'r2_adj',
+    'iterations',
+    'converged',
+    'time_ms',
+    'status',
+  ]
+  const rows: string[] = [`# 批量拟合报告 ${timeStamp()}`]
+  rows.push(`# 峰位软约束 ±${batch.batchOpts.centerPct}% · 幅值自由 · 背景与数据窗口同模板`)
+  rows.push(head.join(','))
+  for (const r of rs) {
+    const stat = [
+      r.r2 !== undefined ? fmtSig(r.r2, 8) : '',
+      r.r2Adj !== undefined ? fmtSig(r.r2Adj, 8) : '',
+      r.iterations ?? '',
+      r.converged === undefined ? '' : r.converged ? 'yes' : 'no',
+      r.timeMs !== undefined ? Math.round(r.timeMs) : '',
+      r.status,
+    ]
+    if (r.status === 'done' && r.peaks) {
+      r.peaks.forEach((p) => {
+        rows.push(
+          [
+            r.name,
+            p.index,
+            csvEscape(p.fnName),
+            fmtSig(p.center, 10),
+            fmtSig(p.centerErr, 6),
+            fmtSig(p.height, 10),
+            fmtSig(p.heightErr, 6),
+            fmtSig(p.fwhm, 10),
+            fmtSig(p.area, 10),
+            ...stat,
+          ].join(','),
+        )
+      })
+    } else {
+      rows.push(
+        [r.name, '', '', '', '', '', '', '', '', '', '', '', '', '', csvEscape(r.error ?? r.status)].join(','),
+      )
+    }
+  }
+  return rows.join('\r\n')
+}
+
+/**
+ * Batch curves CSV: stacked data+fit blocks for every file that kept its
+ * curves (file column included; component columns omitted — see
+ * buildBatchSummaryCsv for parameters). / 批量曲线 CSV：每条保留曲线的
+ * 数据+拟合堆叠输出（含文件列）。
+ */
+export function buildBatchCurvesCsv(): string {
+  const batch = useBatch()
+  const rs = batch.results.value
+  if (!rs) return ''
+  const rows: string[] = ['file,x,y,included,fit,baseline,residual']
+  let any = false
+  for (const r of rs) {
+    const c = r.curves
+    if (!c) continue
+    any = true
+    for (let i = 0; i < c.x.length; i++) {
+      rows.push(
+        [
+          csvEscape(r.name),
+          fmtSig(c.x[i], 12),
+          fmtSig(c.y[i], 12),
+          c.mask[i] === 1 ? '1' : '0',
+          fmtSig(c.yFit[i] ?? Number.NaN, 12),
+          fmtSig(c.yBase[i] ?? Number.NaN, 12),
+          fmtSig(c.residual[i] ?? Number.NaN, 12),
+        ].join(','),
+      )
+    }
+  }
+  if (!any) return ''
+  return rows.join('\r\n')
 }

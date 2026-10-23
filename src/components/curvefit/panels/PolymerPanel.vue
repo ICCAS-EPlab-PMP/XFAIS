@@ -13,9 +13,11 @@
  */
 import { computed } from 'vue'
 import AppIcon from '../AppIcon.vue'
+import HelpTip from '../HelpTip.vue'
 import { PEAK_FN_MAP } from '@/lib/pwcore/shared/registry'
 import { peakShape } from '@/lib/pwcore/core/statsfn'
 import { usePeaks } from '@/lib/curvefit/stores/peaks'
+import { useBatch } from '@/lib/curvefit/stores/batch'
 import { fmtSig } from '@/lib/curvefit/utils/format'
 import {
   KB_ROLES,
@@ -27,16 +29,26 @@ import {
   polyOn,
   roleOf,
   toggleRole,
+  type CrysResult,
   type CrysRole,
+  type KbResult,
   type KbRole,
+  type OrientResult,
 } from '@/lib/curvefit/utils/analysis'
 
 const pk = usePeaks()
+const batch = useBatch()
 
 function liveArea(fn: string, p: Record<string, number>): number {
   const meta = PEAK_FN_MAP.get(fn)
   const packed = (meta?.params ?? []).map((pm) => p[pm.key] ?? 0)
   return Math.abs(peakShape(fn as never, packed).area)
+}
+
+function liveHeight(fn: string, p: Record<string, number>): number {
+  const meta = PEAK_FN_MAP.get(fn)
+  const packed = (meta?.params ?? []).map((pm) => p[pm.key] ?? 0)
+  return Math.abs(peakShape(fn as never, packed).height)
 }
 
 interface AnalysisRow {
@@ -46,11 +58,15 @@ interface AnalysisRow {
   color?: string
   center: number
   area: number
+  /** Peak height (fit result, else live model) — the Kβ height variant
+   * (2026-10-22 user request) needs it alongside the area. /
+   * 峰高（拟合结果，否则实时模型）——Kβ 峰高法（2026-10-22 用户要求）。 */
+  height: number
   role: CrysRole
 }
 
-/** Enabled peaks → analysis rows (fit area, else live-model area). /
- *  启用的峰 → 分析行（优先拟合面积，否则实时模型面积）。 */
+/** Enabled peaks → analysis rows (fit values, else live-model values). /
+ *  启用的峰 → 分析行（优先拟合值，否则实时模型值）。 */
 const analysisRows = computed<AnalysisRow[]>(() => {
   let i = 0
   return pk.list.value
@@ -67,6 +83,7 @@ const analysisRows = computed<AnalysisRow[]>(() => {
         color: p.color,
         center,
         area: res ? Math.abs(res.area) : liveArea(p.fn, p.p),
+        height: res ? Math.abs(res.height) : liveHeight(p.fn, p.p),
         role: roleOf(p.id),
       }
     })
@@ -110,18 +127,132 @@ const kb = computed(() => {
   })
 })
 
+/** Kβ from peak HEIGHTS (2026-10-22 user request: 有人提出 Kβ 可能按峰高给
+ *  出) — same Turner-Jones ratio, height intensities, reported alongside the
+ *  area value and clearly labelled. / 峰高法 Kβ——同一公式的峰高版本，与面积
+ *  法并列展示并标注来源。 */
+const kbH = computed(() => {
+  if (!polyOn.kb) return null
+  const byId = new Map(analysisRows.value.map((r) => [r.id, r.height]))
+  return kbFractionOf(
+    {
+      beta300: kbAssign.beta300 ? byId.get(kbAssign.beta300) ?? null : null,
+      a110: kbAssign.a110 ? byId.get(kbAssign.a110) ?? null : null,
+      a040: kbAssign.a040 ? byId.get(kbAssign.a040) ?? null : null,
+      a130: kbAssign.a130 ? byId.get(kbAssign.a130) ?? null : null,
+    },
+    'height',
+  )
+})
+
 function onKbSelect(role: KbRole, ev: Event): void {
   kbAssign[role] = (ev.target as HTMLSelectElement).value || null
 }
+
+// ---------------------------------------------------------------------------
+// Multi-curve analyses over BATCH results (2026-10-23 user request: 多条数据
+// 的结晶度/取向/iPP 分析随用户开启而逐曲线开启，数据尽可能折叠). Uses each
+// curve's stored fitted model (peak ids = template ids, so the assignment
+// state above applies to EVERY curve); each enabled analysis is computed only
+// when its switch is on, and every curve renders COLLAPSED by default.
+// 基于批量结果的逐曲线分析：峰 id 即模板 id（上方指派对每条曲线都成立）；
+// 各分析只在开关开启时计算，每条曲线默认折叠。
+// ---------------------------------------------------------------------------
+
+interface BatchOrientRow {
+  index: number
+  center: number
+  stats: OrientResult | null
+}
+
+interface BatchCurveAnalysis {
+  id: string
+  name: string
+  /** Peak rows shared by all three analyses (id/index/area/height). */
+  rows: Array<{ id: string; area: number; height: number }>
+  crys: CrysResult | null
+  kb: KbResult | null
+  kbH: KbResult | null
+  orient: BatchOrientRow[]
+}
+
+const batchAnalyses = computed<BatchCurveAnalysis[]>(() => {
+  const rs = batch.results.value
+  if (!rs || rs.length === 0) return []
+  const out: BatchCurveAnalysis[] = []
+  for (const r of rs) {
+    if (r.status !== 'done' || !r.model) continue
+    const specs = r.model.peaks
+    const rows = specs.map((spec, i) => {
+      const fitted = r.outcome?.peaks.find((q) => q.id === spec.id)
+      const meta = PEAK_FN_MAP.get(spec.fn)
+      const packed = (meta?.params ?? []).map((pm) => spec.p[pm.key] ?? 0)
+      return {
+        id: spec.id,
+        area: fitted ? Math.abs(fitted.area) : Math.abs(peakShape(spec.fn, packed).area),
+        height: fitted ? Math.abs(fitted.height) : Math.abs(peakShape(spec.fn, packed).height),
+        index: i + 1,
+        center: spec.p.a1 ?? 0,
+      }
+    })
+    const byArea = new Map(rows.map((x) => [x.id, x.area]))
+    const byHeight = new Map(rows.map((x) => [x.id, x.height]))
+    out.push({
+      id: r.id,
+      name: r.name,
+      rows,
+      crys: polyOn.crystallinity ? crystallinityOf(rows) : null,
+      kb: polyOn.kb
+        ? kbFractionOf({
+            beta300: kbAssign.beta300 ? byArea.get(kbAssign.beta300) ?? null : null,
+            a110: kbAssign.a110 ? byArea.get(kbAssign.a110) ?? null : null,
+            a040: kbAssign.a040 ? byArea.get(kbAssign.a040) ?? null : null,
+            a130: kbAssign.a130 ? byArea.get(kbAssign.a130) ?? null : null,
+          })
+        : null,
+      kbH: polyOn.kb
+        ? kbFractionOf(
+            {
+              beta300: kbAssign.beta300 ? byHeight.get(kbAssign.beta300) ?? null : null,
+              a110: kbAssign.a110 ? byHeight.get(kbAssign.a110) ?? null : null,
+              a040: kbAssign.a040 ? byHeight.get(kbAssign.a040) ?? null : null,
+              a130: kbAssign.a130 ? byHeight.get(kbAssign.a130) ?? null : null,
+            },
+            'height',
+          )
+        : null,
+      orient: polyOn.orientation
+        ? specs.map((spec, i) => ({
+            index: i + 1,
+            center: spec.p.a1 ?? 0,
+            stats: orientationOfComponent(spec.fn, spec.p, {
+              chiZero: orientOpts.chiZero,
+              refDeg: orientOpts.refDeg,
+              equatorialToChain: orientOpts.equatorialToChain,
+            }),
+          }))
+        : [],
+    })
+  }
+  return out
+})
+
+/** Any batch-fitted curve available for the multi-curve section? */
+const hasBatchCurves = computed(
+  () => batch.results.value?.some((r) => r.status === 'done' && r.model) ?? false,
+)
 </script>
 
 <template>
   <div class="panel">
-    <div class="panel-title"><AppIcon name="chart" :size="13" />聚合物分析</div>
+    <div class="panel-title">
+      <AppIcon name="chart" :size="13" />聚合物分析
+      <HelpTip
+        :size="17"
+        text="基于当前峰模型（拟合后为拟合分量，未拟合时用实时模型）。按需开启，未开启的项目不计算；结晶度把非晶晕峰标为「非晶」，Kβ 按四晶面下拉指派，取向按逐峰方位分布。多条批量曲线时下方「批量曲线分析」用同一套指派逐曲线计算。"
+      />
+    </div>
     <div class="content">
-      <p class="hint top-hint">
-        聚合物取向/结晶分析基于当前峰模型（拟合后为拟合分量面积；未拟合时用实时模型面积）。按需开启，未开启的项目不计算。
-      </p>
 
       <!-- ① 结晶度（峰分类法） -->
       <div class="xcard" :class="{ on: polyOn.crystallinity }">
@@ -149,7 +280,7 @@ function onKbSelect(role: KbRole, ev: Event): void {
             </button>
           </div>
           <template v-if="crys">
-            <p class="xline"><b class="xval">Xc = {{ crys.xcPct.toFixed(1) }} %</b></p>
+            <p class="xline"><b class="xval">Xc = {{ crys.xcPct.toFixed(1) }}%</b></p>
             <p class="xhint num">
               A结晶 {{ fmtSig(crys.crystalArea, 6) }} · A非晶 {{ fmtSig(crys.amorphousArea, 6) }}
             </p>
@@ -243,7 +374,8 @@ function onKbSelect(role: KbRole, ev: Event): void {
           <span class="xstate">{{ polyOn.kb ? '已开启' : '未开启' }}</span>
         </label>
         <p class="xhint">
-          Kβ = Aβ(300) / [Aα(110) + Aα(040) + Aα(130) + Aβ(300)]（Turner-Jones）
+          Kβ = Iβ(300) / [Iα(110) + Iα(040) + Iα(130) + Iβ(300)]（Turner-Jones）；
+          面积法用拟合面积（原式），峰高法用拟合峰高——两者并列给出。
         </p>
         <div v-if="polyOn.kb" class="xbody">
           <div class="kgrid">
@@ -255,10 +387,67 @@ function onKbSelect(role: KbRole, ev: Event): void {
               </select>
             </label>
           </div>
-          <p class="xline">
-            <b v-if="kb" class="xval">Kβ = {{ (kb.kb * 100).toFixed(1) }} %</b>
-            <span v-else class="xval hint">未指派完整</span>
-          </p>
+          <template v-if="kb">
+            <p class="xline">
+              <span class="kbsrc">面积法</span>
+              <b class="xval">Kβ = {{ (kb.kb * 100).toFixed(1) }}%</b>
+            </p>
+            <p class="xhint num">强度来源：拟合面积 A（Turner-Jones 原式）</p>
+            <p v-if="kbH" class="xline">
+              <span class="kbsrc">峰高法</span>
+              <b class="xval">Kβ = {{ (kbH.kb * 100).toFixed(1) }}%</b>
+            </p>
+            <p v-if="kbH" class="xhint num">峰高来源：拟合峰高 h（同一公式，代入峰高）</p>
+          </template>
+          <p v-else class="xline hint"><span class="xval hint">未指派完整</span></p>
+        </div>
+      </div>
+
+      <!-- ④ 批量曲线分析（2026-10-23 用户要求）：同一套指派/开关逐曲线计算，
+           每条曲线默认折叠，点开看明细。 / Multi-curve analyses over the
+           batch results — same assignments & switches, collapsed per curve. -->
+      <div v-if="hasBatchCurves" class="xcard on">
+        <label class="xhead">
+          <span class="xtitle">批量曲线分析（{{ batchAnalyses.length }} 条已拟合）</span>
+          <span class="xstate">同一套指派</span>
+        </label>
+        <p class="xhint">
+          逐曲线使用上方开关与指派（峰 id 即模板 id）；点击曲线行展开明细。
+        </p>
+        <div class="bc-list">
+          <details v-for="c in batchAnalyses" :key="c.id" class="bc-item">
+            <summary>
+              <span class="bc-name" :title="c.name">{{ c.name }}</span>
+              <span v-if="c.crys" class="bc-val">Xc {{ c.crys.xcPct.toFixed(1) }}%</span>
+              <span v-if="c.kb" class="bc-val">Kβ<sub>A</sub> {{ (c.kb.kb * 100).toFixed(1) }}%</span>
+              <span v-if="c.kbH" class="bc-val">Kβ<sub>h</sub> {{ (c.kbH.kb * 100).toFixed(1) }}%</span>
+              <span v-if="c.orient.length" class="bc-val">f {{ fmtSig(c.orient[0]?.stats?.f ?? Number.NaN, 3) }}</span>
+            </summary>
+            <div class="bc-body">
+              <p v-if="c.crys" class="xhint num">
+                Xc = {{ c.crys.xcPct.toFixed(2) }}% · A结晶 {{ fmtSig(c.crys.crystalArea, 6) }} · A非晶 {{ fmtSig(c.crys.amorphousArea, 6) }}
+              </p>
+              <p v-if="c.kb" class="xhint num">
+                Kβ 面积法 = {{ (c.kb.kb * 100).toFixed(2) }}%（强度来源：拟合面积 A）
+              </p>
+              <p v-if="c.kbH" class="xhint num">
+                Kβ 峰高法 = {{ (c.kbH.kb * 100).toFixed(2) }}%（峰高来源：拟合峰高 h）
+              </p>
+              <table v-if="c.orient.length" class="bc-table">
+                <thead>
+                  <tr><th>峰</th><th class="r">χc</th><th class="r">H</th><th class="r">f</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in c.orient" :key="row.index">
+                    <td>#{{ row.index }}</td>
+                    <td class="r num">{{ fmtSig(row.center, 5) }}</td>
+                    <td class="r num">{{ row.stats ? fmtSig(row.stats.fwhmDeg, 4) : '—' }}</td>
+                    <td class="r num">{{ row.stats ? fmtSig(row.stats.f, 4) : '—' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </details>
         </div>
       </div>
     </div>
@@ -271,10 +460,6 @@ function onKbSelect(role: KbRole, ev: Event): void {
   display: flex;
   flex-direction: column;
   gap: 8px;
-}
-.top-hint {
-  margin: 4px 0 2px;
-  line-height: 1.5;
 }
 
 /* ── 分析卡 / analysis card (one per switch) ─────────────────────────── */
@@ -330,7 +515,9 @@ function onKbSelect(role: KbRole, ev: Event): void {
   border-radius: 8px;
 }
 .xcard.on .xstate {
-  color: var(--accent);
+  /* 2026-10-22 visual review: accent-on-accent-soft was 3.68:1 — below AA.
+     Use the deeper blue for the ON badge text. / 用更深的蓝保证 ≥4.5:1。 */
+  color: #1d4ed8;
   background: var(--accent-soft);
   border-color: var(--accent-line);
 }
@@ -349,6 +536,77 @@ function onKbSelect(role: KbRole, ev: Event): void {
   margin-top: -2px;
   font-size: 9.5px;
 }
+
+/* ── 批量曲线分析 / batch multi-curve analyses (collapsed per curve) ───── */
+.bc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bc-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 3px 8px;
+  font-size: 11.5px;
+  background: var(--bg-2);
+}
+.bc-item summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  min-width: 0;
+}
+.bc-item summary::-webkit-details-marker {
+  display: none;
+}
+.bc-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text-1);
+}
+.bc-val {
+  flex: none;
+  white-space: nowrap;
+  /* blue-700 for AA on the row background (2026-10-23 visual review). */
+  color: #1d4ed8;
+  font-weight: 600;
+  font-size: 11px;
+}
+.bc-val sub {
+  font-size: 8px;
+}
+.bc-body {
+  margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.bc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.bc-table th,
+.bc-table td {
+  padding: 1.5px 6px;
+  text-align: left;
+  white-space: nowrap;
+}
+.bc-table th {
+  color: var(--text-2);
+  font-weight: 600;
+}
+.bc-table .r {
+  text-align: right;
+}
 /* X-FAIS: the value never splits inside the 330 px side panel
  * (`Kβ = 14.6` + `%`, `Xc = 56.8 %`, `未指派完整`). / 数值不拆行。 */
 .xline {
@@ -364,7 +622,21 @@ function onKbSelect(role: KbRole, ev: Event): void {
   white-space: nowrap;
   font-size: 12px;
   font-weight: 600;
-  color: var(--accent);
+  /* 2026-10-23 visual review: accent-on-white was 3.68:1 — use blue-700. /
+     数值用更深的蓝保证对比度。 */
+  color: #1d4ed8;
+}
+/* Source badge in front of a Kβ value line (面积法 / 峰高法). /
+ * Kβ 数值行前的来源徽章。 */
+.kbsrc {
+  flex: none;
+  font-size: 10px;
+  line-height: 16px;
+  padding: 0 7px;
+  color: var(--text-2);
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 .xline .xval.hint {
   margin-left: 0;

@@ -307,6 +307,39 @@ def test_massif_cache_equivalence_and_hit_logged(synthetic_edf: str, caplog):
     ], "cache clearing must not change the harvest"
 
 
+def test_ring_pick_sensitivity_and_tolpx(synthetic_edf: str):
+    """2026-10-23: the sensitivity slider now reaches the RING-BAND harvest
+    (std-term scale k = 1.6·(1−sensitivity) with a two-step relaxation) and
+    tolPx is the user-set band half-width. Higher sensitivity must harvest
+    ≥ points (its candidate set is a superset); a narrow band stays a valid
+    call and echoes back in ``region``.
+    灵敏度接入环带阈值：高灵敏度收点 ≥ 低灵敏度；tolPx 窄带合法且回显。"""
+    sid = _setup_session(synthetic_edf)
+    r0 = _first_ring_radius_px()
+    guides = _ring_guide_points(r0, [0.0, 90.0, 180.0])
+
+    np.random.seed(RNG_SEED)
+    strict = _ok(_run({
+        "action": "ring_pick", "sessionId": sid, "points": guides,
+        "sensitivity": 0.0,
+    }))
+    np.random.seed(RNG_SEED)
+    loose = _ok(_run({
+        "action": "ring_pick", "sessionId": sid, "points": guides,
+        "sensitivity": 1.0,
+    }))
+    assert strict["peaks"], "strict band harvest must still find the ring"
+    assert len(loose["peaks"]) >= len(strict["peaks"]), (
+        "higher sensitivity must not reduce the band harvest"
+    )
+
+    narrow = _ok(_run({
+        "action": "ring_pick", "sessionId": sid, "points": guides,
+        "tolPx": 3, "sensitivity": 0.5,
+    }))
+    assert narrow["region"]["tolPx"] == 3, "tolPx must echo back in region"
+
+
 @pytest.fixture(scope="module")
 def synthetic_edf_2048(tmp_path_factory) -> str:
     """2048² synthetic LaB6 frame — the 大图 the performance fix targets.

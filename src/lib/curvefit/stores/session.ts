@@ -3,7 +3,7 @@
  * import / demo loading always performs a full session reset (peaks, results,
  * history cleared; baseline re-seeded against the new data).
  */
-import type { DemoKind } from '@/lib/pwcore/shared/types'
+import type { DemoKind, ParsedData } from '@/lib/pwcore/shared/types'
 import { platform } from '../platform/platform'
 import { loadDemo, loadParsed, useSpectrum } from '../stores/spectrum'
 import { makeDemoData, parseData } from '../core-bridge/engine'
@@ -54,6 +54,18 @@ export async function importFromPlatform(): Promise<void> {
   } catch (err) {
     pushToast('error', `导入失败：${err instanceof Error ? err.message : String(err)}`)
   }
+}
+
+/**
+ * Adopt ALREADY-PARSED data as the working curve (2026-10-23: multi-file
+ * import / batch curve switching) — the same full session reset as a single
+ * file import, exposed for the batch store.
+ * 把已解析的数据采纳为工作曲线（2026-10-23：多选导入 / 批量曲线切换）——
+ * 与单文件导入同一套完整会话重置，供批量 store 调用。
+ */
+export function adoptParsedData(parsed: ParsedData, source: string): void {
+  loadParsed(parsed, source)
+  adoptNewData()
 }
 
 /**

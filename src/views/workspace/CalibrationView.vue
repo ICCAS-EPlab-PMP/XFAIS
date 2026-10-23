@@ -89,6 +89,7 @@
             v-else-if="step === 'peaks'"
             :peaks="peaks"
             :sensitivity="sensitivity"
+            :band-tol="bandTolPx"
             :current-ring="currentRing"
             :detecting="detecting"
             :guide-count="ringGuide.length"
@@ -99,6 +100,7 @@
             :refreshing="refreshingRings"
             @auto="handleAutoPeaks"
             @update:sensitivity="sensitivity = $event"
+            @update:band-tol="bandTolPx = $event"
             @update:current-ring="currentRing = $event"
             @clear="handleClearPeaks"
             @finish-ring="finishRingPick"
@@ -849,7 +851,15 @@ const colormapOptions = [
 
 // Peak state / 峰状态
 const peaks = ref<CalibPeak[]>([])
-const sensitivity = ref(0.5)
+// 2026-10-22 用户反馈：默认 0.5 时 massif 峰识别容易过宽（cutoff 偏低、keep
+// 偏多），默认降为 0.2，高级区（CalibPeakPanel 的 <details>）也已默认展开，
+// 便于直接调灵敏度。
+const sensitivity = ref(0.2)
+// Ring-band half-width ±dr for ring_pick (2026-10-23 user feedback: it was a
+// hidden 15 px backend constant; now user-settable in the peak panel).
+// ring_pick 的环带半宽 ±dr（2026-10-23 用户反馈：原为后端隐藏常量 15px，
+// 现在峰拾取面板里可调）。
+const bandTolPx = ref(15)
 const detecting = ref(false)
 const rings = ref<CalibRing[]>([])
 
@@ -2186,6 +2196,11 @@ async function finishRingPick(): Promise<void> {
       points: pts,
       extractMode: beyondMask.value ? 'beyond_mask' : 'contiguous',
       assignRing,
+      // 2026-10-23: the band half-width and the sensitivity slider now BOTH
+      // reach the band harvest (they were invisible to ring_pick before).
+      // 环带半宽与灵敏度现在都传入环带收峰（此前 ring_pick 看不到它们）。
+      tolPx: bandTolPx.value,
+      sensitivity: sensitivity.value,
     }))
     const harvested = normalizePeaks(data.peaks)
     const region = parseHarvestRegion(data.region)
@@ -3207,6 +3222,23 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Win10 矮视口修复（2026-10-22）：中栏原先没有滚动容器，画布下方的
+     1D/2D 积分预览被 .app-shell 的 overflow:hidden 直接裁掉（文档级滚动
+     条永不出现）。与左右栏对齐改为可滚动，子项不被压扁；画布可伸缩但
+     保底 420px，矮视口下滚动即可看到积分结果。 */
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+
+.cv-center > * {
+  flex-shrink: 0;
+}
+
+.cv-center > :deep(.calib-canvas) {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 420px;
 }
 
 /* Render settings bar / 渲染设置条 */

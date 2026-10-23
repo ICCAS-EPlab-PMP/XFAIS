@@ -41,6 +41,9 @@ import type {
 
 export interface WorkbenchPlatform extends WorkbenchApi {
   readonly kind: 'electron' | 'web'
+  /** Multi-file variant of openDataFile (batch fitting, v0.3.4): resolves []
+   * when cancelled. / 多选版文件对话框（批量拟合），取消时解析为 []。 */
+  openDataFiles(): Promise<OpenedFile[]>
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +120,9 @@ function openDataFile(): Promise<OpenedFile | null> {
   return new Promise<OpenedFile | null>((resolve) => {
     const input = document.createElement('input')
     input.type = 'file'
-    input.accept = '.prn,.csv,.txt,.tsv,.dat,.scn'
+    // .xy joined 2026-10-23: the integration module's XY export is a natural
+    // curve-fitting input. / 积分模块的 .xy 导出也是拟合输入。
+    input.accept = '.prn,.csv,.txt,.tsv,.dat,.scn,.xy'
     input.style.display = 'none'
     document.body.appendChild(input)
 
@@ -182,6 +187,83 @@ function openDataFile(): Promise<OpenedFile | null> {
 }
 
 /**
+ * Hidden MULTI-file picker (batch fitting, v0.3.4). Same cancel/focus
+ * fallbacks as the single-file variant; resolves [] when nothing was picked.
+ * 隐藏多选文件选择器（批量拟合）。取消/失焦兜底与单选版一致；未选择时解析 []。
+ */
+function openDataFiles(): Promise<OpenedFile[]> {
+  return new Promise<OpenedFile[]>((resolve) => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.prn,.csv,.txt,.tsv,.dat,.scn,.xy'
+    input.multiple = true
+    input.style.display = 'none'
+    document.body.appendChild(input)
+
+    let settled = false
+    let focusTimer: number | null = null
+
+    const cleanup = (): void => {
+      if (focusTimer !== null) {
+        window.clearTimeout(focusTimer)
+        focusTimer = null
+      }
+      window.removeEventListener('focus', onWindowFocus)
+      input.removeEventListener('change', onChange)
+      input.removeEventListener('cancel', onCancel)
+      input.remove()
+    }
+
+    const settle = (value: OpenedFile[]): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve(value)
+    }
+
+    const onCancel = (): void => settle([])
+
+    const readOne = async (file: File): Promise<OpenedFile | null> => {
+      const name = file.name
+      try {
+        if (isTextFile(name)) {
+          return { name, data: await file.text() }
+        }
+        return { name, data: await file.arrayBuffer() }
+      } catch {
+        return null
+      }
+    }
+
+    const onChange = (): void => {
+      const picked = Array.from(input.files ?? [])
+      // Clear the value so picking the SAME set again re-fires 'change'.
+      input.value = ''
+      if (picked.length === 0) {
+        settle([])
+        return
+      }
+      Promise.all(picked.map(readOne)).then((list) =>
+        settle(list.filter((f): f is OpenedFile => f !== null)),
+      )
+    }
+
+    const onWindowFocus = (): void => {
+      if (focusTimer !== null) window.clearTimeout(focusTimer)
+      focusTimer = window.setTimeout(() => {
+        focusTimer = null
+        if (!settled && (!input.files || input.files.length === 0)) settle([])
+      }, 600)
+    }
+
+    input.addEventListener('change', onChange)
+    input.addEventListener('cancel', onCancel)
+    window.addEventListener('focus', onWindowFocus)
+    input.click()
+  })
+}
+
+/**
  * Blob download through an object URL + a temporary anchor.
  * Returns true once the download was triggered (the browser cannot confirm
  * the user's "Save" click). / 通过 object URL + 临时 <a> 触发下载；返回 true
@@ -214,6 +296,7 @@ export const platform: WorkbenchPlatform = {
   stopFit: platformStopFit,
   abortFit: platformAbortFit,
   openDataFile,
+  openDataFiles,
   saveDataFile,
   window: null,
   onWindowState: () => {
