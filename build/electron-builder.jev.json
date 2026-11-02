@@ -1,6 +1,6 @@
 {
-  "appId": "com.iccas.x-fais.ai-assistant-preview",
-  "productName": "X-FAIS-AI-Assistant-Preview",
+  "appId": "com.iccas.x-fais.ai-assistant",
+  "productName": "X-FAIS-AI",
   "directories": {
     "buildResources": "resources",
     "output": "dist-electron-builder"

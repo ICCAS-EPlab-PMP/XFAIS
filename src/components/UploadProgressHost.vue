@@ -139,7 +139,11 @@ function formatEta(seconds: number): string {
 }
 
 .upload-done {
-  color: #059669;
+  /* green-700: the emerald-600 green measured 3.77:1 on white (visual review
+   * 2026-10-25); the bar fill below is decorative and stays #10b981.
+   * green-700 达 4.5:1+（视觉审查 2026-10-25 实测原绿 3.77:1）；进度条
+   * 填充属非文本装饰色，保持 #10b981 不变。 */
+  color: #15803d;
 }
 
 .upload-error {

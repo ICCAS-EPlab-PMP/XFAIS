@@ -153,6 +153,16 @@ const router = createRouter({
       },
     },
     {
+      path: '/workspace/transmission',
+      name: 'transmission',
+      component: () => import('@/views/workspace/TransmissionView.vue'),
+      meta: {
+        titleKey: 'transmission.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'transmission.subtitle',
+      },
+    },
+    {
       path: '/workspace/image-math',
       name: 'image-math',
       component: () => import('@/views/workspace/ImageMathView.vue'),
@@ -190,6 +200,16 @@ const router = createRouter({
         titleKey: 'lamellar.title',
         sectionKey: 'shell.sections.workspace',
         descriptionKey: 'lamellar.subtitle',
+      },
+    },
+    {
+      path: '/workspace/curve-fitting',
+      name: 'curve-fitting',
+      component: () => import('@/views/workspace/CurveFittingView.vue'),
+      meta: {
+        titleKey: 'curveFitting.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'curveFitting.subtitle',
       },
     },
     {

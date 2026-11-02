@@ -237,6 +237,166 @@ class TestBgSubtractHandlerIntegration:
 
         assert result["status"] == "cancelled"
 
+    def test_batch_single_data_file_exports_subtracted_h5(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Regression (2026-10-23): a single file via data_files must be
+        exported to disk — the legacy single 'subtract' action never saved
+        anything. / 回归（2026-10-23）：单文件经 data_files 走 batch 必须
+        落盘——旧 'subtract' 动作从不保存任何文件。"""
+        sample_file = tmp_path / "sample_00001.edf"
+        sample_file.write_bytes(b"fake-edf")
+        bg_file = tmp_path / "bg.edf"
+        bg_file.write_bytes(b"fake-bg")
+        output_dir = tmp_path / "out"
+
+        sample_data = np.full((20, 20), 100.0, dtype=np.float32)
+        bg_data = np.full((20, 20), 10.0, dtype=np.float32)
+
+        def _fake_load(path: str):
+            if "bg" in os.path.basename(path):
+                return bg_data, None, {"filename": os.path.basename(path)}
+            return sample_data, None, {"filename": os.path.basename(path)}
+
+        monkeypatch.setattr("python.service_launcher.ImageLoader.load", _fake_load)
+
+        from python.service_launcher import handle_bg_subtract
+
+        result = asyncio.run(
+            handle_bg_subtract(
+                {
+                    "action": "batch",
+                    "data_files": [str(sample_file)],
+                    "bg_path": str(bg_file),
+                    "output_dir": str(output_dir),
+                    "output_format": "h5",
+                    "transmission": 0.5,
+                },
+                _noop_progress,
+                asyncio.Event(),
+            )
+        )
+
+        assert result["status"] == "ok"
+        assert result["success_count"] == 1
+        assert result["failed_count"] == 0
+        out_file = output_dir / "sample_00001_subtracted.h5"
+        assert out_file.is_file(), f"expected exported file missing: {out_file}"
+        # output_files feeds the web frontend's /api/download flow.
+        # output_files 供 web 前端 /api/download 下载流程使用。
+        assert result["output_files"] == [str(out_file)]
+        with h5py.File(out_file, "r") as fh:
+            saved = np.asarray(fh["data"])
+        # 100 / 0.5 - 10 = 190
+        np.testing.assert_allclose(saved, 190.0)
+
+    def test_preview_result_renders_subtracted_image(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Regression (2026-10-23): preview_result must subtract the
+        background (with transmission) before rendering — it used to render
+        the raw sample untouched. / 回归（2026-10-23）：preview_result 必须
+        先按透射率扣除背景再渲染——旧实现原样渲染原始样品图。"""
+        sample_file = tmp_path / "sample.edf"
+        sample_file.write_bytes(b"fake-edf")
+        bg_file = tmp_path / "bg.edf"
+        bg_file.write_bytes(b"fake-bg")
+
+        sample_data = np.full((30, 30), 100.0, dtype=np.float32)
+        bg_data = np.full((30, 30), 10.0, dtype=np.float32)
+        rendered: dict[str, float] = {}
+
+        def _fake_load(path: str):
+            if "bg" in os.path.basename(path):
+                return bg_data, None, {}
+            return sample_data, None, {}
+
+        def _fake_compute_stats(data):
+            return {"autoMin": float(np.nanmin(data)), "autoMax": float(np.nanmax(data))}
+
+        def _fake_render_png(data, settings):
+            rendered["min"] = float(np.nanmin(data))
+            rendered["max"] = float(np.nanmax(data))
+            return b"fake-png"
+
+        monkeypatch.setattr("python.service_launcher.ImageLoader.load", _fake_load)
+        monkeypatch.setattr(
+            "python.service_launcher.ImageRenderer.compute_stats", _fake_compute_stats
+        )
+        monkeypatch.setattr(
+            "python.service_launcher.ImageRenderer.render_png", _fake_render_png
+        )
+
+        from python.service_launcher import handle_bg_subtract
+
+        result = asyncio.run(
+            handle_bg_subtract(
+                {
+                    "action": "preview_result",
+                    "sample_path": str(sample_file),
+                    "bg_path": str(bg_file),
+                    "transmission": 0.5,
+                },
+                _noop_progress,
+                asyncio.Event(),
+            )
+        )
+
+        assert result["status"] == "ok"
+        # 100 / 0.5 - 10 = 190 — raw sample (100) would fail this.
+        np.testing.assert_allclose(rendered["min"], 190.0)
+        np.testing.assert_allclose(rendered["max"], 190.0)
+
+    def test_preview_sample_does_not_subtract(self, tmp_path, monkeypatch) -> None:
+        """preview_sample keeps rendering the raw sample (no subtraction)."""
+        sample_file = tmp_path / "sample.edf"
+        sample_file.write_bytes(b"fake-edf")
+        bg_file = tmp_path / "bg.edf"
+        bg_file.write_bytes(b"fake-bg")
+
+        sample_data = np.full((30, 30), 100.0, dtype=np.float32)
+        bg_data = np.full((30, 30), 10.0, dtype=np.float32)
+        rendered: dict[str, float] = {}
+
+        def _fake_load(path: str):
+            if "bg" in os.path.basename(path):
+                return bg_data, None, {}
+            return sample_data, None, {}
+
+        def _fake_compute_stats(data):
+            return {"autoMin": float(np.nanmin(data)), "autoMax": float(np.nanmax(data))}
+
+        def _fake_render_png(data, settings):
+            rendered["max"] = float(np.nanmax(data))
+            return b"fake-png"
+
+        monkeypatch.setattr("python.service_launcher.ImageLoader.load", _fake_load)
+        monkeypatch.setattr(
+            "python.service_launcher.ImageRenderer.compute_stats", _fake_compute_stats
+        )
+        monkeypatch.setattr(
+            "python.service_launcher.ImageRenderer.render_png", _fake_render_png
+        )
+
+        from python.service_launcher import handle_bg_subtract
+
+        result = asyncio.run(
+            handle_bg_subtract(
+                {
+                    "action": "preview_sample",
+                    "sample_path": str(sample_file),
+                    "bg_path": str(bg_file),
+                    "transmission": 0.5,
+                },
+                _noop_progress,
+                asyncio.Event(),
+            )
+        )
+
+        assert result["status"] == "ok"
+        # Raw sample value, NOT the subtracted 190.
+        np.testing.assert_allclose(rendered["max"], 100.0)
+
     def test_ionchamber_match_handler(self, tmp_path) -> None:
         """Ionchamber match handler returns matches."""
         # Create ionchamber files

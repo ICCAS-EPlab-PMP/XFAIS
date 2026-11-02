@@ -160,8 +160,9 @@
       v-if="!open"
       type="button"
       class="ai-bar__fab"
-      :title="t('ai.bar.open')"
-      :aria-label="t('ai.bar.open')"
+      :class="{ 'ai-bar__fab--agent': agentActive }"
+      :title="agentActive ? t('ai.agentActive.tooltip') : t('ai.bar.open')"
+      :aria-label="agentActive ? t('ai.agentActive.tooltip') : t('ai.bar.open')"
       @click="open = true"
     >
       ✦
@@ -175,6 +176,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { useTransport } from '@/lib/transport'
 import { useAiAgent } from '@/ai/agent'
+import { agentActive } from '@/lib/agentLink'
 import { PONI_PATH_KEY, navTitle, rememberVisit } from '@/ai/context'
 import { clearHighlight } from '@/ai/highlight'
 import {
@@ -484,6 +486,39 @@ onMounted(() => {
 .ai-bar__fab:hover {
   transform: translateY(-2px) scale(1.05);
   box-shadow: 0 12px 30px rgba(99, 102, 241, 0.55);
+}
+
+/* External-agent halo (2026-10-25): while an MCP agent is actively operating
+ * the instance the FAB gets a distinct PURPLE breathing halo (the edge glow
+ * is blue — two colours tell "who is doing what": blue frame = agent active,
+ * purple core = the AI entry point it drives). Tooltip explains on hover.
+ * 外部 agent 接入光晕：agent 正在操作时 FAB 泛紫色呼吸光（边缘蓝框 +
+ * 紫色核心双色区分），悬停提示"AI Agent 正在控制此实例"。 */
+.ai-bar__fab--agent {
+  animation: ai-fab-agent-halo 2.6s ease-in-out infinite;
+}
+
+.ai-bar__fab--agent:hover {
+  animation: none;
+  box-shadow:
+    0 0 0 3px rgba(168, 85, 247, 0.30),
+    0 0 28px rgba(168, 85, 247, 0.55),
+    0 12px 30px rgba(99, 102, 241, 0.45);
+}
+
+@keyframes ai-fab-agent-halo {
+  0%, 100% {
+    box-shadow:
+      0 0 0 2px rgba(168, 85, 247, 0.20),
+      0 0 16px rgba(168, 85, 247, 0.38),
+      0 8px 24px rgba(99, 102, 241, 0.45);
+  }
+  50% {
+    box-shadow:
+      0 0 0 3px rgba(168, 85, 247, 0.32),
+      0 0 30px rgba(168, 85, 247, 0.60),
+      0 8px 24px rgba(99, 102, 241, 0.45);
+  }
 }
 
 /* ── Panel (floating window) ───────────────────────────────────── */

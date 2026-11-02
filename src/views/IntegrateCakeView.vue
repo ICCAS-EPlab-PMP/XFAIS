@@ -30,28 +30,26 @@
           <div class="cake-fieldset-grid">
             <label class="cake-field">
               <span class="cake-field-label">{{ t('integrateCake.azimuthRange.min') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="cake-input"
                 min="-360"
                 max="360"
                 step="5"
-                :value="azimuthMin"
+                :model-value="azimuthMin"
                 :data-testid="testIds.cakeAzimuthMin"
-                @input="onAzimuthInput('min', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onAzimuthInput('min', $event)"
               />
             </label>
             <label class="cake-field">
               <span class="cake-field-label">{{ t('integrateCake.azimuthRange.max') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="cake-input"
                 min="-360"
                 max="360"
                 step="5"
-                :value="azimuthMax"
+                :model-value="azimuthMax"
                 :data-testid="testIds.cakeAzimuthMax"
-                @input="onAzimuthInput('max', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onAzimuthInput('max', $event)"
               />
             </label>
           </div>
@@ -279,7 +277,9 @@
               :loading="thumbLoading"
               :sync-with-main="false"
               :columns-per-row="thumbColsPerRow"
+              deletable
               @select="handleThumbSelect"
+              @remove="removeFileAt"
               @prev-page="handleThumbPrevPage"
               @next-page="handleThumbNextPage"
               @jump-to-page="handleThumbJumpToPage"
@@ -364,6 +364,7 @@ import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } fro
 import type { ColormapName } from '@/lib/chart-utils'
 
 import GeometryForm from '@/components/business/GeometryForm.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
@@ -1078,6 +1079,43 @@ function handleThumbSelect(index: number): void {
   }
 }
 
+/**
+ * Remove ONE imported file (2026-10-22 user request: the thumbnail ✕ button
+ * deletes unneeded files so they no longer take part in display or CAKE
+ * integration). Falls back to the clear-all cleanup when the list empties;
+ * otherwise clamps the selection, refreshes the preview when the selected file
+ * was removed, and reloads the current thumbnail page (items carry global
+ * indices). The batch result no longer matches the new file list, so it is
+ * dropped as well.
+ * 删除单个已导入文件（2026-10-22 用户要求：缩略图 ✕ 删除不需要的文件，不再
+ * 参与展示与积分）。删空时走清空流程；否则收敛选中索引、选中项被删时刷新
+ * 预览，并重载当前页缩略图（条目带全局索引）。文件清单已变，旧批次结果不再
+ * 对应，一并清空。
+ */
+function removeFileAt(index: number): void {
+  if (index < 0 || index >= files.value.length) return
+  files.value.splice(index, 1)
+  if (files.value.length === 0) {
+    clearAllFiles()
+    return
+  }
+  resultTraces.value = []
+  resultData.value = null
+  runError.value = null
+  const wasSelected = selectedPreviewIndex.value === index
+  if (selectedPreviewIndex.value >= files.value.length) {
+    selectedPreviewIndex.value = files.value.length - 1
+  }
+  if (wasSelected) {
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+    const path = files.value[selectedPreviewIndex.value]
+    if (path) loadPreview(path)
+  }
+  thumbCurrentPage.value = Math.min(thumbCurrentPage.value, thumbTotalPages.value)
+  void loadThumbnailPage()
+}
+
 function handleThumbPrevPage(): void {
   if (thumbCurrentPage.value <= 1) return
   thumbCurrentPage.value -= 1
@@ -1107,11 +1145,10 @@ function handleThumbPageSizeChange(size: number): void {
 
 // ── Handlers / 处理函数 ──────────────────────────────────────────────────────
 
-function onAzimuthInput(field: 'min' | 'max', raw: string): void {
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  if (field === 'min') azimuthMin.value = num
-  else azimuthMax.value = num
+function onAzimuthInput(field: 'min' | 'max', value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
+  if (field === 'min') azimuthMin.value = value
+  else azimuthMax.value = value
 }
 
 async function handleRun(): Promise<void> {

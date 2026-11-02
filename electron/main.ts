@@ -200,6 +200,12 @@ const registerPythonRuntime = (): void => {
     await pythonManager?.crashForTest()
     return true
   })
+  // Agent bridge (AI build): the renderer's agent link connects directly to
+  // the Python WebSocket server (WS is not CORS-restricted), so it only needs
+  // the reserved WS port — same discovery logic as the task socket.
+  // Agent 桥（AI 版）：渲染层 agent 链路直连 Python WebSocket（WS 不受
+  // CORS 限制），只需拿到预留的 WS 端口——与任务套接字同一发现逻辑。
+  ipcMain.handle(IPC_CHANNELS.pythonWsPort, async () => await getTaskWebSocketPort())
 }
 
 const registerDialogHandlers = (): void => {
@@ -927,10 +933,13 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   manual_calibrant_generate: '/api/manual_calibrant_generate',
   list_space_groups: '/api/list_space_groups',
   bg_subtract: '/api/bg_subtract',
+  // v0.3.5: direct-beam transmission measurement / 直通光透过率测量
+  transmission: '/api/transmission',
   image_math: '/api/image_math',
   image_stitch: '/api/image_stitch',
   orientation_analysis: '/api/orientation_analysis',
   lamellar_analysis: '/api/lamellar_analysis',
+  curve_fitting: '/api/curve_fitting',
   poni_importer: '/api/poni_importer',
   calibration: '/api/calibration',
   ai_context: '/api/ai_context'

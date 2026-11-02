@@ -74,7 +74,7 @@
 
           <div class="pi-field">
             <label class="pi-label">{{ t('poniImporter.detectorDistance') }} (mm)</label>
-            <input v-model.number="createForm.distance" type="number" class="pi-input" step="1" min="0.1" />
+            <NumberField :model-value="createForm.distance" class="pi-input" step="1" min="0.1" @update:model-value="(v) => { if (v != null) createForm.distance = v }" />
           </div>
 
           <!-- Beam center X with unit toggle + origin hint / 光斑中心 X（单位切换 + 起始点提示） -->
@@ -106,14 +106,14 @@
                 >m</button>
               </div>
             </div>
-            <input v-model.number="createForm.beamCenterX" type="number" class="pi-input" step="any" min="0" />
+            <NumberField :model-value="createForm.beamCenterX" class="pi-input" step="any" min="0" @update:model-value="(v) => { if (v != null) createForm.beamCenterX = v }" />
           </div>
 
           <div class="pi-field">
             <div class="pi-label-row">
               <label class="pi-label">{{ t('poniImporter.beamCenterY') }}</label>
             </div>
-            <input v-model.number="createForm.beamCenterY" type="number" class="pi-input" step="any" min="0" />
+            <NumberField :model-value="createForm.beamCenterY" class="pi-input" step="any" min="0" @update:model-value="(v) => { if (v != null) createForm.beamCenterY = v }" />
           </div>
 
           <!-- Origin hint (collapsible) / 起始点说明（可展开） -->
@@ -173,7 +173,7 @@
                 >mm</button>
               </div>
             </div>
-            <input v-model.number="createForm.pixel_size" type="number" class="pi-input" :step="pixelSizeUnit === 'um' ? 1 : 0.001" :min="pixelSizeUnit === 'um' ? 1 : 0.001" />
+            <NumberField :model-value="createForm.pixel_size" class="pi-input" :step="pixelSizeUnit === 'um' ? 1 : 0.001" :min="pixelSizeUnit === 'um' ? 1 : 0.001" @update:model-value="(v) => { if (v != null) createForm.pixel_size = v }" />
           </div>
 
           <!-- Pixel origin orientation / 像素原点方向 -->
@@ -201,15 +201,15 @@
             <!-- Rotation parameters (degrees) / 旋转参数（度） -->
             <div class="pi-field">
               <label class="pi-label">{{ t('poniImporter.rot1') }} (°)</label>
-              <input v-model.number="createForm.rot1" type="number" class="pi-input" step="any" />
+              <NumberField :model-value="createForm.rot1" class="pi-input" step="any" @update:model-value="(v) => { if (v != null) createForm.rot1 = v }" />
             </div>
             <div class="pi-field">
               <label class="pi-label">{{ t('poniImporter.rot2') }} (°)</label>
-              <input v-model.number="createForm.rot2" type="number" class="pi-input" step="any" />
+              <NumberField :model-value="createForm.rot2" class="pi-input" step="any" @update:model-value="(v) => { if (v != null) createForm.rot2 = v }" />
             </div>
             <div class="pi-field">
               <label class="pi-label">{{ t('poniImporter.rot3') }} (°)</label>
-              <input v-model.number="createForm.rot3" type="number" class="pi-input" step="any" />
+              <NumberField :model-value="createForm.rot3" class="pi-input" step="any" @update:model-value="(v) => { if (v != null) createForm.rot3 = v }" />
             </div>
 
             <!-- Detector preset / 探测器预设 -->
@@ -242,9 +242,9 @@
               <div class="pi-field">
                 <label class="pi-label">{{ t('poniImporter.detectorShape') }}</label>
                 <div class="pi-shape-row">
-                  <input v-model.number="createForm.shape_rows" type="number" class="pi-input" min="1" step="1" placeholder="rows" />
+                  <NumberField :model-value="createForm.shape_rows" class="pi-input" min="1" step="1" placeholder="rows" @update:model-value="createForm.shape_rows = $event" />
                   <span class="pi-shape-x">×</span>
-                  <input v-model.number="createForm.shape_cols" type="number" class="pi-input" min="1" step="1" placeholder="cols" />
+                  <NumberField :model-value="createForm.shape_cols" class="pi-input" min="1" step="1" placeholder="cols" @update:model-value="createForm.shape_cols = $event" />
                 </div>
                 <p class="pi-field-hint">{{ t('poniImporter.detectorShapeHint') }}</p>
               </div>
@@ -321,12 +321,11 @@
                   :value="climMin"
                   @input="updateClimMin(Number(($event.target as HTMLInputElement).value))"
                 />
-                <input
-                  :value="climMin"
-                  type="number"
+                <NumberField
+                  :model-value="climMin"
                   class="pi-input pi-input--sm"
                   step="any"
-                  @input="updateClimMin(Number(($event.target as HTMLInputElement).value))"
+                  @update:model-value="updateClimMin($event ?? 0)"
                 />
               </div>
               <div class="pi-clim-field">
@@ -340,12 +339,11 @@
                   :value="climMax"
                   @input="updateClimMax(Number(($event.target as HTMLInputElement).value))"
                 />
-                <input
-                  :value="climMax"
-                  type="number"
+                <NumberField
+                  :model-value="climMax"
                   class="pi-input pi-input--sm"
                   step="any"
-                  @input="updateClimMax(Number(($event.target as HTMLInputElement).value))"
+                  @update:model-value="updateClimMax($event ?? 0)"
                 />
               </div>
             </div>
@@ -461,6 +459,7 @@ import { matchesExtensions, useDropZone } from '@/lib/fileDrop'
 import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
 import ImagePreview from '@/components/charts/ImagePreview.vue'
 import type { Overlay } from '@/components/charts/ImagePreview.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import H5Selector from '@/components/business/H5Selector.vue'
 import type { H5DatasetInfo, H5Selection } from '@/components/business/H5Selector.vue'
 

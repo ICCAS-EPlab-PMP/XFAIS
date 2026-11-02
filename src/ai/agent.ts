@@ -34,7 +34,7 @@ import {
 } from './types'
 import { NAV_CATALOG, PONI_PATH_KEY, buildAppState, navEntry, navTitle } from './context'
 import { highlightTarget } from './highlight'
-import { decideRouteViaRules, decideTemplateViaRules, unitForTemplate, unitRuleReason } from './rules-router'
+import { decideRouteViaRules, decideOptionsViaRules, decideTemplateViaRules, moduleOptionLabel, unitForTemplate, unitRuleReason } from './rules-router'
 import { askTypesafeChoice, askTypesafeChoices, webJevConfigured } from './providers/typesafe'
 import { createGuideEngine, teachingEnabled, type GuideEngine } from './guide/engine'
 import { GUIDES, hasGuide } from './guide/registry'
@@ -95,6 +95,15 @@ export interface HistoryLine {
 }
 
 export const APPLY_TEMPLATE_EVENT = 'xfaos:ai-apply-template'
+/**
+ * Per-module option application: fired after a confident navigation with the
+ * options decided for the target module (deterministic rules today). Views
+ * opt in by listening and re-validating their own state before assigning —
+ * inert in the main build where nothing dispatches it.
+ * 模块选项应用事件：高置信导航后按目标模块派发已判定的选项（当前为确定性
+ * 规则）。视图监听并在赋值前自行校验状态；主线构建无人派发，监听器惰性。
+ */
+export const APPLY_OPTIONS_EVENT = 'xfaos:ai-apply-options'
 
 const TEMPLATE_INTENT_RE = /常规|普通|standard|模板|template|waxs|saxs|giwaxs|广角|小角/i
 /** Display names for the radial units the AI layer may apply. */
@@ -368,6 +377,38 @@ export function useAiAgent() {
     }
   }
 
+  // ── Per-module options: deterministic pre-selection, views opt in ─────────
+
+  /**
+   * Decide the target module's options from the same intent that routed here
+   * and dispatch APPLY_OPTIONS_EVENT with them. Rules-only today (deterministic
+   * form-filling needs no key and no network); the Jev chain can refine this
+   * later behind the same event contract. Narrates what was pre-selected so
+   * the user can undo it in the module's own form.
+   * 用路由所用的同一句意图判定目标模块的选项并派发 APPLY_OPTIONS_EVENT。
+   * 当前仅规则层（表单预选要确定性、离线、无需密钥）；Jev 链路日后可在同一
+   * 事件契约下精化。旁播预选内容，用户可在模块表单里自行改掉。
+   */
+  const applyOptionsPhase = async (
+    routeName: string,
+    intent: string,
+    provider: RouteDecision['provider']
+  ): Promise<void> => {
+    const decision = decideOptionsViaRules(routeName, intent)
+    if (!decision) return
+    const items = Object.entries(decision.options)
+      .map(([key, value]) => moduleOptionLabel(routeName, key, value))
+      .join(' · ')
+    const reasons = Object.values(decision.reasons).join('；')
+    window.dispatchEvent(
+      new CustomEvent(APPLY_OPTIONS_EVENT, { detail: { ...decision, provider } })
+    )
+    say(
+      `${globalT('ai.options.applied')} · ${items}` +
+        (reasons ? ` · ${globalT('ai.template.reasonLabel')}: ${reasons}` : '')
+    )
+  }
+
   // ── Phase 1: intent → route ────────────────────────────────────────────────
 
   const runRoutePhase = async (intent: string): Promise<void> => {
@@ -404,6 +445,11 @@ export function useAiAgent() {
         state.value = 'guide'
         return
       }
+
+      // Phase 2 generalized: pre-select the target module's options from the
+      // same intent before handing control back to the user.
+      // Phase 2 泛化：交还控制权前，用同一句意图预选目标模块的选项。
+      await applyOptionsPhase(decision.routeName, intent, decision.provider)
 
       state.value = 'wait-user'
       say(`${navTitle(decision.routeName)} · ${Math.round(decision.confidence * 100)}%`)

@@ -46,24 +46,22 @@
             </label>
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.radialRange.min') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 step="0.1"
-                :value="radialMin"
+                :model-value="radialMin"
                 :data-testid="testIds.azimuthRadialMin"
-                @input="onRadialInput('min', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onRadialInput('min', $event)"
               />
             </label>
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.radialRange.max') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 step="0.1"
-                :value="radialMax"
+                :model-value="radialMax"
                 :data-testid="testIds.azimuthRadialMax"
-                @input="onRadialInput('max', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onRadialInput('max', $event)"
               />
             </label>
             <p v-if="radialValidationError" class="az-error">
@@ -79,28 +77,26 @@
           <div class="az-grid">
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.azimuthRange.min') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 min="-360"
                 max="360"
                 step="5"
-                :value="azimuthMin"
+                :model-value="azimuthMin"
                 :data-testid="testIds.azimuthAzimuthMin"
-                @input="onAzimuthInput('min', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onAzimuthInput('min', $event)"
               />
             </label>
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.azimuthRange.max') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 min="-360"
                 max="360"
                 step="5"
-                :value="azimuthMax"
+                :model-value="azimuthMax"
                 :data-testid="testIds.azimuthAzimuthMax"
-                @input="onAzimuthInput('max', ($event.target as HTMLInputElement).value)"
+                @update:model-value="onAzimuthInput('max', $event)"
               />
             </label>
             <p v-if="azimuthValidationError" class="az-error">
@@ -144,26 +140,24 @@
           <div class="az-grid">
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.params.npt') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 min="10"
                 step="10"
-                :value="npt"
+                :model-value="npt"
                 :data-testid="testIds.azimuthNpt"
-                @input="npt = parseInt(($event.target as HTMLInputElement).value) || 360"
+                @update:model-value="onNptInput"
               />
             </label>
             <label class="az-field">
               <span class="az-field-label">{{ t('integrateAzimuth.params.nptRad') }}</span>
-              <input
-                type="number"
+              <NumberField
                 class="az-input"
                 min="1"
                 step="10"
-                :value="nptRad"
+                :model-value="nptRad"
                 :data-testid="testIds.azimuthNptRad"
-                @input="nptRad = parseInt(($event.target as HTMLInputElement).value) || 100"
+                @update:model-value="onNptRadInput"
               />
             </label>
           </div>
@@ -356,7 +350,9 @@
               :loading="thumbLoading"
               :sync-with-main="false"
               :columns-per-row="thumbColsPerRow"
+              deletable
               @select="handleThumbSelect"
+              @remove="removeFileAt"
               @prev-page="handleThumbPrevPage"
               @next-page="handleThumbNextPage"
               @jump-to-page="handleThumbJumpToPage"
@@ -444,6 +440,7 @@ import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } fro
 import type { ColormapName } from '@/lib/chart-utils'
 
 import GeometryForm from '@/components/business/GeometryForm.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
@@ -1248,6 +1245,43 @@ function handleThumbSelect(index: number): void {
   }
 }
 
+/**
+ * Remove ONE imported file (2026-10-22 user request: the thumbnail ✕ button
+ * deletes unneeded files so they no longer take part in display or azimuth
+ * integration). Falls back to the clear-all cleanup when the list empties;
+ * otherwise clamps the selection, refreshes the preview when the selected file
+ * was removed, and reloads the current thumbnail page (items carry global
+ * indices). Cached azimuth curves belong to the old file list, so they are
+ * dropped too.
+ * 删除单个已导入文件（2026-10-22 用户要求：缩略图 ✕ 删除不需要的文件，不再
+ * 参与展示与积分）。删空时走清空流程；否则收敛选中索引、选中项被删时刷新
+ * 预览，并重载当前页缩略图（条目带全局索引）。旧结果曲线对应旧文件清单，
+ * 一并清空。
+ */
+function removeFileAt(index: number): void {
+  if (index < 0 || index >= files.value.length) return
+  files.value.splice(index, 1)
+  if (files.value.length === 0) {
+    clearAllFiles()
+    return
+  }
+  chartTraces.value = []
+  exportData.value = null
+  errorMessage.value = null
+  const wasSelected = selectedPreviewIndex.value === index
+  if (selectedPreviewIndex.value >= files.value.length) {
+    selectedPreviewIndex.value = files.value.length - 1
+  }
+  if (wasSelected) {
+    h5Datasets.value = []
+    h5Selection.value = { dataset: '', channel: 0, frame: 0 }
+    const path = files.value[selectedPreviewIndex.value]
+    if (path) loadPreview(path)
+  }
+  thumbCurrentPage.value = Math.min(thumbCurrentPage.value, thumbTotalPages.value)
+  void loadThumbnailPage()
+}
+
 function handleThumbPrevPage(): void {
   if (thumbCurrentPage.value <= 1) return
   thumbCurrentPage.value -= 1
@@ -1292,18 +1326,29 @@ function onRadialUnitChange(event: Event): void {
   radialMax.value = hi
 }
 
-function onRadialInput(field: 'min' | 'max', raw: string): void {
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  if (field === 'min') radialMin.value = num
-  else radialMax.value = num
+function onRadialInput(field: 'min' | 'max', value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
+  if (field === 'min') radialMin.value = value
+  else radialMax.value = value
 }
 
-function onAzimuthInput(field: 'min' | 'max', raw: string): void {
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  if (field === 'min') azimuthMin.value = num
-  else azimuthMax.value = num
+function onAzimuthInput(field: 'min' | 'max', value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
+  if (field === 'min') azimuthMin.value = value
+  else azimuthMax.value = value
+}
+
+// NPT fields: an empty field keeps the last valid value instead of snapping
+// back to the default — rewriting the field mid-edit ("clear to retype"
+// becomes "3605") is exactly the clobbering NumberField exists to prevent.
+// NPT 输入框：清空时保留上一个有效值而非跳回默认值——编辑中途把输入框改写
+// 成默认值（想清空重输却得到 "3605"）正是 NumberField 要杜绝的打断行为。
+function onNptInput(value: number | null): void {
+  if (value != null && Number.isFinite(value)) npt.value = value
+}
+
+function onNptRadInput(value: number | null): void {
+  if (value != null && Number.isFinite(value)) nptRad.value = value
 }
 
 async function handleRun(): Promise<void> {

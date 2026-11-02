@@ -117,8 +117,11 @@ export function createGuideEngine(guides: Record<string, GuideDefinition>, deps:
     if (!step.aiId) return
     if (step.autoClick && autoClickEnabled() && !AUTOCLICK_BLOCKED.test(step.aiId)) {
       void armAutoClick(step, snap)
-    } else {
-      highlightTarget(step.aiId, pick(step.title))
+    } else if (!highlightTarget(step.aiId, pick(step.title))) {
+      // Anchor not in the DOM (other mode / conditional panel not mounted) —
+      // say so instead of silently spotlighting nothing (2026-10-25).
+      // 锚点不在 DOM（其他模式/条件面板未挂载）——明确说明，而非无声无息。
+      deps.say(globalT('ai.guide.noAnchor', { title: pick(step.title) }))
     }
   }
 
@@ -128,7 +131,9 @@ export function createGuideEngine(guides: Record<string, GuideDefinition>, deps:
     const gateOk =
       confidenceValue >= minConfidence && (step.allowWhen ? step.allowWhen(snap) : true)
     if (!gateOk) {
-      highlightTarget(step.aiId ?? '', pick(step.title))
+      if (!highlightTarget(step.aiId ?? '', pick(step.title))) {
+        deps.say(globalT('ai.guide.noAnchor', { title: pick(step.title) }))
+      }
       return
     }
     void activateTarget(step.aiId ?? '', {
@@ -143,8 +148,10 @@ export function createGuideEngine(guides: Record<string, GuideDefinition>, deps:
         void nextTick(() => recheck())
       } else if (outcome === 'cancelled') {
         deps.say(globalT('ai.guide.cancelled'))
+      } else if (outcome === 'no-target') {
+        deps.say(globalT('ai.guide.noAnchor', { title: pick(step.title) }))
       }
-      // 'disabled' / 'no-target': stay put; the user acts manually.
+      // 'disabled': stay put; the user acts manually.
     })
   }
 
@@ -194,12 +201,43 @@ export function createGuideEngine(guides: Record<string, GuideDefinition>, deps:
     confidenceProvider = provider
     const guide = guides[routeName]
     if (!guide) return
+
+    // Applicability gate (2026-10-25): a mode/branch whose controls are not
+    // in this step table → explain instead of spotlighting missing anchors.
+    const snap0 = workspaceSnapshotOf(routeName)
+    if (guide.applicable && !guide.applicable(snap0)) {
+      const fallback = { zh: '当前模式暂无对应教程', en: 'No tutorial for the current mode' }
+      deps.say(`${globalT('ai.guide.started', { name: navTitle(routeName) })} — ${globalT('ai.guide.notApplicable', { note: pick(guide.inapplicableNote ?? fallback) })}`)
+      deps.onChange()
+      return
+    }
+
     activeRoute.value = routeName
     stepIndex.value = 0
     totalSteps.value = guide.steps.length
     currentTitle.value = pick(guide.title)
     deps.say(globalT('ai.guide.started', { name: navTitle(routeName) }))
     deps.onChange()
+
+    // Confirm the user's position BEFORE the first spotlight (2026-10-25):
+    // fast-forward steps already satisfied — the user may have clicked ahead —
+    // and say where the tour resumes. Everything done → finish immediately.
+    let skipped = 0
+    while (stepIndex.value < guide.steps.length && guide.steps[stepIndex.value].done(snap0)) {
+      stepIndex.value += 1
+      skipped += 1
+    }
+    if (stepIndex.value >= guide.steps.length) {
+      finishGuide()
+      return
+    }
+    if (skipped > 0) {
+      deps.say(globalT('ai.guide.resumed', {
+        current: String(stepIndex.value + 1),
+        total: String(totalSteps.value),
+        skipped: String(skipped),
+      }))
+    }
 
     stopWatcher = watch(
       () => (activeRoute.value ? snapshots[activeRoute.value] : undefined),

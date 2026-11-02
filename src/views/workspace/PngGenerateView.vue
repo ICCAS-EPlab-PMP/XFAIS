@@ -132,20 +132,20 @@
             <div v-if="template.clim_mode === 'manual'" class="pg-clim-inputs">
               <label class="pg-field pg-field--inline">
                 <span class="pg-field-label pg-field-label--sm">Min</span>
-                <input
-                  v-model.number="climMinInput"
-                  type="number"
+                <NumberField
+                  :model-value="climMinInput"
                   class="pg-input"
                   :data-testid="testIds.pngGenerateClimMin"
+                  @update:model-value="climMinInput = $event"
                 />
               </label>
               <label class="pg-field pg-field--inline">
                 <span class="pg-field-label pg-field-label--sm">Max</span>
-                <input
-                  v-model.number="climMaxInput"
-                  type="number"
+                <NumberField
+                  :model-value="climMaxInput"
                   class="pg-input"
                   :data-testid="testIds.pngGenerateClimMax"
+                  @update:model-value="climMaxInput = $event"
                 />
               </label>
             </div>
@@ -179,13 +179,13 @@
           <!-- DPI / 分辨率 -->
           <label class="pg-field">
             <span class="pg-field-label">{{ t('pngGenerate.display.dpi') }}</span>
-            <input
-              v-model.number="template.dpi"
-              type="number"
+            <NumberField
+              :model-value="template.dpi"
               min="72"
               max="1200"
               class="pg-input"
               :data-testid="testIds.pngGenerateDpi"
+              @update:model-value="(v) => { if (v != null) template.dpi = v }"
             />
           </label>
 
@@ -338,6 +338,7 @@ import { useToast } from '@/lib/toast'
 import { testIds } from '@/lib/testIds'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ResultSummary from '@/components/business/ResultSummary.vue'
 import type { ResultSummaryData } from '@/components/business/ResultSummary.vue'
@@ -423,14 +424,14 @@ const template = reactive<PngTemplate>(createDefaultTemplate())
 
 const climMinInput = computed({
   get: () => template.clim[0],
-  set: (v: number | undefined) => {
+  set: (v: number | null | undefined) => {
     template.clim[0] = v ?? null
   },
 })
 
 const climMaxInput = computed({
   get: () => template.clim[1],
-  set: (v: number | undefined) => {
+  set: (v: number | null | undefined) => {
     template.clim[1] = v ?? null
   },
 })

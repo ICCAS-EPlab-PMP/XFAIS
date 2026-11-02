@@ -81,16 +81,16 @@
                   @click="currentSampleIndex = idx"
                 >
                   <span class="bgs-file-list-name" :title="fp">{{ extractFileName(fp) }}</span>
-                  <input
+                  <NumberField
                     v-if="transmissionSource === 'per-file'"
-                    v-model.number="perFileTransmissions[fp]"
-                    type="number"
+                    :model-value="perFileTransmissions[fp]"
                     class="bgs-input bgs-input-tiny"
                     min="0"
                     max="100"
                     step="0.1"
                     placeholder="%"
                     @click.stop
+                    @update:model-value="(v) => { if (v != null) perFileTransmissions[fp] = v }"
                   />
                   <button
                     type="button"
@@ -161,22 +161,30 @@
               <input v-model="transmissionSource" type="radio" value="ionchamber" />
               <span>{{ t('bgSubtract.transIonchamber') }}</span>
             </label>
+            <label class="bgs-radio-label">
+              <input v-model="transmissionSource" type="radio" value="file" data-testid="bg-trans-file-radio" />
+              <span>{{ t('bgSubtract.transFile') }}</span>
+            </label>
           </div>
 
-          <div v-if="transmissionSource === 'per-file' && tooManyFilesForPerFile" class="bgs-match-warning">
-            ⚠ {{ t('bgSubtract.tooManyFilesWarning') }}
+          <!-- Over-limit notice: shown whenever the per-file option is out of
+               reach (any source mode), so the user is always told WHY it is
+               disabled. / 超限提示：只要超出逐文件上限就显示（与当前来源模式
+               无关），用户始终能知道选项为何不可用。 -->
+          <div v-if="tooManyFilesForPerFile" class="bgs-match-warning">
+            ⚠ {{ t('bgSubtract.tooManyFilesWarning', { limit: PER_FILE_TRANSMISSION_LIMIT }) }}
           </div>
 
           <!-- Manual transmission / 手动透射率 -->
           <div v-if="transmissionSource === 'manual'" class="bgs-field">
             <label class="bgs-label">{{ t('bgSubtract.transmissionValue') }} (%)</label>
-            <input
-              v-model.number="manualTransmission"
-              type="number"
+            <NumberField
+              :model-value="manualTransmission"
               class="bgs-input"
               min="0"
               max="100"
               step="0.1"
+              @update:model-value="(v) => { if (v != null) manualTransmission = v }"
             />
           </div>
 
@@ -284,9 +292,79 @@
           </template>
         </div>
 
+        <!-- Transmission file import / 透过率文件导入 -->
+        <div class="bgs-card">
+          <h3 class="bgs-card-title">{{ t('bgSubtract.transFile') }}</h3>
+          <!-- Stay visible after a successful match even though the source
+               auto-switched to per-file — otherwise the match table the user
+               just earned vanishes with the card. / 匹配成功后来源会自动切到
+               “分别设置”，卡片内容必须随之保留——否则刚得到的匹配表跟着卡片
+               一起消失。 -->
+          <p
+            v-if="transmissionSource !== 'file' && transmissionMatches.length === 0"
+            class="bgs-file-summary bgs-file-summary--muted"
+          >
+            {{ t('bgSubtract.transFileHint') }}
+          </p>
+          <template v-else>
+            <FileDialogButton
+              v-model="transmissionFile"
+              mode="openFile"
+              :label="t('bgSubtract.transFilePick')"
+              :filters="transmissionFileFilters"
+              data-ai-id="bg:trans-file-pick"
+            />
+            <button
+              type="button"
+              class="bgs-btn"
+              :disabled="!canMatchTransmissionFile"
+              data-ai-id="bg:trans-file-match"
+              data-testid="bg-trans-file-match"
+              @click="handleMatchTransmissionFile"
+            >
+              {{ matchingTransmissionFile ? t('bgSubtract.transFileMatching') : t('bgSubtract.transFileMatch') }}
+            </button>
+
+            <!-- Match results table / 匹配结果表 -->
+            <div v-if="transmissionMatches.length > 0" class="bgs-match-table-wrap" data-testid="bg-trans-match-table">
+              <div v-if="allTransmissionUnmatched" class="bgs-match-warning">
+                ⚠ {{ t('bgSubtract.transFileNoMatch') }}
+              </div>
+              <table class="bgs-match-table">
+                <thead>
+                  <tr>
+                    <th>{{ t('bgSubtract.transMatchColFile') }}</th>
+                    <th class="bgs-col-num">{{ t('bgSubtract.transMatchColTrans') }}</th>
+                    <th>{{ t('bgSubtract.transMatchColNote') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="m in transmissionMatches" :key="m.data_file">
+                    <td :title="m.data_file">{{ extractFileName(m.data_file) }}</td>
+                    <td class="bgs-col-num">{{ typeof m.transmission === 'number' ? (m.transmission * 100).toFixed(2) + '%' : '—' }}</td>
+                    <td
+                      :class="{ 'bgs-error-cell': typeof m.transmission !== 'number' }"
+                      :title="m.note || (m.matched_file ? extractFileName(m.matched_file) : '')"
+                    >
+                      {{ m.note || (m.matched_file ? extractFileName(m.matched_file) : '') }}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </div>
+
         <!-- Export settings / 导出设置 -->
         <div class="bgs-card">
           <h3 class="bgs-card-title">{{ t('bgSubtract.export') }}</h3>
+          <!-- Web mode cannot pick a server-side folder; results download
+               automatically instead — say so, or the dead dir picker reads
+               as broken. / web 模式无法选择服务器目录，结果改为自动下载
+               ——必须说明，否则点不动的目录按钮像坏了。 -->
+          <div v-if="!transport.isDesktop()" class="bgs-match-warning">
+            {{ t('bgSubtract.webExportNote') }}
+          </div>
           <FileDialogButton
             v-model="outputDir"
             mode="openFolder"
@@ -404,11 +482,21 @@
             <template v-if="climMode === 'manual'">
               <div class="bgs-field">
                 <label class="bgs-label">Min</label>
-                <input v-model.number="climMin" type="number" class="bgs-input bgs-input-sm" step="any" />
+                <NumberField
+                  :model-value="climMin"
+                  class="bgs-input bgs-input-sm"
+                  step="any"
+                  @update:model-value="climMin = $event ?? 0"
+                />
               </div>
               <div class="bgs-field">
                 <label class="bgs-label">Max</label>
-                <input v-model.number="climMax" type="number" class="bgs-input bgs-input-sm" step="any" />
+                <NumberField
+                  :model-value="climMax"
+                  class="bgs-input bgs-input-sm"
+                  step="any"
+                  @update:model-value="climMax = $event ?? 0"
+                />
               </div>
             </template>
           </div>
@@ -503,6 +591,7 @@ import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import ResultSummary from '@/components/business/ResultSummary.vue'
 import type { ResultSummaryData } from '@/components/business/ResultSummary.vue'
 import ThumbnailStrip from '@/components/business/ThumbnailStrip.vue'
@@ -522,10 +611,21 @@ interface IonchamberMatch {
   transmission_computed?: boolean
 }
 
+/** One row of the transmission-file match table (basename match, case-insensitive).
+ *  透过率文件匹配表的一行（按文件名匹配，大小写不敏感）。 */
+interface TransmissionFileMatch {
+  data_file: string
+  matched_file: string | null
+  transmission: number | null
+  note?: string
+}
+
 interface BatchResult {
   success_count: number
   failed_count: number
   failed_files: string[]
+  /** Absolute paths of exported files (web mode downloads these). */
+  output_files?: string[]
   output_dir: string
   elapsed: number
 }
@@ -539,7 +639,7 @@ interface PreviewStats {
 
 type PageState = 'idle' | 'running' | 'done' | 'error'
 type Mode = 'single' | 'batch'
-type TransmissionSource = 'manual' | 'per-file' | 'ionchamber'
+type TransmissionSource = 'manual' | 'per-file' | 'ionchamber' | 'file'
 type ImportMode = 'replace' | 'append'
 
 // === Composables / 组合函数 ===
@@ -591,6 +691,16 @@ const minScore = ref(0.4)
 const regexPattern = ref('')
 const ionchamberChannel = ref('Ionchamber0')
 const ionchamberMethod = ref<'median' | 'mean' | 'trimmed_mean'>('median')
+
+// === Transmission file (CSV/JSON from the transmission page) / 透过率文件 ===
+
+const transmissionFile = ref<string | null>(null)
+const transmissionMatches = ref<TransmissionFileMatch[]>([])
+const matchingTransmissionFile = ref(false)
+const transmissionFileFilters = [
+  { name: 'Transmission Files', extensions: ['csv', 'json'] },
+  { name: 'All Files', extensions: ['*'] },
+]
 
 // === Display settings / 显示设置 ===
 
@@ -645,10 +755,19 @@ const currentSamplePaths = computed(() => {
 
 const canSubtract = computed(() => {
   if (state.value === 'running') return false
-  if (mode.value === 'single') {
-    return samplePaths.value.length > 0 && !!bgPath.value
-  }
-  return batchFolderFiles.value.length > 0 && !!bgPath.value && !!outputDir.value
+  // Desktop requires an explicit output dir in BOTH modes: single-file runs
+  // must also land on disk (the legacy single path computed a preview but
+  // never saved — user report 2026-10-23 "subtracted but nothing exported").
+  // Web mode has NO folder picker (browsers cannot browse the server), so
+  // single mode there must not require one: results are saved next to the
+  // uploaded samples and auto-downloaded via /api/download.
+  // 桌面模式两种方式都要求显式输出目录：单文件执行同样要落盘（旧单文件
+  // 路径只算不存，2026-10-23 用户报告"发生了扣除但不导出"的根因）。
+  // web 模式没有目录选择器（浏览器无法浏览服务器目录），单文件模式不
+  // 要求输出目录：结果保存到样品上传目录旁并经 /api/download 自动下载。
+  const requireOutDir = transport.isDesktop() || mode.value === 'batch'
+  return currentSamplePaths.value.length > 0 && !!bgPath.value
+    && (!requireOutDir || !!outputDir.value)
 })
 
 // Publish progress to the workspace-state bridge for the AI guided tour
@@ -679,7 +798,31 @@ const canMatchIonchamber = computed(() => {
   return hasFiles && !!ionchamberFolder.value && !matchingIonchamber.value
 })
 
-const tooManyFilesForPerFile = computed(() => currentSamplePaths.value.length > 10)
+/** Transmission-file matching: files present + a transmission file chosen.
+ *  In batch mode a selected folder is enough — the backend scans it itself. */
+const canMatchTransmissionFile = computed(() => {
+  const hasFiles = mode.value === 'batch'
+    ? !!sampleFolder.value || batchFolderFiles.value.length > 0
+    : samplePaths.value.length > 0
+  return hasFiles && !!transmissionFile.value && !matchingTransmissionFile.value
+})
+
+/** True when a match attempt produced no usable transmission at all. */
+const allTransmissionUnmatched = computed(() =>
+  transmissionMatches.value.length > 0
+  && transmissionMatches.value.every(m => typeof m.transmission !== 'number')
+)
+
+// Per-file transmission cap (user request 2026-10-13: raised 10 → 100). The
+// UI keeps the per-file inputs for up to 100 sample images; beyond that the
+// radio is disabled AND the user is explicitly told (visible warning + toast
+// on the forced switch) instead of the option silently greying out — the
+// previous behaviour read as "the feature disappeared" after importing many
+// images. / 逐文件透过率上限（2026-10-13 用户要求：10 → 100）。≤100 张仍可
+// 逐文件设置；超出时禁用单选并明确告知（警示条 + 强切时的 toast），而非像
+// 从前那样选项悄悄变灰——用户导入多图后误以为功能丢失。
+const PER_FILE_TRANSMISSION_LIMIT = 100
+const tooManyFilesForPerFile = computed(() => currentSamplePaths.value.length > PER_FILE_TRANSMISSION_LIMIT)
 
 const batchResultSummary = computed<ResultSummaryData | null>(() => {
   if (!batchResult.value) return null
@@ -742,10 +885,17 @@ watch(bgPath, (newPath) => {
   }
 })
 
-// Force switch away from per-file when too many files / 文件过多时强制切离逐文件模式
+// Force switch away from per-file when over the limit — WITH a toast, so the
+// forced fallback is never silent (user request 2026-10-13: 超出数量请告知用户).
+// 超出逐文件上限时强制切回统一模式——附 toast 提示，绝不静默切换。
 watch(tooManyFilesForPerFile, (tooMany) => {
   if (tooMany && transmissionSource.value === 'per-file') {
     transmissionSource.value = 'manual'
+    toast.push({
+      title: t('bgSubtract.title'),
+      message: t('bgSubtract.tooManyFilesWarning', { limit: PER_FILE_TRANSMISSION_LIMIT }),
+      tone: 'warning',
+    })
   }
 })
 
@@ -936,6 +1086,101 @@ async function handleMatchIonchamber(): Promise<void> {
   }
 }
 
+// === Transmission file matching / 透过率文件匹配 ===
+
+/**
+ * Match the imported transmission CSV/JSON against the current data files by
+ * basename (backend does the normalization), fill the per-file map, and switch
+ * the source to per-file so the matched values take effect.
+ * 按文件名把导入的透过率表与当前数据文件匹配（归一化在后端），填充逐文件
+ * 透过率映射并切到“分别设置”来源，使匹配值生效。
+ */
+async function handleMatchTransmissionFile(): Promise<void> {
+  if (!canMatchTransmissionFile.value) return
+
+  matchingTransmissionFile.value = true
+  transmissionMatches.value = []
+
+  try {
+    const response = await transport.submitTask('bg_subtract', {
+      action: 'transmission_file_match',
+      data_files: mode.value === 'single' ? [...samplePaths.value] : undefined,
+      sample_folder: mode.value === 'batch' ? sampleFolder.value ?? undefined : undefined,
+      transmission_file: transmissionFile.value ?? undefined,
+    })
+
+    const unsubResult = transport.onTaskResult(response.taskId, (payload) => {
+      const data = payload.data as { matches?: TransmissionFileMatch[] }
+      const matches = Array.isArray(data.matches) ? data.matches : []
+      transmissionMatches.value = matches
+      matchingTransmissionFile.value = false
+
+      const matched = matches.filter(
+        (m): m is TransmissionFileMatch & { transmission: number } =>
+          typeof m.transmission === 'number'
+      )
+      const missing = matches.length - matched.length
+      if (matched.length > 0) {
+        for (const m of matched) {
+          // Round to 4 decimals of a percent — the raw ratio is a full float
+          // (e.g. 60.00000008788259) that overflows the narrow per-file input
+          // ("60.0E") and adds false precision the measurement never had.
+          // 百分比保留 4 位小数——原始比值是全长浮点（如 60.00000008788259），
+          // 会撑爆窄输入框（显示 "60.0E"）并带出测量根本没有的假精度。
+          perFileTransmissions.value[m.data_file] =
+            Math.round(m.transmission * 100 * 1e4) / 1e4
+        }
+        // Switch to per-file so the filled values are visible/editable — except
+        // over the per-file limit (the radio is disabled there); 'file' already
+        // resolves to the same per-file numbers downstream.
+        // 切到“分别设置”以显示/编辑已填值——超过逐文件上限时该单选被禁用，
+        // 保持 'file' 来源即可（下游同样按逐文件数值处理）。
+        if (!tooManyFilesForPerFile.value) {
+          transmissionSource.value = 'per-file'
+        }
+        toast.push({
+          title: t('bgSubtract.transFile'),
+          message: t('bgSubtract.transFileApplied', { matched: matched.length, missing }),
+          tone: missing > 0 ? 'warning' : 'success',
+        })
+        // The result preview depends on the transmission — refresh it so the
+        // screen never shows a result computed with the previous values.
+        // 结果预览依赖透射率——立即刷新，避免屏幕停留在旧值算出的结果上。
+        if (resultPreviewUrl.value || state.value === 'done') {
+          loadResultPanel()
+        }
+      } else {
+        toast.push({
+          title: t('bgSubtract.transFile'),
+          message: t('bgSubtract.transFileNoMatch'),
+          tone: 'error',
+        })
+      }
+
+      unsubResult()
+      unsubError()
+    })
+
+    const unsubError = transport.onTaskError(response.taskId, (payload) => {
+      matchingTransmissionFile.value = false
+      toast.push({
+        title: t('bgSubtract.errorTitle'),
+        message: payload.error,
+        tone: 'error',
+      })
+      unsubResult()
+      unsubError()
+    })
+  } catch (err) {
+    matchingTransmissionFile.value = false
+    toast.push({
+      title: t('bgSubtract.errorTitle'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
 // === Preview / 预览 ===
 
 function cleanupPreviewListeners(): void {
@@ -995,7 +1240,10 @@ function loadPanelPreview(
   }
 
   if (tab === 'result') {
-    if (transmissionSource.value === 'per-file') {
+    // 'file' (imported transmission file) behaves exactly like 'per-file':
+    // the match step has already populated the per-file map.
+    // 'file'（导入的透过率文件）与“分别设置”同义：匹配步骤已填好逐文件映射。
+    if (transmissionSource.value === 'per-file' || transmissionSource.value === 'file') {
       const currentFile = files[currentSampleIndex.value]
       params.transmission = (perFileTransmissions.value[currentFile] ?? manualTransmission.value) / 100
     } else if (transmissionSource.value === 'manual') {
@@ -1157,17 +1405,23 @@ async function handleSubtract(): Promise<void> {
 
   const params: Record<string, unknown> = mode.value === 'single'
     ? {
-        action: samplePaths.value.length > 1 ? 'batch' : 'subtract',
-        sample_path: samplePaths.value.length === 1 ? samplePaths.value[0] : undefined,
+        // All single-mode runs (1 file or many) go through the batch action:
+        // it is the only path that saves "_subtracted" files to disk. The
+        // legacy 'subtract' action computed a preview and never exported —
+        // fixed after the 2026-10-23 user report "subtracted but not
+        // exported". / 单文件模式（无论选几张）统一走 batch 动作：只有
+        // 它会把 "_subtracted" 结果落盘。旧 'subtract' 动作只算预览从不
+        // 导出——2026-10-23 用户报告"发生了扣除但不导出"后修复。
+        action: 'batch',
         // IMPORTANT: spread into a plain array — passing the reactive Proxy
         // directly makes Electron's structured-clone IPC throw
         // "An object could not be cloned." Matches Integrate1dView convention.
         // 重要：展开为普通数组——直接传响应式 Proxy 会导致 Electron 结构化克隆
         // IPC 抛出 "An object could not be cloned."，与 Integrate1dView 保持一致。
-        data_files: samplePaths.value.length > 1 ? [...samplePaths.value] : undefined,
+        data_files: [...samplePaths.value],
         bg_path: bgPath.value,
-        output_dir: samplePaths.value.length > 1 ? outputDir.value : undefined,
-        output_format: samplePaths.value.length > 1 ? outputFormat.value : undefined,
+        output_dir: outputDir.value,
+        output_format: outputFormat.value,
         ionchamber_folder: transmissionSource.value === 'ionchamber'
           ? ionchamberFolder.value ?? undefined
           : undefined,
@@ -1209,7 +1463,10 @@ async function handleSubtract(): Promise<void> {
   // 注意：Python 批量端只读取标量 `transmission`（以及它自己根据电离室文件夹
   // 计算出的逐文件值）。旧代码仅在 single 模式下设置透射率，导致 batch 模式
   // 下被静默忽略（T=1.0）。现在两种模式都设置，以尊重用户选择。
-  if (transmissionSource.value === 'per-file') {
+  // 'file' (imported transmission file) is equivalent to 'per-file' — the match
+  // step has already filled perFileTransmissions.
+  // 'file'（导入的透过率文件）与“分别设置”等价——匹配步骤已填好逐文件映射。
+  if (transmissionSource.value === 'per-file' || transmissionSource.value === 'file') {
     if (mode.value === 'single' && samplePaths.value.length === 1) {
       params.transmission = (perFileTransmissions.value[samplePaths.value[0]] ?? manualTransmission.value) / 100
     } else if (mode.value === 'single' && samplePaths.value.length > 1) {
@@ -1221,9 +1478,15 @@ async function handleSubtract(): Promise<void> {
       const firstPath = samplePaths.value[0]
       params.transmission = (perFileTransmissions.value[firstPath] ?? manualTransmission.value) / 100
     } else {
-      // Batch (folder) mode has no meaningful per-file mapping; fall back to manual.
-      // 批量（文件夹）模式没有逐文件映射意义，回退到手动值。
-      params.transmission = manualTransmission.value / 100
+      // Batch (folder) mode: the backend consumes the per-file `transmissions`
+      // map (exact path first, basename fallback); keep the first file's value
+      // as the scalar fallback. / 批量（文件夹）模式：后端逐文件消费
+      // `transmissions` 映射（精确路径优先，文件名回退）；首文件值作标量回退。
+      params.transmissions = getPerFileTransmissions()
+      const firstPath = currentSamplePaths.value[0]
+      params.transmission = firstPath
+        ? (perFileTransmissions.value[firstPath] ?? manualTransmission.value) / 100
+        : manualTransmission.value / 100
     }
   } else if (transmissionSource.value === 'manual') {
     params.transmission = manualTransmission.value / 100
@@ -1244,26 +1507,47 @@ async function handleSubtract(): Promise<void> {
     })
 
     cleanupResult = transport.onTaskResult(response.taskId, (payload) => {
-      const isBatch = mode.value === 'batch' || samplePaths.value.length > 1
-      if (isBatch) {
-        const data = payload.data as BatchResult
-        batchResult.value = data
-        toast.push({
-          title: t('bgSubtract.successTitle'),
-          message: t('bgSubtract.batchComplete', {
+      // Every run goes through the batch action now, so the result is always
+      // a BatchResult. 现在所有执行都走 batch 动作，结果恒为 BatchResult。
+      const data = payload.data as BatchResult
+      batchResult.value = data
+      // Refresh the result panel after every run — preview_result now
+      // renders the actual subtracted image instead of the raw sample.
+      // 每次执行后刷新结果面板——preview_result 现在渲染真实扣除结果，
+      // 而非原始样品图。
+      loadResultPanel()
+      generateThumbnails()
+      const summaryText = mode.value === 'single' && samplePaths.value.length === 1
+        ? t('bgSubtract.subtractComplete')
+        : t('bgSubtract.batchComplete', {
             success: data.success_count,
             failed: data.failed_count,
-          }),
-          tone: 'success',
-        })
-      } else {
-        loadResultPanel()
-        generateThumbnails()
-        toast.push({
-          title: t('bgSubtract.successTitle'),
-          message: t('bgSubtract.subtractComplete'),
-          tone: 'success',
-        })
+          })
+      toast.push({
+        title: t('bgSubtract.successTitle'),
+        // Always tell the user WHERE files went — a bare "done" toast with
+        // no files in the expected place reads as a silent failure
+        // (2026-10-23 report). / 始终告知导出去向——只说"完成"而目录里
+        // 没文件，用户会当成静默失败。
+        message: !transport.isDesktop() && (data.output_files?.length ?? 0) > 0
+          ? t('bgSubtract.exportedDownload', { count: data.output_files!.length })
+          : `${summaryText} → ${data.output_dir ?? ''}`,
+        tone: 'success',
+      })
+      // Web mode: fetch the exported files back through /api/download —
+      // the browser cannot browse the server-side output location.
+      // web 模式：经 /api/download 取回导出文件——浏览器无法浏览服务器
+      // 侧的输出位置（桌面模式用户直接去输出目录拿）。
+      if (!transport.isDesktop() && data.output_files?.length) {
+        for (const serverPath of data.output_files) {
+          transport.downloadFile(serverPath, extractFileName(serverPath)).catch(() => {
+            toast.push({
+              title: t('bgSubtract.errorTitle'),
+              message: `${extractFileName(serverPath)}: download failed`,
+              tone: 'error',
+            })
+          })
+        }
       }
       taskId.value = null
       state.value = 'done'
@@ -1393,6 +1677,13 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
+  /* The transmission-source row grew to FOUR options (manual / per-file /
+   * ionchamber / file) and the 4th radio clipped against the card edge at
+   * 1440px (visual review 2026-10-25) — wrap instead of clip.
+   * 透射率来源一行增至四项（手动/逐文件/电离室/文件）后，1440px 下第 4 个
+   * 单选被卡片边缘裁掉（视觉审查 2026-10-25）——换行而非裁切。 */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .bgs-radio-label {
@@ -1496,6 +1787,11 @@ onUnmounted(() => {
 
 .bgs-drop-hint {
   font-size: 0.75rem;
+  /* --text-muted measured ~2.56:1 on white (visual review 2026-10-25);
+   * slate-500 clears 4.5:1. Same fix as TransmissionView.
+   * 继承的 --text-muted 白底实测约 2.56:1（视觉审查 2026-10-25）；
+   * slate-500 达标。与透过率页同步修。 */
+  color: #64748b;
 }
 
 .bgs-import-mode {
@@ -1649,7 +1945,9 @@ onUnmounted(() => {
   padding: 8px 12px;
   background: rgba(245, 158, 11, 0.1);
   border-bottom: 1px solid rgba(245, 158, 11, 0.3);
-  color: var(--warning, #d97706);
+  /* amber-700: amber-600 measured ~2.9:1 on the pale strip (visual review
+   * 2026-10-25). / amber-700：amber-600 在浅琥珀条上实测约 2.9:1。 */
+  color: #b45309;
   font-size: 0.75rem;
   font-weight: 500;
 }
@@ -1683,6 +1981,14 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 140px;
+}
+
+/* Numeric column: header and cells share ONE alignment (visual review
+ * 2026-10-25 caught header-left / value-right mismatch).
+ * 数值列：表头与单元格统一右对齐（视觉审查 2026-10-25 发现表头左对齐、
+ * 数值右对齐不一致）。 */
+.bgs-match-table .bgs-col-num {
+  text-align: right;
 }
 
 .bgs-error-cell {

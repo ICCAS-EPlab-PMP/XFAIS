@@ -100,27 +100,27 @@
           <div class="cg-params-grid">
             <div v-if="showParam('a')" class="cg-param">
               <label>{{ t('cellCalibrantGenerator.paramA') }}</label>
-              <input type="number" class="cg-input" v-model.number="paramA" step="0.001" min="0.1" />
+              <NumberField :model-value="paramA" class="cg-input" step="0.001" min="0.1" @update:model-value="(v) => { if (v != null) paramA = v }" />
             </div>
             <div v-if="showParam('b')" class="cg-param">
               <label>{{ t('cellCalibrantGenerator.paramB') }}</label>
-              <input type="number" class="cg-input" v-model.number="paramB" step="0.001" min="0.1" />
+              <NumberField :model-value="paramB" class="cg-input" step="0.001" min="0.1" @update:model-value="(v) => { if (v != null) paramB = v }" />
             </div>
             <div v-if="showParam('c')" class="cg-param">
               <label>{{ t('cellCalibrantGenerator.paramC') }}</label>
-              <input type="number" class="cg-input" v-model.number="paramC" step="0.001" min="0.1" />
+              <NumberField :model-value="paramC" class="cg-input" step="0.001" min="0.1" @update:model-value="(v) => { if (v != null) paramC = v }" />
             </div>
             <div v-if="showParam('alpha')" class="cg-param">
               <label>{{ t('cellCalibrantGenerator.paramAlpha') }}</label>
-              <input type="number" class="cg-input" v-model.number="paramAlpha" step="0.1" min="0" max="180" />
+              <NumberField :model-value="paramAlpha" class="cg-input" step="0.1" min="0" max="180" @update:model-value="(v) => { if (v != null) paramAlpha = v }" />
             </div>
             <div v-if="showParam('beta')" class="cg-param">
               <label>{{ t('cellCalibrantGenerator.paramBeta') }}</label>
-              <input type="number" class="cg-input" v-model.number="paramBeta" step="0.1" min="0" max="180" />
+              <NumberField :model-value="paramBeta" class="cg-input" step="0.1" min="0" max="180" @update:model-value="(v) => { if (v != null) paramBeta = v }" />
             </div>
             <div v-if="showParam('gamma')" class="cg-param">
               <label>{{ t('cellCalibrantGenerator.paramGamma') }}</label>
-              <input type="number" class="cg-input" v-model.number="paramGamma" step="0.1" min="0" max="180" />
+              <NumberField :model-value="paramGamma" class="cg-input" step="0.1" min="0" max="180" @update:model-value="(v) => { if (v != null) paramGamma = v }" />
             </div>
           </div>
         </div>
@@ -215,7 +215,7 @@
 
           <div v-if="manualUnit === '2theta'" class="cg-section">
             <h2 class="cg-section-title">{{ t('cellCalibrantGenerator.wavelength') }}</h2>
-            <input type="number" class="cg-input" v-model.number="manualWavelength" step="0.001" min="0.1" />
+            <NumberField :model-value="manualWavelength" class="cg-input" step="0.001" min="0.1" @update:model-value="(v) => { if (v != null) manualWavelength = v }" />
           </div>
 
           <div class="cg-section cg-section--grow">
@@ -367,6 +367,7 @@ import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import PlotlyChart from '@/components/charts/PlotlyChart.vue'
 import type { PlotData as PlotlyData, PlotLayout as PlotlyLayout } from 'plotly.js-dist-min'
 import { useTransport } from '@/lib/transport'

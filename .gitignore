@@ -44,9 +44,11 @@ Thumbs.db
 .zcodeignore
 .workbuddy/
 reasonix.toml
+*.tsbuildinfo
 
 # Tutorials stay local-only, never committed / 教程仅本地保留，不入库
 /tutorials/
+/XFAIS-教程-几何校正/
 
 # Reference code artifacts (ref/ dir contains reference projects)
 ref/frontend/node_modules/
@@ -61,3 +63,6 @@ index.js
 
 # Python runtime installer
 python-*.exe
+
+# Tutorials stay local-only, never committed / 教程仅本地保留，不入库
+/tutorials/

@@ -201,12 +201,11 @@
                   :data-testid="testIds.viewerClimMin"
                   @input="updateClimMin(Number(($event.target as HTMLInputElement).value))"
                 />
-                <input
-                  :value="climMin"
-                  type="number"
+                <NumberField
+                  :model-value="climMin"
                   class="vw-input vw-input--sm"
                   step="any"
-                  @input="updateClimMin(Number(($event.target as HTMLInputElement).value))"
+                  @update:model-value="updateClimMin($event ?? 0)"
                 />
               </div>
               <div class="vw-clim-field">
@@ -221,12 +220,11 @@
                   :data-testid="testIds.viewerClimMax"
                   @input="updateClimMax(Number(($event.target as HTMLInputElement).value))"
                 />
-                <input
-                  :value="climMax"
-                  type="number"
+                <NumberField
+                  :model-value="climMax"
                   class="vw-input vw-input--sm"
                   step="any"
-                  @input="updateClimMax(Number(($event.target as HTMLInputElement).value))"
+                  @update:model-value="updateClimMax($event ?? 0)"
                 />
               </div>
             </div>
@@ -338,11 +336,11 @@
             <div v-if="ringEnabled" class="vw-grid-2">
               <label class="vw-field">
                 <span class="vw-label">q min (Å⁻¹)</span>
-                <input v-model.number="ringMin" type="number" class="vw-input" step="0.05" min="0" />
+                <NumberField :model-value="ringMin" class="vw-input" step="0.05" min="0" @update:model-value="(v) => { if (v != null) ringMin = v }" />
               </label>
               <label class="vw-field">
                 <span class="vw-label">q max (Å⁻¹)</span>
-                <input v-model.number="ringMax" type="number" class="vw-input" step="0.05" min="0" />
+                <NumberField :model-value="ringMax" class="vw-input" step="0.05" min="0" @update:model-value="(v) => { if (v != null) ringMax = v }" />
               </label>
             </div>
 
@@ -357,13 +355,12 @@
               <div class="vw-grid-2">
                 <label class="vw-field">
                   <span class="vw-label">{{ t('viewer.lineProfileWidth') }}</span>
-                  <input
-                    v-model.number="lineProfileWidth"
-                    type="number"
+                  <NumberField
+                    :model-value="lineProfileWidth"
                     class="vw-input"
                     step="1"
                     min="1"
-                    @change="scheduleLineProfileRecompute"
+                    @update:model-value="(v) => { if (v != null) { lineProfileWidth = v; scheduleLineProfileRecompute() } }"
                   />
                 </label>
                 <label class="vw-field">
@@ -495,24 +492,21 @@
               <p v-else class="vw-hint">{{ t('viewer.pixelInfoClickHint') }}</p>
             </div>
 
-            <!-- Line-profile plot (only in line-profile sub-mode) / 沿线剖面图（仅沿线剖面子模式） -->
-            <div
-              v-if="pixelInfoMode && lineProfileMode"
-              class="vw-pixel-info vw-line-profile"
-              :data-testid="testIds.viewerStats"
-            >
-              <h4 class="vw-stats-title">{{ t('viewer.lineProfile') }}</h4>
-              <div v-if="lineProfileLoading" class="vw-hint">{{ t('viewer.lineProfileLoading') }}</div>
-              <LineChart
-                v-else-if="lineProfileResult"
-                :traces="lineProfileTraces"
-                :x-label="lineProfileXLabel"
-                :x-unit="lineProfileXUnit"
-                :y-label="t('viewer.lineProfileIntensity')"
-                y-unit="a.u."
-              />
-              <p v-else class="vw-hint">{{ t('viewer.lineProfileDrawHint') }}</p>
-            </div>
+          </div>
+
+          <!-- Line-profile plot (full-width below the image section, only in line-profile sub-mode) / 沿线剖面图（图像区域下方通栏，仅沿线剖面子模式） -->
+          <div v-if="pixelInfoMode && lineProfileMode" class="vw-chart-section vw-line-profile">
+            <h4 class="vw-chart-label">{{ t('viewer.lineProfile') }}</h4>
+            <div v-if="lineProfileLoading" class="vw-hint">{{ t('viewer.lineProfileLoading') }}</div>
+            <LineChart
+              v-else-if="lineProfileResult"
+              :traces="lineProfileTraces"
+              :x-label="lineProfileXLabel"
+              :x-unit="lineProfileXUnit"
+              :y-label="t('viewer.lineProfileIntensity')"
+              y-unit="a.u."
+            />
+            <p v-else class="vw-hint">{{ t('viewer.lineProfileDrawHint') }}</p>
           </div>
 
           <!-- Frame navigator bar / 帧导航条 -->
@@ -560,7 +554,9 @@
               :loading="isLoadingThumbnails"
               :sync-with-main="thumbSyncWithMain"
               :columns-per-row="thumbColsPerRow"
+              :deletable="isBatchMode"
               @select="navigateToFrame"
+              @remove="removeFileAt"
               @prev-page="handleThumbPrevPage"
               @next-page="handleThumbNextPage"
               @jump-to-page="handleThumbJumpToPage"
@@ -582,7 +578,7 @@
  *
  * Fast probe (metadata) + single-frame load flow.
  */
-import { ref, computed, onUnmounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
@@ -592,6 +588,7 @@ import { testIds } from '@/lib/testIds'
 import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ThumbnailStrip from '@/components/business/ThumbnailStrip.vue'
 import type { ThumbnailItem } from '@/components/business/ThumbnailStrip.vue'
@@ -1188,9 +1185,27 @@ function getViewerTaskInterceptor(): ViewerTaskSubmitInterceptor | undefined {
   return (window as typeof window & {
     __viewerTestHooks__?: {
       interceptTaskSubmit?: ViewerTaskSubmitInterceptor
+      drawLine?: (x0: number, y0: number, x1: number, y1: number) => void
     }
   }).__viewerTestHooks__?.interceptTaskSubmit
 }
+
+// QA hook: e2e / 录屏自动化直接触发沿线剖面（与真实画线拖拽同一条 onLineDrawn 链路，
+// 端点为数据像素坐标，剖面仍由后端真实计算）。仅挂载时暴露，不影响正常交互。
+onMounted(() => {
+  const hooks = window as typeof window & {
+    __viewerTestHooks__?: {
+      interceptTaskSubmit?: ViewerTaskSubmitInterceptor
+      drawLine?: (x0: number, y0: number, x1: number, y1: number) => void
+    }
+  }
+  hooks.__viewerTestHooks__ = {
+    ...hooks.__viewerTestHooks__,
+    drawLine: (x0: number, y0: number, x1: number, y1: number) => {
+      void onLineDrawn({ pixelX0: x0, pixelY0: y0, pixelX1: x1, pixelY1: y1 })
+    },
+  }
+})
 
 function submitViewerLoadTask(params: ViewerTaskParams): Promise<ViewerSubmitResponse> {
   const submit = (route: string, nextParams: ViewerTaskParams) => transport.submitTask(route, nextParams)
@@ -1866,6 +1881,48 @@ async function navigateToFrame(frameIdx: number): Promise<void> {
     isLoadingFullRes.value = false
     errorMessage.value = err instanceof Error ? err.message : String(err)
     state.value = 'error'
+  }
+}
+
+/**
+ * Remove ONE file from the batch list (2026-10-22 user request: the thumbnail ✕
+ * button deletes unneeded files so they no longer take part in display).
+ * In batch mode the strip indexes files, so currentFrame mirrors the file index;
+ * removing an entry clamps currentFileIndex, reloads that file's preview (which
+ * re-syncs totalFrames with the file count) and refetches the thumbnail page
+ * holding it. An empty selection mirrors re-selecting no files.
+ * 删除批处理清单中的一个文件（2026-10-22 用户要求：缩略图 ✕ 删除不需要的
+ * 文件，不再参与展示与积分）。批模式下缩略图索引即文件索引、currentFrame
+ * 与文件索引一致；删除后收敛 currentFileIndex、重载该文件预览（totalFrames
+ * 随之与文件数同步），并重取该文件所在的缩略图页。删空时等同重新选择空
+ * 文件集。
+ */
+async function removeFileAt(index: number): Promise<void> {
+  if (!isBatchMode.value || index < 0 || index >= selectedFiles.value.length) return
+  selectedFiles.value.splice(index, 1)
+
+  if (selectedFiles.value.length === 0) {
+    await handleFileSelected(null, true)
+    return
+  }
+
+  if (currentFileIndex.value >= selectedFiles.value.length) {
+    currentFileIndex.value = selectedFiles.value.length - 1
+  }
+  if (isBatchMode.value) {
+    totalFrames.value = selectedFiles.value.length
+    currentFrame.value = currentFileIndex.value
+  }
+
+  // Strip items are keyed by file index — drop the stale page before reloading.
+  resetThumbnailStripState()
+  await handleFileSelected(selectedFiles.value[currentFileIndex.value] ?? null, false)
+
+  // Batch thumbnails are file previews; single-file frame thumbnails are
+  // repopulated by the open_file result handler above.
+  if (isBatchMode.value) {
+    thumbCurrentPage.value = getThumbnailPageForIndex(currentFileIndex.value)
+    void loadThumbnailPage(thumbCurrentPage.value)
   }
 }
 
@@ -2672,7 +2729,7 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-/* Heatmap section / 热力图区域 */
+/* Chart card (line-profile plot, full width below the image section) / 图表卡片（沿线剖面图，图像区域下方通栏） */
 .vw-chart-section {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);

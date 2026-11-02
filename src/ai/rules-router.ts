@@ -7,7 +7,14 @@
  * with no keys, no network, and no backend.
  */
 
-import type { AppState, PoniSummary, RouteDecision, TemplateDecision, IntegrationUnitChoice } from './types'
+import type {
+  AppState,
+  OptionsDecision,
+  PoniSummary,
+  RouteDecision,
+  TemplateDecision,
+  IntegrationUnitChoice,
+} from './types'
 import { navEntry } from './context'
 
 // ── Intent → route ────────────────────────────────────────────────────────────
@@ -28,15 +35,29 @@ const ROUTE_RULES: RouteRule[] = [
   { routeName: 'integrate-cake', keywords: ['cake', '扇形'] },
   { routeName: 'integrate-azimuth', keywords: ['azimuth', '方位'] },
   { routeName: 'calibration', keywords: ['calib', '校准', '标定'] },
+  { routeName: 'calibration', keywords: ['定心', '直通', '质心', 'beam center', 'centroid'] },
+  { routeName: 'curve-fitting', keywords: ['拟合', '分峰', 'peak fit', 'curve fit', 'fwhm', '半峰宽', '结晶度'] },
   { routeName: 'mask-maker', keywords: ['mask', '掩膜', '遮罩'] },
   { routeName: 'viewer', keywords: ['查看', 'view', '图像'] },
   { routeName: 'h5-toolkit', keywords: ['h5'] },
   { routeName: 'settings', keywords: ['设置', 'setting'] },
   { routeName: 'bg-subtract', keywords: ['背景', 'back'] },
   { routeName: 'image-stitch', keywords: ['拼接', 'stitch'] },
+  { routeName: 'image-math', keywords: ['图像运算', '加减', '图像平均'] },
   { routeName: 'orientation-analysis', keywords: ['取向', 'orient'] },
-  { routeName: 'lamellar-analysis', keywords: ['片晶', 'lamellar'] },
+  { routeName: 'lamellar-analysis', keywords: ['片晶', 'lamellar', '长周期'] },
   { routeName: 'poni-importer', keywords: ['poni', '反向导入'] },
+  { routeName: 'png-generate', keywords: ['png', '预览图'] },
+  { routeName: 'pyfai-calib', keywords: ['calib2', 'pyfai 安装'] },
+  { routeName: 'cell-calibrant-generator', keywords: ['标样生成', '理论峰位', 'cif'] },
+  // Transmission measurement (2026-10-25). '测透过'/'透过率测量' double-hit
+  // phrasings like "直通光测透过率" so the module outranks calibration's '直通'
+  // keyword on ties, while a bare "背景扣除导入透过率" still ties into
+  // bg-subtract (earlier rule) as intended.
+  // 透过率测量（2026-10-25）。「测透过」「透过率测量」让「直通光测透过率」
+  // 这类说法双命中、在平分时压过标定的「直通」关键词；而单独的「背景扣除
+  // 导入透过率」仍按表序平分给更早的背景扣除规则——符合本意。
+  { routeName: 'transmission', keywords: ['透过率', '透射率', 'transmission', '测透过', '透过率测量', '光斑积分'] },
 ]
 
 /** Word-boundary 'GI' match — avoids hitting the 'gi' inside 'grazing'. */
@@ -238,4 +259,140 @@ export function decideTemplateViaRules(
     reason: '未提供 PONI 几何信息 / no PONI geometry available',
     provider: 'rules',
   }
+}
+
+// ── Intent → per-module options (Phase 2 generalized / 模块选项判定) ─────────
+
+/**
+ * Deterministic per-module option decisions from the same user intent that
+ * routed the assistant. Returns null when the intent carries no actionable
+ * signal for the module — views keep their current defaults then, and nothing
+ * is dispatched. Options use each module's own vocabulary; the views that opt
+ * in re-validate their step/state before assigning (decisions, not effects).
+ * 各模块选项的确定性判定：复用路由阶段的同一句意图。意图对目标模块没有可执行
+ * 信号时返回 null——视图保持现状、不派发任何事件。取值用模块自己的词汇表；
+ * 接入的视图在赋值前自行校验步骤/状态（只做「判定」，不做副作用）。
+ */
+export function decideOptionsViaRules(routeName: string, intent: string): OptionsDecision | null {
+  const text = intent.toLowerCase()
+  const options: Record<string, string | string[]> = {}
+  const reasons: Record<string, string> = {}
+
+  if (routeName === 'calibration') {
+    let mode: 'calibrant' | 'internal' | 'com' | null = null
+    let reason = ''
+    if (/直通|质心|定心|centroid|beam\s*center/.test(text)) {
+      mode = 'com'
+      reason = '提到直通光/质心/定心 → 直通光定心模式 / direct-beam centroid centering'
+    } else if (/内标|internal/.test(text)) {
+      mode = 'internal'
+      reason = '提到内标 → 内标定标模式 / internal-standard calibration'
+    } else if (/标样|衍射环|calibrant|ring/.test(text)) {
+      mode = 'calibrant'
+      reason = '提到标样/衍射环 → 标样校正模式 / calibrant-ring calibration'
+    }
+    if (mode) {
+      options.mode = mode
+      reasons.mode = reason
+    }
+  }
+
+  if (routeName === 'orientation-analysis') {
+    const picks: string[] = []
+    if (/单斜|monoclinic|多反射|multi[- ]?reflection|wilchinsky/.test(text)) picks.push('wilchinsky')
+    if (/hermans|二阶矩|取向函数/.test(text)) picks.push('hermans')
+    if (/半高宽|半峰宽|半高|fwhm/.test(text)) picks.push('fwhm')
+    if (picks.length > 0) {
+      options.methods = picks
+      reasons.methods = `明确点名的方法：${picks.join(' + ')} / methods named by the user`
+    }
+  }
+
+  if (routeName === 'curve-fitting') {
+    // Peak-shape vocabulary = the pwcore registry ids the workbench places
+    // peaks with (gauss / lorentz / pearson7 / voigt / glorsum=pV sum).
+    let peakFn: string | null = null
+    let reason = ''
+    if (/高斯|gauss(ian)?\b/.test(text) && !/pseudo|伪/.test(text)) {
+      peakFn = 'gauss'
+      reason = '点名高斯峰形 / Gaussian named'
+    } else if (/洛伦兹|lorentz/.test(text)) {
+      peakFn = 'lorentz'
+      reason = '点名洛伦兹峰形 / Lorentzian named'
+    } else if (/pearson/.test(text)) {
+      peakFn = 'pearson7'
+      reason = '点名 Pearson VII / Pearson VII named'
+    } else if (/voigt/.test(text) && !/pseudo|伪/.test(text)) {
+      peakFn = 'voigt'
+      reason = '点名 Voigt 峰形 / Voigt named'
+    }
+    if (peakFn) {
+      options.peakFn = peakFn
+      reasons.peakFn = reason
+    }
+  }
+
+  if (routeName === 'transmission') {
+    // Region-shape vocabulary = the two regionMode values the canvas arms.
+    // The leading boundary on 'rect' keeps "direct beam" from arming the
+    // rectangle tool (2026-10-25). Values are strings; the view's inert
+    // listener maps them onto its own state.
+    // 区域形状词汇 = 画布可武装的两种 regionMode 取值。'rect' 前置边界避免
+    // "direct beam" 里的 rect 误武装方形框（2026-10-25）。取值为字符串，
+    // 视图的惰性监听器自行映射到自身状态。
+    let shape: 'rect' | 'poly' | null = null
+    let shapeReason = ''
+    if (/方形框?|矩形|(^|[^a-z])rect(angle)?\b/.test(text)) {
+      shape = 'rect'
+      shapeReason = '点名方形框/矩形区域 / rectangle region named'
+    } else if (/多折框?|多边形|poly(gon)?\b/.test(text)) {
+      shape = 'poly'
+      shapeReason = '点名多折框/多边形区域 / polygon region named'
+    }
+    if (shape) {
+      options.shape = shape
+      reasons.shape = shapeReason
+    }
+    if (/扣除.*背景|边界背景|扣背景|subtract.*border/.test(text)) {
+      options.subtractBorder = 'on'
+      reasons.subtractBorder = '要求扣除区域边界背景 / border-background subtraction requested'
+    }
+  }
+
+  if (Object.keys(options).length === 0) return null
+  return { routeName, options, reasons, confidence: 0.8, provider: 'rules' }
+}
+
+/** Bilingual display names for module option values (for assistant narration). */
+export function moduleOptionLabel(routeName: string, key: string, value: string | string[]): string {
+  if (routeName === 'calibration' && key === 'mode' && typeof value === 'string') {
+    return ({ calibrant: '标样校正', internal: '内标定标', com: '直通光定心' } as Record<string, string>)[value] ?? value
+  }
+  if (routeName === 'orientation-analysis' && key === 'methods' && Array.isArray(value)) {
+    const names: Record<string, string> = {
+      hermans: 'Hermans',
+      fwhm: 'FWHM 经验指数',
+      wilchinsky: 'Wilchinsky',
+    }
+    return value.map((m) => names[m] ?? m).join(' + ')
+  }
+  if (routeName === 'curve-fitting' && key === 'peakFn' && typeof value === 'string') {
+    const names: Record<string, string> = {
+      gauss: '高斯 GAUSS',
+      lorentz: '洛伦兹 LORENTZ',
+      pearson7: 'Pearson VII',
+      voigt: 'Voigt',
+      glorsum: '伪 Voigt (G+L)',
+    }
+    return names[value] ?? value
+  }
+  if (routeName === 'transmission') {
+    if (key === 'shape' && typeof value === 'string') {
+      return ({ rect: '方形框', poly: '多折框' } as Record<string, string>)[value] ?? value
+    }
+    if (key === 'subtractBorder' && typeof value === 'string') {
+      return value === 'on' ? '扣除区域边界背景' : value
+    }
+  }
+  return Array.isArray(value) ? value.join(' + ') : value
 }

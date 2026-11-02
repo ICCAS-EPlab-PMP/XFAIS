@@ -58,7 +58,9 @@ const desktopApi = {
         ipcRenderer.removeListener(IPC_CHANNELS.pythonStatusChanged, subscription)
       }
     },
-    restart: (): Promise<DesktopPythonStatus> => ipcRenderer.invoke(IPC_CHANNELS.pythonRestart) as Promise<DesktopPythonStatus>
+    restart: (): Promise<DesktopPythonStatus> => ipcRenderer.invoke(IPC_CHANNELS.pythonRestart) as Promise<DesktopPythonStatus>,
+    // Agent bridge (AI build): WS port for the renderer's direct agent link.
+    wsPort: (): Promise<number> => ipcRenderer.invoke(IPC_CHANNELS.pythonWsPort) as Promise<number>
   },
   task: {
     submit: (command: string, params: Record<string, unknown>): Promise<TaskSubmitResponse> =>

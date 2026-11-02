@@ -45,11 +45,11 @@
           />
           <div class="im-field">
             <label class="im-label">{{ t('imageMath.factor') }}</label>
-            <input
-              v-model.number="factor1"
-              type="number"
+            <NumberField
+              :model-value="factor1"
               class="im-input"
               step="0.1"
+              @update:model-value="(v) => { if (v != null) factor1 = v }"
             />
           </div>
         </div>
@@ -66,11 +66,11 @@
           />
           <div class="im-field">
             <label class="im-label">{{ t('imageMath.factor') }}</label>
-            <input
-              v-model.number="factor2"
-              type="number"
+            <NumberField
+              :model-value="factor2"
               class="im-input"
               step="0.1"
+              @update:model-value="(v) => { if (v != null) factor2 = v }"
             />
           </div>
         </div>
@@ -205,11 +205,21 @@
             <template v-if="climMode === 'manual'">
               <div class="im-field">
                 <label class="im-label">Min</label>
-                <input v-model.number="climMin" type="number" class="im-input im-input-sm" step="any" />
+                <NumberField
+                  :model-value="climMin"
+                  class="im-input im-input-sm"
+                  step="any"
+                  @update:model-value="climMin = $event ?? 0"
+                />
               </div>
               <div class="im-field">
                 <label class="im-label">Max</label>
-                <input v-model.number="climMax" type="number" class="im-input im-input-sm" step="any" />
+                <NumberField
+                  :model-value="climMax"
+                  class="im-input im-input-sm"
+                  step="any"
+                  @update:model-value="climMax = $event ?? 0"
+                />
               </div>
             </template>
           </div>
@@ -279,6 +289,7 @@ import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import ImagePreview from '@/components/charts/ImagePreview.vue'
 
 // === Type definitions / 类型定义 ===

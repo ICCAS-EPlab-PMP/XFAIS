@@ -39,6 +39,36 @@ X-FAIS (X-ray FAI Scattering & Diffraction Suite) — 一款专为 X 射线散�
 - **掩膜管理** — 加载/保存/合并/擦除掩膜，支持 .npy、.tif、.edf 等格式
 - **与 pyFAI 集成** — 生成的掩膜可直接用于积分计算，屏蔽坏像素和无效区域
 
+### 几何标定 (Calibration)
+
+- **标样校正** — 交互式衍射环拾取与几何精修，自动环号匹配，用户指定环号全程保留
+- **内标定标** — 基于已知面间距标样的内标定标流程
+- **直通光定心** — 直通光图像强度加权质心自动定心，支持固定中心仅优化探测器距离
+- **PONI 导入** — 直接导入 pyFAI-calib2 生成的 PONI 标定文件
+
+### 数据预处理
+
+- **背景扣除** — 参考背景帧扣除与 Rolling Ball（经典/平滑）自动背景，支持电离室透射校正与 H5 多帧栈批量处理
+- **图像运算** — 多幅衍射图像的像素级算术运算
+- **图像拼接** — 衍射图像拼接合并
+
+### 曲线拟合工作台 (Curve Fitting)
+
+- **五步工作流** — 数据导入/平滑 → 基线 → 放峰 → 拟合 → 报告，图上点选放峰、锚点拖拽实时调参
+- **X 射线峰形** — 高斯 / 洛伦兹 / pseudo-Voigt / Voigt 等 5 种峰形，Levenberg–Marquardt 稳健拟合
+- **自动寻峰与自动基线** — 残差法/二阶导自动寻峰，四步自动基线流水线
+- **批量拟合** — 多条曲线批量拟合与结果汇总
+- **聚合物分析** — 结晶度（峰面积分类）、取向度、iPP β 晶 Kβ 指数（Turner–Jones）
+- **积分结果直读** — 直接导入 X-FAIS 积分输出的多列 TXT/CSV
+
+### 片晶分析 (Lamellar)
+
+- **一维相关函数法**（Strobl–Schneider）— I(q) → 扣背景 → q²I(q)（含 Porod 外推）→ γ₁(x) → 切线拟合求长周期，支持多文件批量
+
+### 取向分析 (Orientation)
+
+- **方位角强度 I(χ)** — Hermans 取向函数（二阶矩）、经验 FWHM 指数、Wilchinsky 方法（多反射、支持单斜晶胞）多选计算
+
 ### 辅助功能
 
 - **标样生成器** — 从 CIF 文件或晶胞参数计算理论衍射峰位
@@ -292,7 +322,7 @@ npm run build:pack:mac
 
 - **核心引擎**：[pyFAI](https://github.com/silx-kit/pyFAI)、[fabIO](https://github.com/silx-kit/fabIO)、[silx](https://github.com/silx-kit/silx)
 - **AI 开发工具**：OpenCode、Oh-My-OpenAgent、Reasonix
-- **编程模型**：GLM-5.1 / DeepSeek V4 / MiniMax 2.7 / Qwen 3.6 Plus / MiMo V2.5
+- **编程模型**：GLM / DeepSeek / MiniMax / Qwen / MiMo
 
 ---
 

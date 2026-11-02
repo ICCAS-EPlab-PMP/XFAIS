@@ -9,36 +9,33 @@
       <!-- Value range / 值范围 -->
       <label class="mbf-field">
         <span class="mbf-field-label">{{ t('business.mask.valueRangeMin') }}</span>
-        <input
-          type="number"
+        <NumberField
           class="mbf-input"
-          :value="model.valueRangeMin"
+          :model-value="model.valueRangeMin"
           :data-testid="testIds.maskValueRangeMin"
-          @input="onFieldInput('valueRangeMin', ($event.target as HTMLInputElement).value)"
+          @update:model-value="onFieldInput('valueRangeMin', $event)"
         />
       </label>
       <label class="mbf-field">
         <span class="mbf-field-label">{{ t('business.mask.valueRangeMax') }}</span>
-        <input
-          type="number"
+        <NumberField
           class="mbf-input"
-          :value="model.valueRangeMax"
+          :model-value="model.valueRangeMax"
           :data-testid="testIds.maskValueRangeMax"
-          @input="onFieldInput('valueRangeMax', ($event.target as HTMLInputElement).value)"
+          @update:model-value="onFieldInput('valueRangeMax', $event)"
         />
       </label>
 
       <!-- Dead pixel threshold / 死像素阈值 -->
       <label class="mbf-field">
         <span class="mbf-field-label">{{ t('business.mask.deadPixelThreshold') }}</span>
-        <input
-          type="number"
+        <NumberField
           class="mbf-input"
           step="1"
           min="0"
-          :value="model.deadPixelThreshold"
+          :model-value="model.deadPixelThreshold"
           :data-testid="testIds.maskDeadPixelThreshold"
-          @input="onFieldInput('deadPixelThreshold', ($event.target as HTMLInputElement).value)"
+          @update:model-value="onFieldInput('deadPixelThreshold', $event)"
         />
       </label>
     </div>
@@ -69,6 +66,7 @@
 import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
 import FileDialogButton from './FileDialogButton.vue'
+import NumberField from '@/components/common/NumberField.vue'
 
 /** Mask configuration shape / 掩膜配置结构 */
 export interface MaskConfig {
@@ -100,10 +98,9 @@ const model = defineModel<MaskConfig>('modelValue', {
 
 const { t } = useI18n()
 
-function onFieldInput(field: keyof MaskConfig, raw: string): void {
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  model.value = { ...model.value, [field]: num }
+function onFieldInput(field: keyof MaskConfig, value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
+  model.value = { ...model.value, [field]: value }
 }
 
 function onMaskPathChange(path: string | null): void {

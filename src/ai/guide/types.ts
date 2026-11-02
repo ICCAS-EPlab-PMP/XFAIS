@@ -43,4 +43,52 @@ export interface GuideDefinition {
   routeName: string
   title: Bilingual
   steps: GuideStep[]
+  /**
+   * Mode/branch gate (2026-10-25): when present and false against the live
+   * snapshot, the tour does NOT start — some views have modes whose controls
+   * do not exist in this step table (e.g. calibration's com / internal
+   * branches). Absent = always applicable. The agent-facing serialization
+   * (serialize.ts) returns applicable + note so external agents get the same
+   * guard. 模式/支路门控：不适用时不启动教学；序列化给 agent 时同样带回。
+   */
+  applicable?: (snap: WorkspaceSnapshot | null) => boolean
+  /** Shown/spoken when `applicable` rejects the current state. */
+  inapplicableNote?: Bilingual
+}
+
+// ── Module manual (2026-10-27) / 模块详细说明 ─────────────────────────────────
+
+/**
+ * One ordered how-to step of a module manual. Prose only — the step-guide
+ * layer (steps/*.ts) carries the data-ai-id anchors; manuals never reference
+ * anchor ids so they cannot dangle. 流程步骤：纯文字，不引用 aiId。
+ */
+export interface ManualWorkflowStep {
+  title: Bilingual
+  detail: Bilingual
+}
+
+/**
+ * ModuleManual — the per-module DETAILED description (2026-10-27 user
+ * request): what the module is for, what must exist before starting, the
+ * real ordered workflow, what it produces and where it flows, the pitfalls,
+ * and teach-vs-operate guidance for external agents. Authored in
+ * guide/manuals*.ts (grounded in the actual views) and serialized with the
+ * capability card via `guide`/`modules`.
+ * 模块详细说明：用途/前提/真实分步流程/产出去向/坑点/给 agent 的教学优先
+ * 提示。经能力卡随 guide/modules 命令下发给外部 agent。
+ */
+export interface ModuleManual {
+  /** 2–4 sentences: purpose, when to use, what it produces. */
+  overview: Bilingual
+  /** Prerequisites (files, PONI, mode selection, facts to query first…). */
+  inputs: Bilingual[]
+  /** The real ordered workflow, grounded in the actual UI. */
+  workflow: ManualWorkflowStep[]
+  /** Products and where they flow next. */
+  outputs: Bilingual[]
+  /** Gotchas, limits, common failure modes. */
+  pitfalls: Bilingual[]
+  /** Teach-first guidance for external agents on THIS module. */
+  agentTips: Bilingual[]
 }

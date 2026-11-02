@@ -51,8 +51,12 @@
       <!-- ===== Left: setup / controls column / 左侧：控制列 ===== -->
       <aside class="cv-controls">
         <div class="cv-card">
+          <!-- Setup form is reused TWICE in the com mode: step 'setup' renders
+               the direct-beam image phase, step 'setup2' the standard image
+               phase (which also picks the branch). / 设置表单在 com 模式复用两次：
+               setup = 直通光图阶段；setup2 = 标样图阶段（同时选择支路）。 -->
           <CalibSetupForm
-            v-if="step === 'setup'"
+            v-if="step === 'setup' || step === 'setup2'"
             v-model="setupForm"
             :calibrants="calibrants"
             :detectors="detectors"
@@ -60,32 +64,75 @@
             :probing="probing"
             :loading="setupLoading"
             :mask-stale="maskStale"
+            :phase="step === 'setup2' ? 'standard' : (setupForm.mode === 'com' ? 'beam' : 'single')"
+            :standard-mode="comStandardMode ?? 'calibrant'"
             @submit="handleSetup"
             @seed="handleSeedFromPoni"
             @probed="handleProbed"
+            @update:standard-mode="onStandardModeChange"
+          />
+
+          <!-- com mode step 2: box the direct-beam spot → intensity-weighted
+               centroid, which then FIXES the centre for the standard branch.
+               com 模式第 2 步：框出直通光斑 → 强度加权质心，随后固定为该标定
+               中心。 -->
+          <CalibComPanel
+            v-else-if="step === 'com'"
+            :com-mode="comPickMode"
+            :center="comCenter"
+            :busy="comBusy"
+            @update:com-mode="comPickMode = $event"
+            @clear-com="clearComCenter"
           />
 
           <CalibPeakPanel
             v-else-if="step === 'peaks'"
             :peaks="peaks"
             :sensitivity="sensitivity"
+            :band-tol="bandTolPx"
             :current-ring="currentRing"
             :detecting="detecting"
             :guide-count="ringGuide.length"
             :ring-picking="ringPicking"
+            :center-picking="centerPicking"
             :beyond-mask="beyondMask"
             :remove-existing="removeExisting"
             :refreshing="refreshingRings"
             @auto="handleAutoPeaks"
             @update:sensitivity="sensitivity = $event"
+            @update:band-tol="bandTolPx = $event"
             @update:current-ring="currentRing = $event"
             @clear="handleClearPeaks"
             @finish-ring="finishRingPick"
             @clear-guides="ringGuide = []"
+            @toggle-center-pick="toggleCenterPick"
             @update:beyond-mask="beyondMask = $event"
             @update:remove-existing="removeExisting = $event"
             @refresh-rings="handleRefreshRings"
             @update-ring="handleRenameRing"
+          />
+
+          <!-- Internal-standard step 2: pick ONE known ring + enter its value
+               → the backend computes the geometry directly (no calibrant, no
+               refinement). / 内标第 2 步：点选一个已知环 + 填数值 → 后端直接
+               算出几何（无标样、无精修）。 -->
+          <CalibRingStandardPanel
+            v-else-if="step === 'ring'"
+            :point-count="centerPoints.length"
+            :fit="centerFit"
+            :rms-px="centerRmsPx"
+            :applying="ringApplying"
+            :result="ringResult"
+            :zoom-enabled="zoomEnabled"
+            :value-text="ringValueText"
+            :unit="ringUnit"
+            :default-dist-mm="setupForm.distGuessMm"
+            :fixed-center="comFixedCenter"
+            @update:value-text="ringValueText = $event"
+            @update:unit="ringUnit = $event"
+            @clear="centerPoints = []"
+            @apply="applyRingStandard"
+            @toggle-zoom="zoomEnabled = $event"
           />
 
           <CalibRefinePanel
@@ -97,10 +144,75 @@
             :running="refining"
             :can-run="peaks.length > 0"
             :converged="converged"
+            :center-locked="comFixedCenter"
             @run="handleRefine"
           />
 
+          <!-- Internal-standard step 3: read-only geometry readout (the
+               geometry is computed, never refined — no χ²). Mirrors
+               CalibRefinePanel's crp-geometry layout without touching that
+               component. / 内标第 3 步：只读几何读数（几何是算出来的、无精修
+               ——不显示 χ²）。版式对标 CalibRefinePanel 但不动其本体。 -->
+          <div v-else-if="step === 'preview'" class="cv-geo">
+            <h4 class="cv-geo-title">{{ t('calibration.ring.previewTitle') }}</h4>
+            <template v-if="geometry">
+              <div class="cv-geo-final-center">
+                <span class="cv-geo-final-label">{{ t('calibration.ring.resultCenter') }}</span>
+                <span class="cv-geo-final-value">{{ previewCenterText }}</span>
+              </div>
+              <dl class="cv-geo-readout">
+                <div class="cv-geo-row" :title="geoMeaning('dist')">
+                  <dt>dist <em>{{ geoMeaning('dist') }}</em></dt>
+                  <dd>{{ formatGeo(geometry.distMm, 'mm') }}</dd>
+                </div>
+                <div class="cv-geo-row" :title="geoMeaning('poni1')">
+                  <dt>poni1 <em>{{ geoMeaning('poni1') }}</em></dt>
+                  <dd>{{ formatGeo(geometry.poni1Mm, 'mm') }}</dd>
+                </div>
+                <div class="cv-geo-row" :title="geoMeaning('poni2')">
+                  <dt>poni2 <em>{{ geoMeaning('poni2') }}</em></dt>
+                  <dd>{{ formatGeo(geometry.poni2Mm, 'mm') }}</dd>
+                </div>
+                <div class="cv-geo-row" :title="geoMeaning('rot1')">
+                  <dt>rot1 <em>{{ geoMeaning('rot1') }}</em></dt>
+                  <dd>{{ formatGeo(geometry.rot1Deg, '°') }}</dd>
+                </div>
+                <div class="cv-geo-row" :title="geoMeaning('rot2')">
+                  <dt>rot2 <em>{{ geoMeaning('rot2') }}</em></dt>
+                  <dd>{{ formatGeo(geometry.rot2Deg, '°') }}</dd>
+                </div>
+                <div class="cv-geo-row" :title="geoMeaning('rot3')">
+                  <dt>rot3 <em>{{ geoMeaning('rot3') }}</em></dt>
+                  <dd>{{ formatGeo(geometry.rot3Deg, '°') }}</dd>
+                </div>
+                <div class="cv-geo-row" :title="geoMeaning('wavelength')">
+                  <dt>wavelength <em>{{ geoMeaning('wavelength') }}</em></dt>
+                  <dd>{{ formatGeo(geometry.wavelengthA, 'Å') }}</dd>
+                </div>
+              </dl>
+              <!-- Default-distance warning in the preview readout: the SD row
+                   above is the initial guess, not a fitted value.
+                   预览读数中的默认距离警示：上方 SD 行是初始猜测而非拟合值。 -->
+              <p v-if="ringDistDefaulted" class="cv-geo-default-warn">
+                {{ t('calibration.ring.resultDefaultDist', { mm: ringDefaultDistText }) }}
+              </p>
+            </template>
+            <p v-else class="cv-geo-empty">{{ t('calibration.ring.noGeometry') }}</p>
+            <p class="cv-geo-hint">{{ t('calibration.ring.previewHint') }}</p>
+          </div>
+
           <div v-else class="cv-export">
+            <!-- Pre-export warning (user request): a default-distance geometry
+                 must be announced BEFORE the .poni leaves the wizard.
+                 导出前警示（用户要求）：默认距离几何必须在 .poni 离开向导之前
+                 明确告知。 -->
+            <div
+              v-if="ringDistDefaulted"
+              class="cv-export-warning"
+              data-ai-id="calibration:default-dist-warning"
+            >
+              {{ t('calibration.ring.exportDefaultDistWarning', { mm: ringDefaultDistText }) }}
+            </div>
             <button
               type="button"
               class="cv-btn cv-btn--primary"
@@ -186,6 +298,24 @@
               />
             </label>
           </template>
+          <!-- Mask display style: shared three-tier preference (red/white/
+               violet), also offered in MaskMaker's display panel — both drive
+               the same module-level ref (src/lib/maskDisplay.ts).
+               掩膜显示风格：三档共享偏好（淡红/纯白/深紫），掩膜工具显示面板
+               同款——两处驱动同一模块级 ref（src/lib/maskDisplay.ts）。 -->
+          <label class="cv-rb-field">
+            <span class="cv-rb-label">{{ t('maskMaker.display.maskStyle') }}</span>
+            <select
+              :value="maskStyle"
+              class="cv-rb-select"
+              :title="t('maskMaker.display.maskStyleHint')"
+              @change="onMaskStyleChange(($event.target as HTMLSelectElement).value)"
+            >
+              <option v-for="s in MASK_DISPLAY_STYLES" :key="s" :value="s">
+                {{ t(MASK_STYLE_I18N[s]) }}
+              </option>
+            </select>
+          </label>
           <button
             type="button"
             class="cv-rb-apply"
@@ -196,25 +326,42 @@
           </button>
         </div>
 
+        <!-- Canvas interaction follows the step: peaks = ring guides, ring
+             (internal standard) = the ring-standard points; preview keeps
+             drawing the fitted circle only. / 画布交互随步骤切换：峰拾取 =
+             环引导点；内标定标 = 内标环点选；几何预览仅继续画拟合圆。 -->
         <CalibCanvas
           :image-src="imageSrc"
           :image-width="imageWidth"
           :image-height="imageHeight"
           :rings="rings"
           :peaks="peaks"
-          :interactive="step === 'peaks'"
-          :ring-guide="ringGuide"
-          :ring-fit="ringFit"
+          :interactive="step === 'peaks' || step === 'ring' || (step === 'com' && comPickMode != null)"
+          :ring-guide="canvasGuide"
+          :ring-fit="canvasFit"
+          :hint="step === 'com'
+            ? (comPickMode === 'rect' ? t('calibration.com.canvasRect')
+              : comPickMode === 'poly' ? t('calibration.com.canvasPoly')
+                : t('calibration.com.canvasIdle'))
+            : (step === 'ring'
+                ? t('calibration.ring.canvasHint')
+                : (step === 'peaks' && centerPicking ? centerPickHint : undefined))"
           :mask-overlay="maskOverlay"
+          :mask-style="maskStyle"
           :beam-center="refinedBeamCenter"
+          :region-mode="step === 'com' ? comPickMode : null"
+          :com-region="comRegion"
+          :com-center="comCenter"
           @canvas-click="onCanvasClick"
           @canvas-remove="onCanvasRemove"
           @canvas-dblclick="onCanvasDblClick"
+          @region-selected="onRegionSelected"
         />
         <div v-if="imageSrc" class="cv-canvas-legend">
           <span class="cv-legend-item">{{ t('calibration.canvas.peaks') }}: {{ peaks.length }}</span>
           <span class="cv-legend-item">{{ t('calibration.canvas.rings') }}: {{ rings.length }}</span>
           <span v-if="step === 'peaks'" class="cv-legend-item">{{ guideCountLabel }}</span>
+          <span v-if="step === 'ring'" class="cv-legend-item">{{ ringPointsLabel }}</span>
           <span
             v-if="refinedBeamCenter"
             class="cv-legend-item cv-legend-item--center"
@@ -237,11 +384,14 @@
           </span>
         </div>
 
-        <!-- ===== Calibrant integration preview (step 3, calib2 Integration-task
-             parity): 1-D curve + 2-D cake under the CURRENT refined geometry;
-             auto-refreshed after every refine. / 标定图积分预览（第 3 步）：
-             以当前精修几何做 1D 曲线 + 2D cake，每次精修后自动刷新。 ===== -->
-        <div v-if="step === 'refine'" class="cv-integ-preview">
+        <!-- ===== Calibrant integration preview (calib2 Integration-task
+             parity): 1-D curve + 2-D cake under the CURRENT geometry —
+             refined in calibrant mode, computed by ring_standard in
+             internal-standard mode (step 3). Auto-refreshed after every refine
+             and on entering the preview step. / 标定图积分预览：以当前几何做
+             1D 曲线 + 2D cake——标样模式为精修几何，内标模式为 ring_standard
+             算出的几何（第 3 步）。精修后与进入预览步时自动刷新。 ===== -->
+        <div v-if="step === 'refine' || step === 'preview'" class="cv-integ-preview">
           <div class="cv-integ-head">
             <h3 class="cv-integ-title">{{ integTitleLabel }}</h3>
             <span v-if="integLoading" class="cv-integ-loading">{{ integLoadingLabel }}</span>
@@ -297,6 +447,21 @@
       </aside>
     </div>
 
+    <!-- FIT2D-style zoomed second pick (internal-standard step, zoom on):
+         the first canvas click opens this window, the second (inside) pick
+         lands the point at sub-pixel precision. One at a time. /
+         FIT2D 式放大二次选点（内标步开启放大时）：画布第一次点击打开此窗，
+         窗内二次点选以亚像素精度落点。同一时间只开一个。 -->
+    <CalibZoomPicker
+      v-if="zoomOpen && zoomAnchor"
+      :image-src="imageSrc"
+      :image-width="imageWidth"
+      :image-height="imageHeight"
+      :anchor="zoomAnchor"
+      @confirm="onZoomConfirm"
+      @cancel="onZoomCancel"
+    />
+
     <!-- Export dialog / 导出对话框 -->
     <CalibExportDialog
       :open="exportDialogOpen"
@@ -324,10 +489,11 @@ import { useRouter } from 'vue-router'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
+import { MASK_DISPLAY_STYLES, getMaskDisplayStyle, setMaskDisplayStyle, type MaskDisplayStyle } from '@/lib/maskDisplay'
 import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 
 import CalibCanvas from '@/components/calibration/CalibCanvas.vue'
-import type { CalibPeak, CalibRing, CalibRingFit, CalibMaskOverlay } from '@/components/calibration/CalibCanvas.vue'
+import type { CalibPeak, CalibRing, CalibRingFit, CalibMaskOverlay, CalibRegion } from '@/components/calibration/CalibCanvas.vue'
 import { calibPeakRingColor } from '@/components/calibration/CalibCanvas.vue'
 import CalibSetupForm from '@/components/calibration/CalibSetupForm.vue'
 import type { CalibSetupModel, CalibSetupPayload, CalibProbeInfo } from '@/components/calibration/CalibSetupForm.vue'
@@ -336,19 +502,74 @@ import CalibRefinePanel from '@/components/calibration/CalibRefinePanel.vue'
 import type { CalibFreeFlags, CalibGeometry, CalibResidualPoint } from '@/components/calibration/CalibRefinePanel.vue'
 import CalibExportDialog from '@/components/calibration/CalibExportDialog.vue'
 import type { CalibExportResult, CalibCitation } from '@/components/calibration/CalibExportDialog.vue'
+import CalibRingStandardPanel from '@/components/calibration/CalibRingStandardPanel.vue'
+import type { CalibRingStandardResult, CalibRingUnit } from '@/components/calibration/CalibRingStandardPanel.vue'
+import CalibComPanel from '@/components/calibration/CalibComPanel.vue'
+import CalibZoomPicker from '@/components/calibration/CalibZoomPicker.vue'
 import PlotlyChart from '@/components/charts/PlotlyChart.vue'
 import type { PlotData, PlotLayout } from 'plotly.js-dist-min'
 
 // === Wizard steps / 向导步骤 ===
 
-type CalibStep = 'setup' | 'peaks' | 'refine' | 'export'
+/** Steps of the THREE mutually-exclusive modes:
+ *  - calibrant: setup → peaks → refine → export;
+ *  - internal:  setup → ring → preview → export;
+ *  - com (直通光定心): setup (direct-beam image) → com (box → centroid) →
+ *    setup2 (standard image + branch choice) → then EITHER the calibrant
+ *    (peaks/refine) OR the internal-standard (ring/preview) branch, both with
+ *    the centre FIXED — only the distance is optimised.
+ *  三种互斥模式的步骤：标样校正 / 内标定标 / 直通光定心（直通光图 → 框选质心 →
+ *  标样图 + 支路选择 → 标样或内标支路，中心固定、只优化距离）。 */
+type CalibStep = 'setup' | 'com' | 'setup2' | 'peaks' | 'refine' | 'ring' | 'preview' | 'export'
 
-const STEPS: Array<{ key: CalibStep; labelKey: string }> = [
-  { key: 'setup', labelKey: 'calibration.setup.load' },
-  { key: 'peaks', labelKey: 'calibration.peaks.title' },
-  { key: 'refine', labelKey: 'calibration.refine.title' },
-  { key: 'export', labelKey: 'calibration.export.title' },
-]
+interface CalibStepDef {
+  key: CalibStep
+  labelKey: string
+}
+
+/** Stepper is MODE-DEPENDENT — recomputed when the setup form's mode flips or
+ *  the com branch is chosen. / 步骤随模式与 com 支路选择变化。 */
+const STEPS = computed<CalibStepDef[]>(() => {
+  const mode = setupForm.value.mode
+  if (mode === 'internal') {
+    return [
+      { key: 'setup', labelKey: 'calibration.steps.load' },
+      { key: 'ring', labelKey: 'calibration.steps.ring' },
+      { key: 'preview', labelKey: 'calibration.steps.preview' },
+      { key: 'export', labelKey: 'calibration.export.title' },
+    ]
+  }
+  if (mode === 'com') {
+    const head: CalibStepDef[] = [
+      { key: 'setup', labelKey: 'calibration.steps.beamImage' },
+      { key: 'com', labelKey: 'calibration.steps.com' },
+      { key: 'setup2', labelKey: 'calibration.steps.standardImage' },
+    ]
+    if (comStandardMode.value === 'internal') {
+      return [
+        ...head,
+        { key: 'ring', labelKey: 'calibration.steps.ring' },
+        { key: 'preview', labelKey: 'calibration.steps.preview' },
+        { key: 'export', labelKey: 'calibration.export.title' },
+      ]
+    }
+    if (comStandardMode.value === 'calibrant') {
+      return [
+        ...head,
+        { key: 'peaks', labelKey: 'calibration.peaks.title' },
+        { key: 'refine', labelKey: 'calibration.steps.refineFixed' },
+        { key: 'export', labelKey: 'calibration.export.title' },
+      ]
+    }
+    return head
+  }
+  return [
+    { key: 'setup', labelKey: 'calibration.setup.load' },
+    { key: 'peaks', labelKey: 'calibration.peaks.title' },
+    { key: 'refine', labelKey: 'calibration.refine.title' },
+    { key: 'export', labelKey: 'calibration.export.title' },
+  ]
+})
 
 const { t, locale } = useI18n()
 const toast = useToast()
@@ -358,15 +579,22 @@ const router = useRouter()
 /** Stepper label: step 3 was RENAMED (精修中心位点 / Refine center & geometry —
  *  inline bilingual, no i18n key yet); other steps keep their keys.
  *  步骤条文案：第 3 步已改名（内联双语，暂无 i18n 键）；其余沿用现有键。 */
-function stepLabel(s: { key: CalibStep; labelKey: string }): string {
-  if (s.key === 'refine') return isZh.value ? '精修中心位点' : 'Refine center & geometry'
+function stepLabel(s: CalibStepDef): string {
+  // The refine step is titled differently per flow: with a direct-beam fixed
+  // centre only the DISTANCE is optimised, so say so. / 精修步按流程命名：
+  // 直通光固定中心时只优化距离。
+  if (s.key === 'refine') {
+    return setupForm.value.mode === 'com' && comStandardMode.value === 'calibrant'
+      ? t('calibration.steps.refineFixed')
+      : (isZh.value ? '精修中心位点' : 'Refine center & geometry')
+  }
   return t(s.labelKey)
 }
 
 // === State / 状态 ===
 
 const step = ref<CalibStep>('setup')
-const stepIndex = computed(() => STEPS.findIndex(s => s.key === step.value))
+const stepIndex = computed(() => STEPS.value.findIndex(s => s.key === step.value))
 /** Highest step index unlocked by a completed action. */
 const maxStep = ref(0)
 
@@ -393,6 +621,7 @@ const probeResult = ref<CalibProbeInfo | null>(null)
 const probing = ref(false)
 const setupLoading = ref(false)
 const setupForm = ref<CalibSetupModel>({
+  mode: 'calibrant',
   imagePath: '',
   calibrant: '',
   calibrantPath: '',
@@ -403,9 +632,194 @@ const setupForm = ref<CalibSetupModel>({
   maskPath: '',
   maskMin: null,
   maskMax: null,
+  centerXPx: null,
+  centerYPx: null,
 })
-/** Beam center (px) from seed_from_poni; forwarded with the setup payload. */
-const seededCenter = ref<{ x: number; y: number } | null>(null)
+
+// AI assistant option application (the main build never dispatches this
+// event, so the listener is inert — no AI module is imported here). Applies
+// the assistant-decided calibration mode ONLY while still on the setup step;
+// past that, flipping modes would invalidate sessions already in flight.
+// AI 助手选项应用（主线构建无人派发此事件，监听器保持惰性——此处不导入任何
+// AI 模块）。仅在 setup 步应用助手判定的校正模式；过了该步再切模式会使
+// 在途会话失效。
+function onAiApplyOptions(event: Event): void {
+  const detail = (event as CustomEvent).detail as
+    | { routeName?: string; options?: Record<string, unknown> }
+    | undefined
+  if (detail?.routeName !== 'calibration') return
+  const mode = detail.options?.mode
+  if ((mode === 'calibrant' || mode === 'internal' || mode === 'com') && step.value === 'setup') {
+    setupForm.value.mode = mode
+  }
+}
+
+window.addEventListener('xfaos:ai-apply-options', onAiApplyOptions)
+onUnmounted(() => {
+  window.removeEventListener('xfaos:ai-apply-options', onAiApplyOptions)
+})
+
+// === Internal standard: picked ring + computed geometry / 内标：环点选与几何 ===
+/**
+ * Ring-standard points (internal-standard step 2): canvas clicks collect
+ * `centerPoints` on ONE known ring; Enter / double-click / the panel's 拟合并
+ * 计算几何 button submits them to the backend's `ring_standard` action, which
+ * returns the full geometry. Also reused by the preview step (its fit circle
+ * stays on the canvas). / 内标环点选（第 2 步）：画布点击在同一已知环上收集
+ * centerPoints；回车 / 双击 / 面板「拟合并计算几何」提交给后端 ring_standard，
+ * 返回完整几何。预览步继续复用（拟合圆继续显示在画布上）。
+ */
+const centerPoints = ref<Array<{ y: number; x: number }>>([])
+/** Circle through the picked points (null below 3 points / degenerate). */
+const centerFit = computed<CalibRingFit | null>(() => fitCircle(centerPoints.value))
+
+// ── Direct-beam centroid (2026-10-21) / 直通光质心定心 ────────────────────────
+// The user boxes the direct-beam spot (rect drag / polygon) → the backend's
+// beam_center_com returns its intensity-weighted centroid → ring_standard then
+// runs with the centre FIXED (≥2 ring points suffice). User flow mirrors the
+// wizard: box first (确定坐标), then the 内标定标 part.
+// 用户框出直通光斑（拖矩形 / 多折框）→ 后端 beam_center_com 返回强度加权质心
+// → ring_standard 以固定中心运行（环上 ≥2 点即可）。流程：先框选定坐标，
+// 再进行内标定标部分。
+/** Armed region mode on the canvas (null = off). / 画布已武装的框选模式。 */
+const comPickMode = ref<'rect' | 'poly' | null>(null)
+/** Confirmed direct-beam centroid (sub-pixel). / 已确认的直通光质心（亚像素）。 */
+const comCenter = ref<{ y: number; x: number } | null>(null)
+/** Confirmed region outline echo (dashed on the canvas). / 已确认区域轮廓回显。 */
+const comRegion = ref<CalibRegion | null>(null)
+/** beam_center_com request in flight. / beam_center_com 请求进行中。 */
+const comBusy = ref(false)
+/** Branch chosen on the com mode's SECOND image (null = not chosen yet). The
+ *  standard step then continues as 标样校正 or 内标定标 — both with the centre
+ *  fixed by the centroid. / com 模式第二张图上选择的支路（null = 尚未选择）：
+ *  标样步骤随后回到标样校正或内标定标——两者中心都由质心固定。 */
+const comStandardMode = ref<'calibrant' | 'internal' | null>(null)
+/** Session of the FIRST (direct-beam) image — the CoM runs against it. / 第一张
+ *  （直通光）图的会话——质心针对它计算。 */
+const comSessionId = ref<string | null>(null)
+/** Dimensions of the direct-beam image, used to warn when the standard image
+ *  has a different shape (pixel coordinates would not transfer). / 直通光图
+ *  尺寸，用于在标样图尺寸不同时告警（像素坐标不再通用）。 */
+const comBeamShape = ref<{ h: number; w: number } | null>(null)
+/** Path of the FIRST (direct-beam) image — restored when going back. / 第一张
+ *  （直通光）图路径——返回该步骤时恢复显示。 */
+const comBeamPath = ref<string | null>(null)
+/** The direct-beam session exists (its 载入并开始 succeeded). / 直通光会话已建立。 */
+const beamReady = ref(false)
+/** The standard session exists (setup2's 载入并开始 succeeded). / 标样会话已建立。 */
+const standardReady = ref(false)
+
+/** TRUE once the com flow owns a fixed centre for the standard branch. */
+const comFixedCenter = computed(() =>
+  setupForm.value.mode === 'com' && comCenter.value != null && comStandardMode.value != null,
+)
+
+/** Drop the confirmed centroid + outline (panel 清除). / 清除已确认质心与轮廓。 */
+function clearComCenter(): void {
+  comCenter.value = null
+  comRegion.value = null
+}
+
+/**
+ * A region was drawn on the canvas → ask the backend for its centre of mass;
+ * on success the centroid becomes the fixed centre for ring_standard and the
+ * armed mode disarms (one region at a time). Plain-clone the region — Vue
+ * proxies cannot cross Electron IPC's structured clone (BUG C idiom).
+ * 画布上画好区域 → 请求后端算质心；成功后质心成为 ring_standard 的固定中心，
+ * 武装模式解除（一次一个区域）。区域逐字段浅拷贝——Vue 代理过不了 IPC
+ * 结构化克隆（BUG C 惯用法）。
+ */
+async function onRegionSelected(region: CalibRegion): Promise<void> {
+  const sid = comSessionId.value
+  if (!sid) {
+    toast.push({ title: t('calibration.com.title'), message: t('calibration.errors.noSession'), tone: 'error' })
+    return
+  }
+  if (comBusy.value) return
+  const plain: CalibRegion = region.kind === 'rect'
+    ? {
+        kind: 'rect',
+        y0: region.y0, y1: region.y1, x0: region.x0, x1: region.x1,
+      }
+    : {
+        kind: 'poly',
+        points: region.points.map(p => ({ y: p.y, x: p.x })),
+      }
+  comBusy.value = true
+  try {
+    const data = await submitAndWait('calibration', {
+      action: 'beam_center_com',
+      sessionId: sid,
+      region: plain,
+    })
+    const cy = numberOrNull(data.centerY)
+    const cx = numberOrNull(data.centerX)
+    if (cy == null || cx == null) throw new Error('beam_center_com returned no centre')
+    comCenter.value = { y: cy, x: cx }
+    comRegion.value = plain
+    comPickMode.value = null
+    if (origImageSize.value) {
+      comBeamShape.value = { h: origImageSize.value.h, w: origImageSize.value.w }
+    }
+    toast.push({
+      title: t('calibration.com.title'),
+      message: t('calibration.com.done', { x: cx.toFixed(2), y: cy.toFixed(2) }),
+      tone: 'success',
+    })
+  } catch (err) {
+    toastError(t('calibration.com.title'), err, t('calibration.com.failed'))
+  } finally {
+    comBusy.value = false
+  }
+}
+
+/**
+ * Fit RMS of the picked points in px: mean of |distance_i − radius| (≥3 points
+ * only, null otherwise). / 点选拟合 RMS（px）：各点到圆心的距离与半径之差的
+ * 绝对值均值（仅 ≥3 点，否则 null）。
+ */
+const centerRmsPx = computed<number | null>(() => {
+  const fit = centerFit.value
+  if (!fit || centerPoints.value.length < 3) return null
+  let sum = 0
+  for (const p of centerPoints.value) {
+    sum += Math.abs(Math.hypot(p.y - fit.cy, p.x - fit.cx) - fit.radiusPx)
+  }
+  return sum / centerPoints.value.length
+})
+
+/** True once ring_standard has produced a geometry → the ring step is done.
+ *  ring_standard 成功产出几何后为 true → 内标步骤完成。 */
+const ringApplied = ref(false)
+/** ring_standard request in flight. / ring_standard 请求进行中。 */
+const ringApplying = ref(false)
+/** Summary of the LAST ring_standard response (panel result block). */
+const ringResult = ref<CalibRingStandardResult | null>(null)
+/** Known value of the picked ring — RAW text (parent-owned so the canvas
+ *  Enter / double-click shortcut submits the same value). / 环已知数值原始文本。 */
+const ringValueText = ref('')
+/** Unit of the entered value (default q in nm⁻¹). / 数值单位（默认 q nm⁻¹）。 */
+const ringUnit = ref<CalibRingUnit>('q_nm')
+/**
+ * True when the LAST ring_standard ran WITHOUT a ring value → the distance is
+ * the session's initial guess (dist0), not a fitted one. Drives the warning in
+ * the panel result, the preview readout and the export card, and is echoed
+ * into the export toast. / 上次 ring_standard 未提供环数值 → 距离为会话初始
+ * 猜测（dist0）而非拟合值。驱动面板结果、预览读数与导出卡片的警示，并回显到
+ * 导出 toast。
+ */
+const ringDistDefaulted = ref(false)
+/** Monotonic sequence guarding stale ring_standard responses (mode switch /
+ *  new session must not let an old response write geometry into the wizard).
+ *  递增序号，防陈旧 ring_standard 响应（切模式/换会话后旧响应不得写入几何）。 */
+let ringSeq = 0
+
+// === FIT2D-style zoomed second pick / FIT2D 式放大二次选点 ===
+/** Zoom toggle (panel switch): when on, canvas clicks open the zoom window. */
+const zoomEnabled = ref(false)
+/** Zoom window visibility + the anchor click that opened it. */
+const zoomOpen = ref(false)
+const zoomAnchor = ref<{ row: number; col: number } | null>(null)
 
 // === Mask state (REQ 1) / 掩膜状态 ===
 /**
@@ -480,7 +894,14 @@ const colormapOptions = [
 
 // Peak state / 峰状态
 const peaks = ref<CalibPeak[]>([])
-const sensitivity = ref(0.5)
+// 2026-10-22 用户反馈：默认 0.5 时 massif 峰识别容易过宽（cutoff 偏低、keep
+// 偏多），默认降为 0.2，高级区（CalibPeakPanel 的 <details>）也已默认展开，
+// 便于直接调灵敏度。
+const sensitivity = ref(0.2)
+// Ring-band half-width ±dr for ring_pick (2026-10-23: user-settable, default
+// 5 px per user request — the original hidden constant was 15 px and too wide).
+// ring_pick 的环带半宽 ±dr（默认 5px——原后端隐藏常量 15px 偏宽）。
+const bandTolPx = ref(5)
 const detecting = ref(false)
 const rings = ref<CalibRing[]>([])
 
@@ -505,6 +926,67 @@ const refreshingRings = ref(false)
 // Ring-guide points (owned here; drawn by CalibCanvas) / 环引导点
 const ringGuide = ref<Array<{ y: number; x: number }>>([])
 const ringPicking = ref(false)
+/**
+ * 点选初猜中心 mode (2026-10-20 feature): one canvas click sends the pixel to
+ * the backend set_center action — it becomes the session's centre seed (and
+ * the live geometry's poni1/poni2 once a refinement exists) while AUTO ring
+ * numbers re-derive under the new coordinate system (user rings stay).
+ * The mode is SINGLE-SHOT: after a successful set it disarms, so ring-guide
+ * clicks resume immediately.
+ * 点选初猜中心（2026-10-20 新功能）：画布单击把像素发给后端 set_center——
+ * 写入会话中心种子（已有精修器时同时改其 poni1/poni2），自动环号按新坐标系
+ * 立即重排（用户环号保留）。模式为一次性：设置成功即自动退出，画布点击
+ * 恢复收集环引导点。
+ */
+const centerPicking = ref(false)
+let centerSeq = 0
+
+function toggleCenterPick(): void {
+  centerPicking.value = !centerPicking.value
+}
+
+const centerPickHint = computed(() =>
+  isZh.value ? '在图像上单击光束中心的大致位置（设置后自动退出该模式）' : 'Click the approximate beam centre on the image (the mode disarms after one set)',
+)
+
+/**
+ * Send the clicked pixel as the initial-guess beam centre. The backend
+ * re-derives AUTO ring numbers under the new centre (the centre defines the
+ * 2θ coordinate system) and returns the refreshed geometry + peak table.
+ * 把点击像素作为初猜光束中心发给后端。后端按新中心（中心决定 2θ 坐标系）
+ * 重排自动环号，并返回刷新后的几何与峰表。
+ */
+async function setCenterAt(row: number, col: number): Promise<void> {
+  if (!sessionActive.value) {
+    toast.push({ title: t('calibration.title'), message: t('calibration.errors.noSession'), tone: 'error' })
+    centerPicking.value = false
+    return
+  }
+  const seq = ++centerSeq
+  try {
+    const data = await submitAndWait('calibration', sessionPayload('set_center', {
+      y: row,
+      x: col,
+    }))
+    if (seq !== centerSeq) return // superseded / 已被取代
+    geometry.value = normalizeGeometry(data.geometry)
+    if (Array.isArray(data.peaks) && data.peaks.length > 0) applyPeaksResponse(data)
+    void refreshRingOverlay()
+    const refreshed = numberOrNull(data.rings_refreshed) ?? 0
+    const pos = `(${row.toFixed(0)}, ${col.toFixed(0)}) px`
+    toast.push({
+      title: isZh.value ? '初猜中心' : 'Initial centre',
+      message: isZh.value
+        ? `初猜中心已设为 ${pos}` + (refreshed > 0 ? `；${refreshed} 个自动环号已按新中心重排（您指定的环号保留）` : '')
+        : `Initial centre set to ${pos}` + (refreshed > 0 ? `; ${refreshed} auto ring number(s) re-derived under the new centre (your picked rings kept)` : ''),
+      tone: 'success',
+    })
+  } catch (err) {
+    if (seq === centerSeq) toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
+  } finally {
+    if (seq === centerSeq) centerPicking.value = false
+  }
+}
 
 // Refine state / 精化状态
 // Defaults mirror the backend _DEFAULT_FREE: distance + beam centre free,
@@ -633,6 +1115,7 @@ function normalizePeaks(raw: unknown): CalibPeak[] {
           ring,
           dthetaDeg: numberOrNull(o.dtheta_deg ?? o.dthetaDeg),
           suspect: o.suspect === true,
+          ringUser: o.ring_user === true || o.ringUser === true,
         })
       }
     }
@@ -656,7 +1139,15 @@ function normalizeRings(raw: unknown): CalibRing[] {
   return out.filter(r => r.points.length > 1)
 }
 
-/** Geometry: accepts display-unit fields or pyFAI SI units (m / rad). */
+/** Geometry: accepts display-unit fields or pyFAI SI units (m / rad).
+ *  KEY FIX: the backend `_geometry_summary` emits `center_x_px` / `center_y_px`
+ *  and `wavelength_A` (capital A) — the old pick lists read `center_x` /
+ *  `centerX` and `wavelength_a`, so the beam-centre readout, the canvas
+ *  crosshair and the preview step's wavelength row were silently null. Both
+ *  spellings are now accepted (the backend keys first).
+ *  键名修复：后端 _geometry_summary 发出的是 center_x_px / center_y_px 与
+ *  wavelength_A（大写 A），旧代码读 center_x / centerX 与 wavelength_a，
+ *  导致中心读数、画布十字与预览步波长行静默为 null。现两种拼写都接受。 */
 function normalizeGeometry(raw: unknown): CalibGeometry | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
@@ -681,9 +1172,9 @@ function normalizeGeometry(raw: unknown): CalibGeometry | null {
     rot1Deg: numberOrNull(pick('rot1_deg')) ?? rad2deg(pick('rot1')),
     rot2Deg: numberOrNull(pick('rot2_deg')) ?? rad2deg(pick('rot2')),
     rot3Deg: numberOrNull(pick('rot3_deg')) ?? rad2deg(pick('rot3')),
-    wavelengthA: numberOrNull(pick('wavelength_a')) ?? m2A(pick('wavelength')),
-    centerXPx: numberOrNull(pick('center_x', 'centerX')),
-    centerYPx: numberOrNull(pick('center_y', 'centerY')),
+    wavelengthA: numberOrNull(pick('wavelength_A', 'wavelength_a')) ?? m2A(pick('wavelength')),
+    centerXPx: numberOrNull(pick('center_x_px', 'center_x', 'centerX')),
+    centerYPx: numberOrNull(pick('center_y_px', 'center_y', 'centerY')),
   }
   return result
 }
@@ -746,9 +1237,11 @@ function unlockStep(index: number): void {
 }
 
 function goStep(target: CalibStep): void {
-  const idx = STEPS.findIndex(s => s.key === target)
+  const idx = STEPS.value.findIndex(s => s.key === target)
   if (idx < 0 || idx > maxStep.value) return
-  // Entering refine requires at least one peak.
+  // Entering refine requires at least one peak (calibrant mode only — the
+  // internal-standard wizard has no refine step at all).
+  // 进入精修需要至少一个峰（仅标样模式——内标向导根本没有精修步）。
   if (target === 'refine' && peaks.value.length === 0) {
     toast.push({
       title: t('calibration.refine.title'),
@@ -763,30 +1256,66 @@ function goStep(target: CalibStep): void {
 /**
  * Next is enabled only when the CURRENT step is complete:
  * setup = session created AND the mask inputs are applied (not stale);
- * peaks = ≥4 peaks; refine = a finished refine run.
+ * peaks = ≥4 peaks; refine = a finished refine run;
+ * ring (internal) = a successful ring_standard fit; preview (internal) = a
+ * geometry exists.
  * 下一步仅在当前步骤完成时可用：setup=会话已建且掩膜输入已应用（未过期）；
- * peaks=≥4 峰；refine=精化完成。
+ * peaks=≥4 峰；refine=精修完成；ring（内标）=ring_standard 拟合成功；
+ * preview（内标）=已有几何。
  */
 const canGoNext = computed<boolean>(() => {
   switch (step.value) {
-    case 'setup': return sessionActive.value && !maskStale.value
+    case 'setup':
+      // com mode's FIRST image only has to create the direct-beam session.
+      // com 模式第一张图只需建立直通光会话。
+      return setupForm.value.mode === 'com'
+        ? beamReady.value
+        : sessionActive.value && !maskStale.value
+    // com step: a confirmed centroid is required to move on. / 需确认质心。
+    case 'com': return comCenter.value != null && beamReady.value
+    // com mode's SECOND image: its own session + applied mask inputs.
+    // com 模式第二张图：自己的会话 + 掩膜输入已应用。
+    case 'setup2': return standardReady.value && !maskStale.value
     case 'peaks': return peaks.value.length >= 4
     case 'refine': return chi2.value != null
+    case 'ring': return ringApplied.value
+    case 'preview': return geometry.value != null
     default: return false
   }
 })
 
 function goPrev(): void {
   const idx = stepIndex.value
-  if (idx > 0) step.value = STEPS[idx - 1].key
+  if (idx > 0) step.value = STEPS.value[idx - 1].key
 }
 
 function goNext(): void {
   if (!canGoNext.value) return
   const idx = stepIndex.value
-  if (idx < 0 || idx >= STEPS.length - 1) return
+  if (idx < 0 || idx >= STEPS.value.length - 1) return
+  const next = STEPS.value[idx + 1].key
+  // Entering the com mode's SECOND image: the standard frame is a DIFFERENT
+  // file, so clear the path (forces a fresh pick) and hand the centroid over
+  // as the setup's centre seed. Going back to 'com' restores the beam image.
+  // 进入 com 模式第二张图：标样图是另一个文件，故清空路径（强制重选），并把
+  // 质心作为 setup 的中心种子；返回 'com' 时恢复直通光图。
+  if (step.value === 'com' && next === 'setup2') {
+    setupForm.value = {
+      ...setupForm.value,
+      imagePath: '',
+      centerXPx: comCenter.value?.x ?? null,
+      centerYPx: comCenter.value?.y ?? null,
+    }
+    // The form's branch toggle defaults to 标样校正 — adopt that default HERE
+    // so the step rail already shows the branch's steps (otherwise the list
+    // stays at the 3-step head and the peaks/ring step is unreachable).
+    // 表单的支路开关默认「标样校正」——此处即采用该默认值，使步骤栏立刻展开
+    // 支路步骤（否则列表停在 3 步头部，峰拾取/内标步不可达）。
+    if (comStandardMode.value == null) comStandardMode.value = 'calibrant'
+    standardReady.value = false
+  }
   unlockStep(idx + 1)
-  step.value = STEPS[idx + 1].key
+  step.value = next
 }
 
 // No existing i18n keys for the wizard nav buttons — inline bilingual for now.
@@ -797,6 +1326,29 @@ const nextLabel = computed(() => (isZh.value ? '下一步' : 'Next'))
 const guideCountLabel = computed(() =>
   `${isZh.value ? '引导点' : 'guide pts'}: ${ringGuide.value.length}`,
 )
+/** Ring-step legend entry: points picked on the standard ring. */
+const ringPointsLabel = computed(() =>
+  `${t('calibration.ring.points')}: ${centerPoints.value.length}`,
+)
+
+/**
+ * Canvas guide/fit props per step: peaks → ring guides; ring (internal
+ * standard) → the standard-ring points; preview → only the fitted circle of
+ * the already-picked ring stays visible (guides cleared).
+ * 各步骤的画布引导点/拟合圆：峰拾取 → 环引导点；内标定标 → 内标环点；
+ * 预览 → 仅保留已点环的拟合圆（引导点不再显示）。
+ */
+const canvasGuide = computed<Array<{ y: number; x: number }>>(() => {
+  if (step.value === 'peaks') return ringGuide.value
+  if (step.value === 'ring') return centerPoints.value
+  return []
+})
+
+const canvasFit = computed<CalibRingFit | null>(() => {
+  if (step.value === 'peaks') return ringFit.value
+  if (step.value === 'ring' || step.value === 'preview') return centerFit.value
+  return null
+})
 
 // === Calibrant list / 校准物列表 ===
 
@@ -890,6 +1442,8 @@ async function handleProbed(imagePath: string): Promise<void> {
 
 async function handleSetup(payload: CalibSetupPayload): Promise<void> {
   setupLoading.value = true
+  const isBeamSetup = setupForm.value.mode === 'com' && step.value === 'setup'
+  const isStandardSetup = setupForm.value.mode === 'com' && step.value === 'setup2'
   try {
     const data = await submitAndWait('calibration', {
       action: 'setup',
@@ -904,7 +1458,16 @@ async function handleSetup(payload: CalibSetupPayload): Promise<void> {
       maskPath: payload.maskPath,
       maskMin: payload.maskMin,
       maskMax: payload.maskMax,
-      ...(seededCenter.value ? { centerX: seededCenter.value.x, centerY: seededCenter.value.y } : {}),
+      // Beam-centre seed (ring fit / .poni / direct-beam centroid) → backend
+      // first-guess poni1/poni2. Both coordinates are required together.
+      // 束流中心种子（圆环拟合 / .poni / 直通光质心）→ 后端首猜 poni1/poni2；
+      // 两个坐标必须成对提供。
+      ...(payload.centerX != null && payload.centerY != null
+        ? { centerX: payload.centerX, centerY: payload.centerY }
+        : {}),
+      // com mode, SECOND image: pin the centre + rotations, optimise dist only.
+      // com 模式第二张图：钉住中心与旋转角，只优化距离。
+      ...(payload.fixedCenter ? { fixedCenter: true } : {}),
     })
     // The backend hands back the session id every later action must carry.
     // 后端返回会话 id，后续所有会话 action 都必须携带。
@@ -952,13 +1515,139 @@ async function handleSetup(payload: CalibSetupPayload): Promise<void> {
     }
 
     unlockStep(1)
-    step.value = 'peaks'
+    // Ring picking (internal standard) is per-session state: a fresh session
+    // starts with no points and no previous fit. ringSeq++ supersedes any
+    // ring_standard still in flight against the PREVIOUS session.
+    // 环点选（内标）是会话内状态：新会话不含任何点与既有拟合。ringSeq++
+    // 作废仍在途、针对上一个会话的 ring_standard。
+    ringSeq++
+    centerPoints.value = []
+    ringApplied.value = false
+    ringResult.value = null
+    ringDistDefaulted.value = false
+    zoomOpen.value = false
+    zoomAnchor.value = null
+
+    if (isBeamSetup) {
+      // DIRECT-BEAM image: this session only serves the CoM. The centroid,
+      // the region and the branch choice all start over.
+      // 直通光图：该会话只服务质心计算；质心、区域与支路选择全部重新开始。
+      comSessionId.value = sid
+      comBeamPath.value = payload.filePath
+      beamReady.value = true
+      standardReady.value = false
+      comStandardMode.value = null
+      comPickMode.value = null
+      clearComCenter()
+      step.value = 'com'
+      return
+    }
+    if (isStandardSetup) {
+      // STANDARD image: the centre came from the first image. A shape change
+      // would silently shift that centre, so warn loudly (pixel coordinates
+      // only transfer between frames of the same detector layout).
+      // 标样图：中心来自第一张图。尺寸变化会让该中心悄悄偏移，故显著告警
+      // （像素坐标仅在相同探测器布局的帧之间通用）。
+      standardReady.value = true
+      const shape = origImageSize.value
+      if (shape && comBeamShape.value
+          && (shape.h !== comBeamShape.value.h || shape.w !== comBeamShape.value.w)) {
+        toast.push({
+          title: t('calibration.com.title'),
+          message: t('calibration.com.shapeMismatch', {
+            bw: comBeamShape.value.w, bh: comBeamShape.value.h,
+            sw: shape.w, sh: shape.h,
+          }),
+          tone: 'warning',
+        })
+      }
+      const nextStep: CalibStep = comStandardMode.value === 'internal' ? 'ring' : 'peaks'
+      // The chosen branch ADDS steps to the rail — unlock the one we land on.
+      // 选定支路会扩展步骤栏——解除落地步骤的锁定。
+      const nextIdx = STEPS.value.findIndex(s => s.key === nextStep)
+      if (nextIdx >= 0) unlockStep(nextIdx)
+      step.value = nextStep
+      return
+    }
+
+    comPickMode.value = null
+    clearComCenter()
+    // The next step depends on the mode: calibrant mode goes peak picking,
+    // internal-standard mode goes straight to 内标定标.
+    // 下一步随模式分岔：标样模式去峰拾取，内标模式直接进「内标定标」。
+    step.value = setupForm.value.mode === 'internal' ? 'ring' : 'peaks'
   } catch (err) {
     toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
   } finally {
     setupLoading.value = false
   }
 }
+
+/**
+ * Branch switch on the com mode's SECOND image (标样校正 ↔ 内标定标): the two
+ * branches open DIFFERENT backend sessions (a calibrant session vs a bare
+ * internal-standard one), so an existing standard session is invalidated and
+ * the user re-runs 载入并开始 — the direct-beam centre is preserved.
+ * com 模式第二张图的支路切换（标样校正 ↔ 内标定标）：两支路的后端会话类型不同
+ * （含标样 vs 纯内标），既有标样会话作废，需重新「载入并开始」——直通光中心
+ * 保留。
+ */
+function onStandardModeChange(mode: 'calibrant' | 'internal'): void {
+  if (comStandardMode.value === mode) return
+  comStandardMode.value = mode
+  if (standardReady.value) {
+    ringSeq++
+    sessionId.value = null
+    sessionActive.value = false
+    standardReady.value = false
+    resetSessionResults()
+    // The step list changes with the branch — keep the user on setup2 and
+    // lock the branch-specific steps until the standard image is reloaded.
+    // 步骤列表随支路变化——保持在 setup2，并在重新载入标样图前锁住支路步骤。
+    maxStep.value = Math.min(maxStep.value, STEPS.value.findIndex(s => s.key === 'setup2'))
+    step.value = 'setup2'
+    toast.push({
+      title: t('calibration.com.title'),
+      message: t('calibration.com.branchChanged'),
+      tone: 'info',
+    })
+  }
+}
+
+/**
+ * Mode switch (标样校正 ↔ 内标定标 ↔ 直通光定心) is MUTUALLY EXCLUSIVE: the
+ * wizards have different steps and different backends, so an existing
+ * session/geometry from the other mode is meaningless. Reset everything and
+ * require a fresh 载入并开始.
+ * 模式切换（标样校正 ↔ 内标定标 ↔ 直通光定心）互斥：向导步骤与后端路径不同，
+ * 另一模式的会话/几何毫无意义。全部重置，需重新「载入并开始」。
+ */
+watch(() => setupForm.value.mode, () => {
+  // Supersede any in-flight ring_standard: its response belongs to the other
+  // mode's session. / 作废在途的 ring_standard：响应属于另一模式的会话。
+  ringSeq++
+  sessionId.value = null
+  sessionActive.value = false
+  resetSessionResults()
+  step.value = 'setup'
+  maxStep.value = 0
+  centerPoints.value = []
+  ringApplied.value = false
+  ringApplying.value = false
+  ringResult.value = null
+  ringDistDefaulted.value = false
+  ringValueText.value = ''
+  zoomOpen.value = false
+  zoomAnchor.value = null
+  comPickMode.value = null
+  clearComCenter()
+  comStandardMode.value = null
+  comSessionId.value = null
+  comBeamPath.value = null
+  comBeamShape.value = null
+  beamReady.value = false
+  standardReady.value = false
+})
 
 /** Clear peaks/results from a previous session before a new setup. */
 function resetSessionResults(): void {
@@ -978,10 +1667,17 @@ function resetSessionResults(): void {
 async function handleSeedFromPoni(poniPath: string): Promise<void> {
   try {
     const data = await submitAndWait('calibration', { action: 'seed_from_poni', filePath: poniPath })
+    // BUG fix (键位不匹配): the backend returns {"status":"ok","seed":{…}} —
+    // the wizard used to read the keys off the TOP level, so dist/wavelength/
+    // pixel/centre were all silently dropped. Read the nested seed (falling
+    // back to the flat shape for robustness).
+    // 修复键位不匹配：后端返回的是嵌套的 "seed" 对象，此前向导按顶层读取，
+    // 距离/波长/像素/中心全部静默丢失。此处读 seed（并兼容扁平结构）。
+    const seed = (((data as Record<string, unknown>)?.seed ?? data) ?? {}) as Record<string, unknown>
     const patch: Partial<CalibSetupModel> = {}
-    const distMm = numberOrNull(data.dist_mm) ?? numberOrNull(data.distance_mm)
-    const wavelengthA = numberOrNull(data.wavelength_a)
-    const pixelUm = numberOrNull(data.pixel_um) ?? numberOrNull(data.pixel_size_um)
+    const distMm = numberOrNull(seed.dist_mm) ?? numberOrNull(seed.distance_mm)
+    const wavelengthA = numberOrNull(seed.wavelength_A) ?? numberOrNull(seed.wavelength_a)
+    const pixelUm = numberOrNull(seed.pixel_um) ?? numberOrNull(seed.pixel_size_um)
     if (distMm != null) patch.distGuessMm = distMm
     if (wavelengthA != null) patch.wavelengthA = wavelengthA
     if (pixelUm != null) {
@@ -990,13 +1686,18 @@ async function handleSeedFromPoni(poniPath: string): Promise<void> {
       // PONI 提供的像素尺寸优先于探测器预设。
       patch.detector = ''
     }
-    if (patch.distGuessMm != null || patch.wavelengthA != null || patch.pixelSizeUm != null) {
+    // Centre from the .poni (px, x = poni2/pixel2 column, y = poni1/pixel1
+    // row) → setupForm.centerXPx/YPx, forwarded with the setup payload as the
+    // backend's first-guess centre. It describes the DETECTOR geometry, not
+    // the picture, so it deliberately survives an image change.
+    // PONI 中的中心（像素）→ setupForm.centerXPx/YPx，随 setup 载荷下发为后端
+    // 首猜中心。它描述的是探测器几何而非图像，故换图时特意保留。
+    const cx = numberOrNull(seed.center_x_px) ?? numberOrNull(seed.center_x) ?? numberOrNull(seed.centerX)
+    const cy = numberOrNull(seed.center_y_px) ?? numberOrNull(seed.center_y) ?? numberOrNull(seed.centerY)
+    if (cx != null) patch.centerXPx = cx
+    if (cy != null) patch.centerYPx = cy
+    if (Object.keys(patch).length > 0) {
       setupForm.value = { ...setupForm.value, ...patch }
-    }
-    const cx = numberOrNull(data.center_x ?? data.centerX)
-    const cy = numberOrNull(data.center_y ?? data.centerY)
-    if (cx != null && cy != null) {
-      seededCenter.value = { x: cx, y: cy }
     }
   } catch (err) {
     toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
@@ -1067,6 +1768,13 @@ async function loadDisplayImage(filePath: string): Promise<void> {
     filePath,
     frame: 0,
     settings: buildRenderSettings(),
+    // PERFORMANCE (大图加载慢): the wizard consumes the PNG (binary frame →
+    // blob URL) and the metadata only — the raw imageData matrix would double
+    // the payload for nothing. Explicit false; the backend default is NOT
+    // changed (unknown consumers keep it). / 性能：向导只消费 PNG（二进制帧 →
+    // blob URL）与元数据，原始 imageData 矩阵白白翻倍负载。显式 false；不改
+    // 后端默认值（未知消费方不受影响）。
+    includeImageData: false,
   })
   displayFilePath.value = filePath
   if (isNewFile) dropDisplayedPicture()
@@ -1191,6 +1899,31 @@ function reloadDisplay(): void {
 // 暂无现成 i18n 键 —— 内联双语（见最终报告的缺失键清单）。
 const applyLabel = computed(() => (locale.value.startsWith('zh') ? '应用' : 'Apply'))
 
+// === Mask display style / 掩膜显示风格 ===
+
+// Shared three-tier preference: the computed reads the module-level ref in
+// src/lib/maskDisplay.ts, so a switch made in MaskMaker's panel updates this
+// select and the canvas instantly (and vice versa) — no event bus needed.
+// 三档共享偏好：computed 读 src/lib/maskDisplay.ts 的模块级 ref，在掩膜工具
+// 面板里切换会即时更新本下拉与画布（反之亦然）——无需事件总线。
+const maskStyle = computed(() => getMaskDisplayStyle())
+
+/** i18n keys per tier — an explicit map keeps the zh/en key contract visible.
+ *  各档 i18n 键——显式映射让 zh/en 键契约一目了然。 */
+const MASK_STYLE_I18N: Record<MaskDisplayStyle, string> = {
+  red: 'maskMaker.display.maskStyleRed',
+  white: 'maskMaker.display.maskStyleWhite',
+  violet: 'maskMaker.display.maskStyleViolet',
+}
+
+function onMaskStyleChange(value: string): void {
+  // The select only offers valid tiers; this guard is belt-and-braces against
+  // programmatic dispatch. / 下拉只含合法档位；此守卫防程序化派发越界。
+  if ((MASK_DISPLAY_STYLES as string[]).includes(value)) {
+    setMaskDisplayStyle(value as MaskDisplayStyle)
+  }
+}
+
 // === Peaks / 峰拾取 ===
 
 async function handleAutoPeaks(): Promise<void> {
@@ -1266,14 +1999,22 @@ function sortPeaksByRing(list: CalibPeak[]): CalibPeak[] {
  *  mode: 'keep' (default) honors the table's ring numbers (calib2 peak-table
  *  semantics — user edits survive); 'assign' re-derives every ring from the
  *  current geometry (刷新环号/自检 path). */
-function pushPeaksUpdate(opts: { mode?: 'assign' | 'keep'; allowEmpty?: boolean } = {}): void {
-  if (!sessionActive.value) return
+function pushPeaksUpdate(opts: { mode?: 'assign' | 'keep'; allowEmpty?: boolean } = {}): Promise<void> {
+  if (!sessionActive.value) return Promise.resolve()
   const mode = opts.mode ?? 'keep'
-  if (peaks.value.length === 0 && !opts.allowEmpty) return
+  if (peaks.value.length === 0 && !opts.allowEmpty) return Promise.resolve()
   const seq = ++peaksUpdateSeq
-  void submitAndWait('calibration', sessionPayload('update_peaks', {
+  // Returns the round-trip promise so callers can chain post-update refreshes
+  // (e.g. the auto-seeded centre's ring overlay — it needs the refinement the
+  // update creates). Bare callers keep working unchanged.
+  // 返回往返 Promise 供调用方在更新后接力刷新（如中心自动种子后的理论环
+  // 叠加——它依赖 update_peaks 建立的精修器）；原有裸调用不受影响。
+  return submitAndWait('calibration', sessionPayload('update_peaks', {
     mode,
-    peaks: peaks.value.map(p => ({ y: p.y, x: p.x, ring: p.ring ?? null })),
+    // ringUser travels BOTH ways: user-owned rings (完成本环 / 整环改号)
+    // survive refine's automatic refresh on the backend.
+    // ringUser 随载荷往返：用户所有的环号在后端精修的自动重排中被保留。
+    peaks: peaks.value.map(p => ({ y: p.y, x: p.x, ring: p.ring ?? null, ringUser: p.ringUser === true })),
   })).then(data => {
     if (seq !== peaksUpdateSeq) return // stale / 已过期
     applyPeaksResponse(data)
@@ -1350,7 +2091,7 @@ function handleRenameRing(oldRing: number, newRing: number): void {
   const touched = peaks.value.some(p => p.ring === oldRing)
   if (!touched) return
   peaks.value = sortPeaksByRing(
-    peaks.value.map(p => (p.ring === oldRing ? { ...p, ring: newRing } : p)),
+    peaks.value.map(p => (p.ring === oldRing ? { ...p, ring: newRing, ringUser: true } : p)),
   )
   pushPeaksUpdate({ mode: 'keep' })
 }
@@ -1400,12 +2141,67 @@ async function handleRefreshRings(): Promise<void> {
 // there is no pick-mode toolbar any more; ring_pick fires on 完成本环 /
 // Enter / double-click. / 画布点击始终为当前环放置引导点（模式工具栏已移除）；
 // 完成本环 / 回车 / 双击触发 ring_pick。
+// INTERNAL STANDARD (ring step): clicks collect the standard-ring points
+// instead — through the FIT2D-style zoom window when the zoom toggle is on.
+// 内标（ring 步）：点击改为收集内标环点——开启放大时先经 FIT2D 式放大窗。
 function onCanvasClick(pixel: { row: number; col: number }): void {
+  // The com step owns the canvas for region drawing only — a stray click must
+  // never become a guide point. / com 步骤的画布只用于框选——散点绝不当引导点。
+  if (step.value === 'com') return
+  if (step.value === 'ring') {
+    if (zoomEnabled.value) {
+      // One zoom window at a time. / 同一时间只开一个放大窗。
+      zoomAnchor.value = { row: pixel.row, col: pixel.col }
+      zoomOpen.value = true
+      return
+    }
+    pushRingPoint(pixel.row, pixel.col)
+    return
+  }
+  // 点选初猜中心 armed: this click sets the centre instead of a guide point.
+  // 点选初猜中心激活时：本击设置中心，而非收集引导点。
+  if (centerPicking.value) {
+    void setCenterAt(pixel.row, pixel.col)
+    return
+  }
   ringGuide.value = [...ringGuide.value, { y: pixel.row, x: pixel.col }]
 }
 
-/** Double-click finishes the current ring (its clicks already added points). */
+/**
+ * Append a standard-ring point, ignoring a click that lands on (nearly) the
+ * previous one. A double-click without the zoom window fires click twice at
+ * the same pixel, which would silently double that point's weight in the
+ * circle fit — this collapses the duplicate (deliberate manual picks are never
+ * within 0.5 px of each other). / 追加内标环点；与上一点（几乎）重合的点击
+ * 直接忽略：未开放大时双击会各触发一次 click、产生重合点，使该点在圆拟合中
+ * 权重翻倍；此处去重（人工点选不会落在 0.5 px 内）。
+ */
+function pushRingPoint(row: number, col: number): void {
+  const last = centerPoints.value[centerPoints.value.length - 1]
+  if (last && Math.hypot(last.y - row, last.x - col) < 0.5) return
+  centerPoints.value = [...centerPoints.value, { y: row, x: col }]
+}
+
+/** Second pick inside the zoom window → push the sub-pixel coordinate. */
+function onZoomConfirm(pick: { row: number; col: number }): void {
+  pushRingPoint(pick.row, pick.col)
+  zoomOpen.value = false
+  zoomAnchor.value = null
+}
+
+function onZoomCancel(): void {
+  zoomOpen.value = false
+  zoomAnchor.value = null
+}
+
+/** Double-click finishes the current ring (its clicks already added points);
+ *  on the internal-standard step it applies the ring fit once ≥3 points exist.
+ *  双击完成本环（点击已添加引导点）；内标步 ≥3 点时执行内标拟合。 */
 function onCanvasDblClick(_pixel: { row: number; col: number }): void {
+  if (step.value === 'ring') {
+    if (centerPoints.value.length >= 3) void applyRingStandard()
+    return
+  }
   if (step.value === 'peaks') void finishRingPick()
 }
 
@@ -1472,6 +2268,10 @@ async function finishRingPick(): Promise<void> {
       points: pts,
       extractMode: beyondMask.value ? 'beyond_mask' : 'contiguous',
       assignRing,
+      // 2026-10-23: only the band half-width rides along — the sensitivity
+      // knob is scoped to the full-image auto-detect (same-day user feedback).
+      // 只传环带半宽；灵敏度只作用于全图自动拾取（同日用户反馈）。
+      tolPx: bandTolPx.value,
     }))
     const harvested = normalizePeaks(data.peaks)
     const region = parseHarvestRegion(data.region)
@@ -1487,8 +2287,11 @@ async function finishRingPick(): Promise<void> {
     for (const p of harvested) {
       if (peaks.value.some(q => q.y === p.y && q.x === p.x)) continue
       // Stamp the CURRENT ring (backend echoes it; enforced here as a guard).
-      // 直接打上当前环号（后端已回带，此处兜底强制）。
+      // The stamp is USER-OWNED: refine's refresh must keep it (0.3.3 bug).
+      // 直接打上当前环号（后端已回带，此处兜底强制）；该环号为用户所有，
+      // 精修的自动重排必须保留（0.3.3 缺陷修复）。
       p.ring = assignRing
+      p.ringUser = true
       peaks.value = [...peaks.value, p]
       added = true
     }
@@ -1506,11 +2309,37 @@ async function finishRingPick(): Promise<void> {
       toast.push({ title: t('calibration.peaks.title'), message: msg, tone: 'warning' })
       return
     }
+    // 2026-10-23: the FIRST harvest auto-seeds the centre from the guide
+    // point circle fit (everything used to stay anchored at the IMAGE centre
+    // — user report: ring numbers ran absurdly high and the refine could not
+    // recover). Refresh geometry/overlay and tell the user; user-picked ring
+    // numbers are unaffected (pushPeaksUpdate below re-derives only auto
+    // ones under the new centre). / 首个收环按引导点圆拟合自动落中心种子
+    // （此前一直锚在图像中心——环号冲高、精修修不回来）。刷新几何/叠加并
+    // 提示；用户环号不受影响。
+    const seeded = data.centerSeeded as { y: number; x: number } | undefined
+    if (seeded) {
+      if (data.geometry) geometry.value = normalizeGeometry(data.geometry)
+      const pos = `(${seeded.y.toFixed(0)}, ${seeded.x.toFixed(0)}) px`
+      toast.push({
+        title: isZh.value ? '初猜中心' : 'Initial centre',
+        message: isZh.value
+          ? `已按本环圆拟合自动设定初猜中心 ${pos}；环号分配与精修初值随新中心（您指定的环号保留）`
+          : `Initial centre auto-seeded from this ring's circle fit at ${pos}; ring assignment and the refine start follow it (your picked rings kept)`,
+        tone: 'success',
+      })
+    }
     // Ring-by-ring: re-group by ring, then advance the spinner to max+1
     // (calib2 "+" semantics). / 按环重新分组，数字框跳到 max+1。
     peaks.value = sortPeaksByRing(peaks.value)
     if (added) currentRing.value = nextDisplayRing()
-    pushPeaksUpdate()
+    const pushed = pushPeaksUpdate()
+    // The auto-seeded centre's ring overlay needs the refinement the update
+    // just built — refresh AFTER the round-trip (firing earlier hits a
+    // session without gr and the backend politely refuses).
+    // 中心自动种子后的理论环叠加依赖 update_peaks 建立的精修器——在往返
+    // 之后再刷新（过早调用时后端还没有 gr，会被拒绝）。
+    if (seeded) void pushed.then(() => refreshRingOverlay())
   } catch (err) {
     toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
   } finally {
@@ -1575,10 +2404,252 @@ function fitCircle(points: Array<{ y: number; x: number }>): CalibRingFit | null
 /** Dashed preview circle through the current guide points (≥3), for CalibCanvas. */
 const ringFit = computed<CalibRingFit | null>(() => fitCircle(ringGuide.value))
 
+// === Internal standard: fit one known ring → full geometry / 内标：单环算几何 ===
+
+/**
+ * Parsed ring value. null now carries TWO meanings the caller must separate:
+ * an EMPTY input → default distance (submit without a value); a NON-empty but
+ * unparseable / non-positive input → invalid, warn the user.
+ * 解析后的环数值。null 有两种含义，调用方必须区分：输入为空 → 使用默认距离
+ * （不带 value 提交）；非空但无法解析 / 非正数 → 非法，提示用户。
+ */
+function parsedRingValue(): number | null {
+  const num = parseFloat(ringValueText.value)
+  return Number.isFinite(num) ? num : null
+}
+
+/**
+ * {mm} figure for the default-distance warning texts: prefers the last
+ * ring_standard response's SD, falls back to the current geometry readout.
+ * 警示文案中的 {mm} 数值：优先取上次 ring_standard 响应的 SD，回退到当前
+ * 几何读数。
+ */
+const ringDefaultDistText = computed<string>(() => {
+  const mm = numberOrNull(ringResult.value?.distMm) ?? numberOrNull(geometry.value?.distMm)
+  return mm != null && Number.isFinite(mm) ? mm.toFixed(1) : '?'
+})
+
+/**
+ * Submit the picked ring (+ its OPTIONAL known value) to the backend's
+ * `ring_standard` action: the backend Kåsa-fits the points and, with a value,
+ * converts it to the ring's 2θ and derives the sample-detector distance; with
+ * the value LEFT EMPTY only the beam centre is calibrated and the distance
+ * defaults to the session's initial guess (dist0) — the response flags it via
+ * `distDefaulted` and the exported .poni carries a Dist-default annotation.
+ * The WHOLE geometry comes back (session["gr"] included), so export_poni and
+ * integrate_preview work unchanged. On success the returned geometry feeds the
+ * preview step's readout, the canvas crosshair and canGoNext; failure only
+ * toasts.
+ * 把点选环（及其可选已知数值）提交后端 ring_standard：后端做 Kåsa 拟合，提供
+ * 数值时换算为该环 2θ 并反算样品-探测器距离；数值留空时仅标定束流中心，距离
+ * 取会话初始猜测（dist0）——响应以 `distDefaulted` 标记，导出的 .poni 附
+ * Dist-default 注释。完整几何回传（含 session["gr"]），export_poni 与
+ * integrate_preview 无需改动即可用。成功后回传几何供预览步读数、画布十字与
+ * canGoNext；失败仅提示。
+ */
+async function applyRingStandard(): Promise<void> {
+  if (ringApplying.value) return
+  if (!sessionActive.value) {
+    toast.push({ title: t('calibration.ring.title'), message: t('calibration.errors.noSession'), tone: 'error' })
+    return
+  }
+  // With the direct-beam centroid FIXED, ≥2 ring points suffice (the centre
+  // no longer comes from the circle fit). / 直通光质心固定中心后环上 ≥2 点
+  // 即可（中心不再来自圆拟合）。
+  const fixedCom = comFixedCenter.value ? comCenter.value : null
+  const minRingPoints = fixedCom ? 2 : 3
+  if (centerPoints.value.length < minRingPoints || (!fixedCom && !centerFit.value)) {
+    toast.push({
+      title: t('calibration.ring.title'),
+      message: fixedCom ? t('calibration.ring.needPointsCom') : t('calibration.ring.needPoints'),
+      tone: 'warning',
+    })
+    return
+  }
+  // Empty input → default distance (submit WITHOUT a value); a non-empty
+  // value that is not a positive number is refused here.
+  // 输入为空 → 使用默认距离（不带 value 提交）；非空但非正数在此拒绝。
+  const value = parsedRingValue()
+  if (ringValueText.value.trim() !== '' && (value == null || !(value > 0))) {
+    toast.push({
+      title: t('calibration.ring.title'),
+      message: t('calibration.ring.needValue'),
+      tone: 'warning',
+    })
+    return
+  }
+  // Plain-clone the points: Vue reactive proxies cannot cross Electron's IPC
+  // structured clone (BUG C). / 逐点浅拷贝为普通对象（BUG C：代理无法过 IPC）。
+  const pts = centerPoints.value.map(p => ({ y: p.y, x: p.x }))
+  // No value → omit BOTH keys: the backend treats a missing value as the
+  // default-distance branch and skips unit validation.
+  // 无数值 → 两个键都省略：后端将缺失的 value 视为默认距离分支并跳过单位校验。
+  const extra: Record<string, unknown> = value != null
+    ? { value, unit: ringUnit.value }
+    : {}
+  // Fixed direct-beam centre (2026-10-21): ring_standard keeps the centroid
+  // and derives only the radius from the points. / 固定直通光中心：ring_standard
+  // 保留质心，仅由点选推半径。
+  if (fixedCom) extra.center = { y: fixedCom.y, x: fixedCom.x }
+  // Sequence guard (same idiom as integSeq): a response that comes back after
+  // the mode was switched / a new session was started must NOT write its
+  // geometry into the current wizard. Bumped only when the request really is
+  // sent, so a rejected call can never orphan an in-flight spinner.
+  // 序号守卫（与 integSeq 同法）：切模式 / 换会话之后才回来的旧响应绝不写入
+  // 当前向导的几何。仅在真正发出请求时自增，被拒的调用不会让在途请求的
+  // 进行中标志悬空。
+  const seq = ++ringSeq
+  ringApplying.value = true
+  try {
+    const data = await submitAndWait('calibration', sessionPayload('ring_standard', {
+      points: pts,
+      ...extra,
+    }))
+    if (seq !== ringSeq) return // superseded / 已被取代
+    const distDefaulted = data.distDefaulted === true
+    ringApplied.value = true
+    ringDistDefaulted.value = distDefaulted
+    ringResult.value = {
+      centerXPx: numberOrNull(data.centerXPx),
+      centerYPx: numberOrNull(data.centerYPx),
+      radiusPx: numberOrNull(data.radiusPx),
+      rmsPx: numberOrNull(data.rmsPx),
+      tthDeg: numberOrNull(data.tthDeg),
+      distMm: numberOrNull(data.distMm),
+      distDefaulted,
+    }
+    // The computed geometry takes the same slot a refine result would: the
+    // preview readout, the magenta canvas crosshair and the export path all
+    // read `geometry`. / 算得的几何占用与精修相同的位置：预览读数、画布洋红
+    // 十字与导出路径都读 geometry。
+    geometry.value = normalizeGeometry(data.geometry)
+    toast.push({
+      title: t('calibration.ring.title'),
+      // Defaulted → append the default-distance note so the user cannot miss
+      // that the SD was never calibrated from a ring value.
+      // 默认距离时追加提示，确保用户不会漏看「SD 未经环数值标定」。
+      message: distDefaulted
+        ? `${t('calibration.ring.done')} ${t('calibration.ring.doneDefaultDist', { mm: ringDefaultDistText.value })}`
+        : t('calibration.ring.done'),
+      tone: 'success',
+    })
+  } catch (err) {
+    if (seq === ringSeq) {
+      toastError(t('calibration.ring.title'), err, t('calibration.errors.loadFailed'))
+    }
+  } finally {
+    // Never clear a newer request's spinner / 不清除更新请求的进行中标志。
+    if (seq === ringSeq) ringApplying.value = false
+  }
+}
+
+// ── Ring-fit invalidation / 内标拟合失效 ─────────────────────────────────────
+// The fitted geometry is only meaningful for the EXACT ring and value it came
+// from: adding / removing a point or editing the value or its unit re-opens
+// the step (Next disabled, the panel's result block cleared) until the user
+// runs 拟合并计算几何 again. Every point-set mutation replaces the whole ref,
+// so a shallow watch fires on all of them.
+// 拟合出的几何只对当初那个环与那个数值成立：增删点、改数值或改单位都重新
+// 打开该步骤（Next 禁用、面板结果区清空），直到再次「拟合并计算几何」。
+// 点集的任何变更都是整体替换 ref，浅 watch 即可覆盖。
+watch(centerPoints, invalidateRingFit)
+watch([ringValueText, ringUnit], invalidateRingFit)
+// A new/removed direct-beam centroid redefines the centre the fit would use —
+// the previous fit result is stale either way. / 质心新增或清除都改变了拟合
+// 所用中心——既有拟合结果一律失效。
+watch(comCenter, invalidateRingFit)
+
+function invalidateRingFit(): void {
+  ringApplied.value = false
+  ringResult.value = null
+  ringDistDefaulted.value = false
+}
+
+// A new image invalidates the PICKED RING (its points, its value and any
+// previous fit — the invalidation watcher above clears the fit state). The
+// .poni-seeded centre in setupForm.centerXPx/YPx belongs to the detector
+// geometry, not to the picture, and survives an image change.
+// 换图后旧圆环作废（点选、数值与既有拟合——拟合状态由上面的失效 watcher
+// 清理）。setupForm.centerXPx/YPx 里的 .poni 种子中心属于探测器几何而非图像，
+// 换图保留。
+watch(() => setupForm.value.imagePath, () => {
+  centerPoints.value = []
+  ringValueText.value = ''
+  // Only the FIRST (direct-beam) image owns the centroid; the standard image
+  // on setup2 must keep it (its whole purpose is to be reused there).
+  // 只有第一张（直通光）图拥有质心；setup2 的标样图必须保留它（复用它正是
+  // 该步骤的目的）。
+  if (setupForm.value.mode !== 'com' || step.value === 'setup') {
+    clearComCenter()
+    comPickMode.value = null
+  }
+})
+
+// Entering the internal-standard preview step refreshes the 1D/2D integration
+// preview once (mirror of the refine step's refresh-on-refine) — the backend
+// has session["gr"] since ring_standard succeeded. / 进入内标预览步时刷新一次
+// 1D/2D 积分预览（对标精修步的刷新）；ring_standard 成功后后端已持有
+// session["gr"]。
+watch(step, (s) => {
+  if (s === 'preview') void refreshIntegrationPreview()
+  // Region selection only exists on the com step — leaving it disarms any
+  // pending draft. / 区域框选只属于 com 步骤——离开即解除武装。
+  if (s !== 'com') comPickMode.value = null
+  // Going BACK to the com step must show the direct-beam frame again (the
+  // standard image may have replaced it on screen). / 返回 com 步骤时必须重新
+  // 显示直通光图（屏幕上可能已换成标样图）。
+  if (s === 'com' && comBeamPath.value && displayFilePath.value !== comBeamPath.value) {
+    void loadDisplayImage(comBeamPath.value).catch(() => { /* toast inside */ })
+  }
+})
+
+/**
+ * A NEW/CHANGED direct-beam centroid invalidates an already-created standard
+ * session: that session baked the OLD centre into poni1/poni2, and the whole
+ * point of this mode is "centre fixed, distance optimised". Send the user back
+ * to setup2 for a reload (their centre is preserved).
+ * 直通光质心新增/改变会使已建立的标样会话失效：该会话已把旧中心写进
+ * poni1/poni2，而本模式的全部意义就是「中心固定、只优化距离」。把用户带回
+ * setup2 重新载入（质心保留）。
+ */
+watch(comCenter, (cur, prev) => {
+  if (!standardReady.value) return
+  if (cur?.x === prev?.x && cur?.y === prev?.y) return
+  ringSeq++
+  sessionId.value = null
+  sessionActive.value = false
+  standardReady.value = false
+  resetSessionResults()
+  if (step.value !== 'com' && step.value !== 'setup' && step.value !== 'setup2') {
+    step.value = 'setup2'
+  }
+  toast.push({
+    title: t('calibration.com.title'),
+    message: t('calibration.com.centerChanged'),
+    tone: 'info',
+  })
+})
+
 /** Remove radius in image pixels — generous enough for zoomed-out clicking. */
 const REMOVE_RADIUS_PX = 15
 
 function onCanvasRemove(pixel: { row: number; col: number }): void {
+  // Internal-standard step: right-click / Alt removes the NEAREST ring point.
+  // 内标步：右键 / Alt 删除最近的环点。
+  if (step.value === 'ring') {
+    let cIdx = -1
+    let cD2 = REMOVE_RADIUS_PX * REMOVE_RADIUS_PX
+    centerPoints.value.forEach((p, i) => {
+      const d2 = (p.y - pixel.row) ** 2 + (p.x - pixel.col) ** 2
+      if (d2 <= cD2) {
+        cD2 = d2
+        cIdx = i
+      }
+    })
+    if (cIdx < 0) return
+    centerPoints.value = centerPoints.value.filter((_, i) => i !== cIdx)
+    return
+  }
   let bestIdx = -1
   let bestD2 = REMOVE_RADIUS_PX * REMOVE_RADIUS_PX
   peaks.value.forEach((peak, i) => {
@@ -1611,8 +2682,16 @@ async function handleRefine(payload: { passes: number }): Promise<void> {
 
   refining.value = true
   try {
+    // FIXED-CENTRE session (com mode): the direct-beam centroid owns the
+    // centre and the rotations, so ONLY dist may be free — enforced here as
+    // well as visually in the panel (and again in the backend).
+    // 固定中心会话（com 模式）：中心与旋转角归直通光质心所有，只有 dist 可
+    // 放开——界面与后端各再兜一层。
+    const free = comFixedCenter.value
+      ? { dist: true, poni1: false, poni2: false, rot1: false, rot2: false, rot3: false, wavelength: false }
+      : { ...freeFlags.value }
     const data = await submitAndWait('calibration', sessionPayload('refine', {
-      free: { ...freeFlags.value },
+      free,
       passes: payload.passes,
     }))
 
@@ -1621,6 +2700,24 @@ async function handleRefine(payload: { passes: number }): Promise<void> {
     residuals.value = normalizeResiduals(data.residuals)
     converged.value = typeof data.converged === 'boolean' ? data.converged : null
     exportResult.value = null
+
+    // Refine re-assigns ring numbers from the CURRENT geometry before fitting
+    // (BUGFIX 2026-10-13): apply the refreshed peak table and tell the user how
+    // many were corrected, so a stale assignment (no 刷新环号 clicked) can no
+    // longer silently poison the refinement. / 精修前已按当前几何自动重排环号：
+    // 应用刷新后的峰表并提示修正数量——未点「刷新环号」的旧分配不会再悄悄
+    // 毁掉精修。
+    if (Array.isArray(data.peaks)) applyPeaksResponse(data)
+    const refreshed = numberOrNull(data.rings_refreshed) ?? 0
+    if (refreshed > 0) {
+      toast.push({
+        title: t('calibration.peaks.title'),
+        message: isZh.value
+          ? `精修前已按当前几何自动刷新环号（修正 ${refreshed} 个峰），详见峰表`
+          : `Ring numbers auto-refreshed before refining (${refreshed} peaks corrected); see the peak table`,
+        tone: 'info',
+      })
+    }
 
     if (converged.value === false) {
       toast.push({
@@ -1651,6 +2748,11 @@ async function handleRefine(payload: { passes: number }): Promise<void> {
 
 async function refreshRingOverlay(): Promise<void> {
   if (!sessionActive.value) return
+  // Theoretical rings need a calibrant — internal-standard sessions have none
+  // (the canvas draws the wizard's own fit circle instead, also on the
+  // preview step). / 理论环来自标样——内标会话没有（画布改为画向导自身的
+  // 拟合圆，预览步同样如此）。
+  if (setupForm.value.mode === 'internal') return
   try {
     const data = await submitAndWait('calibration', sessionPayload('ring_overlay'))
     rings.value = normalizeRings(data.rings)
@@ -1738,8 +2840,13 @@ async function refreshIntegrationPreview(): Promise<void> {
 
 // Inline bilingual labels — no i18n keys yet (see final report).
 // 内联双语文案 —— 暂无 i18n 键（见最终报告缺失键清单）。
+// The internal-standard geometry is COMPUTED (ring_standard), never refined —
+// the title says which geometry the preview shows.
+// 内标几何是算出来的（ring_standard）而非精修——标题区分当前来源。
 const integTitleLabel = computed(() =>
-  isZh.value ? '标定图积分预览（当前精修几何）' : 'Calibrant integration preview (current geometry)',
+  setupForm.value.mode === 'internal'
+    ? (isZh.value ? '标定图积分预览（内标几何）' : 'Calibrant integration preview (internal-standard geometry)')
+    : (isZh.value ? '标定图积分预览（当前精修几何）' : 'Calibrant integration preview (current geometry)'),
 )
 const integLoadingLabel = computed(() => (isZh.value ? '积分中…' : 'Integrating…'))
 const integMetaLabel = computed(() => {
@@ -1844,7 +2951,12 @@ async function handleExportPoni(savePath: string): Promise<void> {
     }
     toast.push({
       title: t('calibration.export.title'),
-      message: t('calibration.export.saved'),
+      // Default-distance geometry (internal standard, no ring value) → the
+      // success toast must repeat the annotation note (user request).
+      // 默认距离几何（内标、无环数值）→ 成功 toast 须重复标注提示（用户要求）。
+      message: ringDistDefaulted.value
+        ? `${t('calibration.export.saved')} ${t('calibration.ring.exportToastNote', { mm: ringDefaultDistText.value })}`
+        : t('calibration.export.saved'),
       tone: 'success',
     })
   } catch (err) {
@@ -1892,8 +3004,12 @@ async function goIntegrate(): Promise<void> {
 
 // === Display helpers / 显示辅助 ===
 
+/** Right-column calibrant readout: '—' in internal-standard mode (no
+ *  calibrant exists there). / 右列标样名：内标模式显示 '—'（无标样）。 */
 const calibrantLabel = computed(() =>
-  setupForm.value.calibrantPath.trim() || setupForm.value.calibrant || ''
+  setupForm.value.mode === 'internal'
+    ? ''
+    : (setupForm.value.calibrantPath.trim() || setupForm.value.calibrant || ''),
 )
 
 /**
@@ -1965,15 +3081,75 @@ function formatPx(value: number | null | undefined): string {
   return `${value.toFixed(2)} px`
 }
 
+// === Internal-standard preview readout helpers / 内标预览读数辅助 ===
+// The preview step shows a COMPACT read-only geometry block (no refinement, no
+// χ²), mirroring CalibRefinePanel's crp-geometry rows without touching it.
+// 预览步显示精简只读几何块（无精修、无 χ²），版式对标 CalibRefinePanel 的
+// crp-geometry，但不改动该组件。
+
+/** Highlighted final centre (px), same value as the canvas crosshair. */
+const previewCenterText = computed(() => {
+  const g = geometry.value
+  if (!g || g.centerXPx == null || g.centerYPx == null
+      || !Number.isFinite(g.centerXPx) || !Number.isFinite(g.centerYPx)) return '—'
+  return `(${g.centerXPx.toFixed(2)}, ${g.centerYPx.toFixed(2)})`
+})
+
+/** Plain-language meaning per geometry row (inline bilingual, mirrors
+ *  CalibRefinePanel's wording). / 每行读数的中文释义（内联双语）。 */
+function geoMeaning(key: 'dist' | 'poni1' | 'poni2' | 'rot1' | 'rot2' | 'rot3' | 'wavelength'): string {
+  const zh: Record<string, string> = {
+    dist: '样品距离',
+    poni1: '中心 y (行)',
+    poni2: '中心 x (列)',
+    rot1: '俯仰角（绕 x 轴）',
+    rot2: '偏摆角（绕 y 轴）',
+    rot3: '面内旋转（绕光轴）',
+    wavelength: '波长',
+  }
+  const en: Record<string, string> = {
+    dist: 'distance',
+    poni1: 'beam center y',
+    poni2: 'beam center x',
+    rot1: 'tilt around x',
+    rot2: 'tilt around y',
+    rot3: 'in-plane roll',
+    wavelength: 'wavelength',
+  }
+  return isZh.value ? zh[key] : en[key]
+}
+
+/** Numeric row formatter (mm / ° keep 4 decimals like CalibRefinePanel). */
+function formatGeo(value: number | null | undefined, unit: string): string {
+  if (value == null || !Number.isFinite(value)) return '—'
+  return `${value.toFixed(unit === 'px' ? 2 : 4)} ${unit}`
+}
+
 // === Lifecycle ===
 
-/** Enter finishes the CURRENT ring (ignored while typing in a form control). */
+/** Enter finishes the CURRENT ring — or, on the internal-standard step,
+ *  applies the ring-standard fit — and is ignored while typing in a form
+ *  control. / 回车完成本环；内标步则执行内标拟合；在表单控件内输入时不拦截。 */
 function onKeydown(e: KeyboardEvent): void {
   if (e.key !== 'Enter' || e.repeat) return
-  if (step.value !== 'peaks') return
-  if (ringPicking.value || ringGuide.value.length < 3) return
+  // The FIT2D zoom window owns Enter/Esc while it is open. This window-level
+  // listener registers FIRST (the modal adds its own on mount), so without
+  // this guard Enter during a zoom pick would run applyRingStandard on the
+  // STALE point set before the modal's own Enter ever appends the new point.
+  // 放大窗打开时 Enter/Esc 归其所有。本监听先于弹窗注册（弹窗在其挂载时才
+  // 加监听），缺此守卫会让回车先用旧点集 applyRingStandard，弹窗自己的回车
+  // 才追加新点——顺序错乱。
+  if (zoomOpen.value) return
   const target = e.target as HTMLElement | null
   if (target && ['INPUT', 'SELECT', 'TEXTAREA', 'BUTTON'].includes(target.tagName)) return
+  if (step.value === 'ring') {
+    if (centerPoints.value.length < 3) return
+    e.preventDefault()
+    void applyRingStandard()
+    return
+  }
+  if (step.value !== 'peaks') return
+  if (ringPicking.value || ringGuide.value.length < 3) return
   e.preventDefault()
   void finishRingPick()
 }
@@ -2143,6 +3319,23 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  /* Win10 矮视口修复（2026-10-22）：中栏原先没有滚动容器，画布下方的
+     1D/2D 积分预览被 .app-shell 的 overflow:hidden 直接裁掉（文档级滚动
+     条永不出现）。与左右栏对齐改为可滚动，子项不被压扁；画布可伸缩但
+     保底 420px，矮视口下滚动即可看到积分结果。 */
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+
+.cv-center > * {
+  flex-shrink: 0;
+}
+
+.cv-center > :deep(.calib-canvas) {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 420px;
 }
 
 /* Render settings bar / 渲染设置条 */
@@ -2291,6 +3484,126 @@ onUnmounted(() => {
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
+/* Internal-standard geometry preview block (step 3, read-only) — mirrors the
+   CalibRefinePanel crp-geometry layout. / 内标几何预览块（第 3 步，只读）——
+   版式对标 CalibRefinePanel 的 crp-geometry。 */
+.cv-geo {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cv-geo-title {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* Final centre highlight (same look as crp-final-center) / 最终中心高亮 */
+.cv-geo-final-center {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid rgba(232, 121, 249, 0.55);
+  border-radius: var(--radius-sm);
+  background: rgba(232, 121, 249, 0.10);
+}
+
+.cv-geo-final-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #e879f9;
+  white-space: nowrap;
+}
+
+.cv-geo-final-value {
+  font-family: var(--font-mono);
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.cv-geo-readout {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.cv-geo-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  padding: 4px 10px;
+}
+
+.cv-geo-row:nth-child(odd) {
+  background: var(--bg-hover);
+}
+
+.cv-geo-row dt {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cv-geo-row dt em {
+  font-family: inherit;
+  font-style: normal;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cv-geo-row dd {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--text-primary);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.cv-geo-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.cv-geo-empty {
+  margin: 0;
+  padding: 12px;
+  text-align: center;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+/* Default-distance warning in the preview readout (amber, mirrors
+   CalibRefinePanel's warn hint) / 预览读数中的默认距离警示（琥珀色，
+   对标 CalibRefinePanel 的警示提示） */
+.cv-geo-default-warn {
+  margin: 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  background: rgba(234, 179, 8, 0.12);
+  color: #a16207;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
 /* Calibrant integration preview (step 3) / 标定积分预览（第 3 步） */
 .cv-integ-preview {
   border: 1px solid var(--border);
@@ -2373,6 +3686,19 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+/* Pre-export warning bar: the .poni is about to carry a default (not fitted)
+   sample-detector distance — the user must see this BEFORE exporting.
+   导出前警示横条：.poni 即将携带默认（非拟合）样品-探测器距离——导出前
+   必须让用户看到。 */
+.cv-export-warning {
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: rgba(234, 179, 8, 0.12);
+  color: #a16207;
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .cv-btn {

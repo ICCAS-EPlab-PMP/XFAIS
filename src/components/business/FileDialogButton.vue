@@ -216,6 +216,9 @@ function handleClear(): void {
   border-radius: var(--radius-md);
   padding: 2px;
   transition: background var(--transition-fast), box-shadow var(--transition-fast);
+  /* Long-path overflow guard: allow this block to shrink inside narrow
+     sidebars. / 长路径防溢出：允许本块在窄侧栏中收缩。 */
+  min-width: 0;
 }
 
 .file-dialog-button--drop {
@@ -233,6 +236,9 @@ function handleClear(): void {
   display: flex;
   align-items: center;
   gap: 10px;
+  /* Long-path overflow guard: let the row shrink so .fd-path's ellipsis can
+     engage. / 长路径防溢出：允许行收缩，使 .fd-path 的省略号得以生效。 */
+  min-width: 0;
 }
 
 .fd-trigger {
@@ -246,6 +252,9 @@ function handleClear(): void {
   cursor: pointer;
   white-space: nowrap;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+  /* Keep the button intact; the path span absorbs the remaining width.
+     按钮不被压缩，路径文本吃掉剩余宽度。 */
+  flex-shrink: 0;
 }
 
 .fd-trigger:hover {

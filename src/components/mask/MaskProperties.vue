@@ -83,25 +83,41 @@
         <template v-if="climMode === 'manual'">
           <label class="field-label">
             {{ t('maskMaker.display.contrastMin') }}
-            <input
-              :value="climMin"
-              type="number"
+            <NumberField
+              :model-value="climMin"
               class="field-input"
               step="any"
-              @input="$emit('update:climMin', Number(($event.target as HTMLInputElement).value))"
+              @update:model-value="$emit('update:climMin', $event ?? 0)"
             />
           </label>
           <label class="field-label">
             {{ t('maskMaker.display.contrastMax') }}
-            <input
-              :value="climMax"
-              type="number"
+            <NumberField
+              :model-value="climMax"
               class="field-input"
               step="any"
-              @input="$emit('update:climMax', Number(($event.target as HTMLInputElement).value))"
+              @update:model-value="$emit('update:climMax', $event ?? 0)"
             />
           </label>
         </template>
+        <!-- Mask overlay display style: same shared three-tier preference as
+             the calibration render bar (src/lib/maskDisplay.ts) — one module
+             ref, both panels stay in sync. / 掩膜叠加显示风格：与标定渲染条
+             共用的三档偏好（src/lib/maskDisplay.ts）——同一模块 ref，两处
+             面板自动同步。 -->
+        <label class="field-label">
+          {{ t('maskMaker.display.maskStyle') }}
+          <select
+            :value="maskStyle"
+            class="field-input"
+            :title="t('maskMaker.display.maskStyleHint')"
+            @change="$emit('update:maskStyle', ($event.target as HTMLSelectElement).value as MaskDisplayStyle)"
+          >
+            <option v-for="s in MASK_DISPLAY_STYLES" :key="s" :value="s">
+              {{ t(MASK_STYLE_I18N[s]) }}
+            </option>
+          </select>
+        </label>
       </div>
     </div>
 
@@ -111,22 +127,22 @@
       <div class="threshold-form">
         <label class="field-label">
           {{ t('maskMaker.properties.thresholdMin') }}
-          <input
-            v-model.number="localThreshold.min"
-            type="number"
+          <NumberField
+            :model-value="localThreshold.min"
             class="field-input"
             :disabled="!imageLoaded"
             step="any"
+            @update:model-value="(v) => { if (v != null) localThreshold.min = v }"
           />
         </label>
         <label class="field-label">
           {{ t('maskMaker.properties.thresholdMax') }}
-          <input
-            v-model.number="localThreshold.max"
-            type="number"
+          <NumberField
+            :model-value="localThreshold.max"
             class="field-input"
             :disabled="!imageLoaded"
             step="any"
+            @update:model-value="(v) => { if (v != null) localThreshold.max = v }"
           />
         </label>
         <div class="threshold-actions">
@@ -172,9 +188,19 @@
 import { reactive } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
+import { MASK_DISPLAY_STYLES, type MaskDisplayStyle } from '@/lib/maskDisplay'
+import NumberField from '@/components/common/NumberField.vue'
 import type { MaskImageInfo, MaskStats, ThresholdMode } from '@/types/mask'
 
 const { t } = useI18n()
+
+/** i18n keys per tier — an explicit map keeps the zh/en key contract visible.
+ *  各档 i18n 键——显式映射让 zh/en 键契约一目了然。 */
+const MASK_STYLE_I18N: Record<MaskDisplayStyle, string> = {
+  red: 'maskMaker.display.maskStyleRed',
+  white: 'maskMaker.display.maskStyleWhite',
+  violet: 'maskMaker.display.maskStyleViolet',
+}
 
 defineProps<{
   imageInfo: MaskImageInfo | null
@@ -186,6 +212,9 @@ defineProps<{
   climMode: 'auto' | 'manual'
   climMin: number
   climMax: number
+  /** Mask overlay display style — same shared preference as CalibrationView.
+   *  掩膜叠加显示风格——与标定渲染条共用的同一偏好。 */
+  maskStyle: MaskDisplayStyle
 }>()
 
 const emit = defineEmits<{
@@ -200,6 +229,7 @@ const emit = defineEmits<{
   'update:climMode': [value: 'auto' | 'manual']
   'update:climMin': [value: number]
   'update:climMax': [value: number]
+  'update:maskStyle': [value: MaskDisplayStyle]
 }>()
 
 const localThreshold = reactive({

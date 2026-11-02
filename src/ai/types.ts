@@ -106,3 +106,25 @@ export interface TemplateDecision {
   reason: string
   provider: AiProviderKind
 }
+
+/**
+ * Result of the per-module option judgement (Phase 2 generalized): after the
+ * assistant navigates to a module it pre-selects that module's key options
+ * from the same intent. Values use the module's own vocabulary (e.g.
+ * calibration `mode: 'calibrant' | 'internal' | 'com'`, orientation
+ * `methods: ['hermans' | 'fwhm' | 'wilchinsky']`). Views opt in by listening
+ * for the apply event; options are decisions, never side effects — the view
+ * still guards its own step/state before assigning.
+ * 模块选项判定结果（Phase 2 泛化）：助手导航到目标模块后，用同一条意图预选
+ * 该模块的关键选项。取值用模块自己的词汇表。视图通过监听应用事件选择性接入；
+ * 选项只是「判定」，不产生副作用——视图在赋值前自行校验步骤/状态。
+ */
+export interface OptionsDecision {
+  routeName: string
+  /** Module-scoped option key → chosen value. */
+  options: Record<string, string | string[]>
+  /** Bilingual per-option reason strings, keyed like `options`. */
+  reasons: Record<string, string>
+  confidence: number
+  provider: AiProviderKind
+}

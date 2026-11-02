@@ -1,11 +1,17 @@
+import pkg from '../package.json'
+
 export const APP_NAME = 'X-FAIS'
-export const APP_VERSION = '0.3.0'
+// 单一来源：package.json 的 version（v0.3.2 前此处硬编码漏升，更新检查报旧版）
+// Single source of truth: package.json version (previously a stale hardcode)
+export const APP_VERSION = pkg.version
 export const IPC_CHANNELS = {
   appMeta: 'app:meta',
   pythonStatus: 'python:status',
   pythonRestart: 'python:restart',
   pythonCrashForTest: 'python:crash-for-test',
   pythonStatusChanged: 'python:status-changed',
+  // Agent 桥（AI 版）：渲染层直连 Python WS 的端口查询 / Agent bridge (AI build)
+  pythonWsPort: 'python:ws-port',
   // 文件对话框 / File dialogs
   dialogOpenFile: 'dialog:openFile',
   dialogSaveFile: 'dialog:saveFile',

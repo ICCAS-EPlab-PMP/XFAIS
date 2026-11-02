@@ -90,6 +90,10 @@
          AI 助手——仅 Jev 测试构建。主线构建中该动态导入为静态死代码
          （VITE_JEV_BUILD 未定义 → false），产物不含此 chunk。 -->
     <AiAssistant v-if="AiAssistant" />
+    <!-- External-agent bridge (v0.3.5 AI build): persistent MCP link +
+         confirmation modal. Same dead-code gating as the assistant above.
+         外部 agent 桥（v0.3.5 AI 版）：MCP 常驻链路 + 确认弹窗。门控同上。 -->
+    <AgentBridgeHost v-if="AgentBridgeHost" />
   </div>
 </template>
 
@@ -124,6 +128,13 @@ function toggleLocale(): void {
 // 区分大小写，不会把 `aiAssistant` 驼峰化去匹配 `AiAssistant`。
 const AiAssistant = import.meta.env.VITE_JEV_BUILD === '1'
   ? defineAsyncComponent(() => import('@/components/ai/AssistantBar.vue'))
+  : null
+// Agent-bridge host mounts the confirmation modal AND starts the persistent
+// agent WebSocket link (see its onMounted). Same dead-code gating applies.
+// Agent 桥宿主：挂载确认弹窗并启动常驻 agent WebSocket 链路（见其
+// onMounted）。死代码门控同上。
+const AgentBridgeHost = import.meta.env.VITE_JEV_BUILD === '1'
+  ? defineAsyncComponent(() => import('@/components/ai/AgentBridgeHost.vue'))
   : null
 const route = useRoute()
 const router = useRouter()

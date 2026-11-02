@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.2'
+      version: 'v0.3.5'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.3.2',
+      kicker: '桌面集成版 v0.3.5',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -82,6 +82,10 @@ export const messages = {
         openPlaceholder: '打开占位工作区',
         showLogs: '显示日志目录',
         checkUpdate: '检测更新',
+        downloadUpdate: '下载更新',
+        checkAiUpdate: '检查AI辅助版',
+        downloadAiUpdate: '下载AI辅助版',
+        copyAgentSkill: '一键复制Skill链接',
         citePyFAI: '引用 pyFAI',
         citeCalib2: '引用 calib2',
         citeFabIO: '引用 fabIO'
@@ -89,9 +93,10 @@ export const messages = {
       update: {
         checking: '正在检查更新...',
         newVersionTitle: '发现新版本',
-        newVersion: '当前版本 {current}，最新版本 {latest}，请前往 Release 页面下载',
+        newVersion: '当前版本 {current}，最新版本 {latest}，点击红色「下载更新」按钮即可下载',
+        autoFound: '检测到新版本 {latest}，请点击「下载更新」按钮获取',
         upToDate: '当前版本 {version} 已是最新',
-        noRelease: '尚未发布任何版本，请稍后再试',
+        sourceUnreachable: '无法访问更新源，请检查网络后重试',
         failed: '检查更新失败：{error}',
         linkCopied: '下载链接已自动复制到剪贴板'
       },
@@ -144,6 +149,10 @@ export const messages = {
           title: '2D 背景扣除',
           description: '有参考背景扣除：result = sample / T - background，支持电离室匹配与批量处理'
         },
+        transmission: {
+          title: '直通光透过率测量',
+          description: '框选积分区域测量直通光/样品强度，按参考文件计算逐文件透过率，导出 CSV/JSON 供背景扣除使用'
+        },
         imageMath: {
           title: '图像运算',
           description: '对两张图像进行算术运算：result = image1 × 系数 ± image2 × 系数'
@@ -159,6 +168,10 @@ export const messages = {
         lamellar: {
           title: 'SAXS 片晶结构分析',
           description: '由 I(q) 提取长周期与片晶厚度：一维相关函数（γ₁）法，逐步展示 q²I(q)、γ₁ 与切线斜率，支持批量处理'
+        },
+        curveFitting: {
+          title: '衍射曲线拟合',
+          description: 'PeakWorkbench 谱峰工作台：数据 → 基线 → 放峰 → 拟合 → 报告五步流程；多种峰形与基线、图上锚点拖拽、自动寻峰、稳健拟合与逐峰误差，全部本机完成'
         },
         poniImporter: {
           title: 'PONI 文件转化',
@@ -465,6 +478,11 @@ export const messages = {
         contrastManual: '手动',
         contrastMin: '最小值',
         contrastMax: '最大值',
+        maskStyle: '掩膜显示',
+        maskStyleRed: '淡红叠加',
+        maskStyleWhite: '纯白填充',
+        maskStyleViolet: '深紫轻覆',
+        maskStyleHint: '淡红叠加：半透明红色标记掩膜区域，其下图像细节仍清晰可见；纯白填充：掩膜像素涂为不透明白色，完全遮挡下方数据，直观呈现有效探测范围；深紫轻覆：5% 透明度的深紫着色，几乎不干扰原图判读，仅提示掩膜大致范围'
       },
       export: {
         title: '导出 Mask',
@@ -526,6 +544,7 @@ export const messages = {
       outputFolderPlaceholder: '（在 PNG 生成器中指定）',
       thumbnailsPerRow: '每行缩略图',
       noThumbnails: '无缩略图数据',
+      removeFileFromList: '删除该文件：不再参与展示与积分等处理',
       loadingImage: '加载图像中…',
       statsTitle: '统计 / Stats',
       statMin: '最小值',
@@ -988,6 +1007,8 @@ export const messages = {
       successTitle: '成功',
       batchComplete: '批处理完成',
       subtractComplete: '扣除完成',
+      exportedDownload: '已导出 {count} 个文件，已开始下载',
+      webExportNote: '浏览器模式：无需选择输出目录，扣除结果将自动下载到本机。',
       matchThreshold: '匹配阈值',
       matchRegex: '正则表达式',
       matchRegexHint: '可选：用于过滤文件名',
@@ -1017,7 +1038,67 @@ export const messages = {
       methodMean: '均值 (Mean)',
       methodTrimmedMean: '去极值均值 (Trimmed Mean)',
       transPerFile: '分别设置透射率',
-      tooManyFilesWarning: '文件超过 10 张，分别设置透射率已禁用，请使用统一手动输入或电离室匹配',
+      tooManyFilesWarning: '文件超过 {limit} 张，分别设置透射率不可用（已切回统一输入），请使用统一手动输入或电离室匹配',
+      // Transmission file import (CSV/JSON from the transmission page) /
+      // 透过率文件导入（来自直通光透过率页面导出的 CSV/JSON）
+      transFile: '透过率文件',
+      transFileHint: '选择「透过率文件」后，可导入直通光页面导出的 CSV / JSON，按文件名自动匹配并填充逐文件透过率。',
+      transFilePick: '选择透过率文件 (CSV / JSON)',
+      transFileMatch: '匹配并填充',
+      transFileMatching: '匹配中...',
+      transMatchColFile: '文件',
+      transMatchColTrans: '透过率',
+      transMatchColNote: '备注',
+      transFileApplied: '已填充 {matched} 个文件的透过率，{missing} 个未匹配',
+      transFileNoMatch: '没有任何文件匹配成功，请检查文件名是否与透过率表一致',
+    },
+    transmission: {
+      title: '直通光透过率测量',
+      subtitle: '框选积分区域测量每个文件的强度，以指定参考文件（通常为直通光图）为 100% 计算透过率。',
+      notice: '用法：① 上传直通光图与样品图 → ② 在图上框选积分区域（方形框或多折框）→ ③ 指定一个文件为参考 → ④ 计算透过率 → ⑤ 导出 CSV / JSON，并在背景扣除页面按文件名导入。',
+      files: '文件',
+      selectFiles: '选择文件',
+      fileList: '文件列表',
+      setReference: '设为参考',
+      reference: '参考',
+      removeFile: '移除',
+      noFilesSelected: '未选择文件',
+      fileCount: '{count} 个文件已选择',
+      region: '积分区域',
+      regionRect: '方形框',
+      regionRectRange: '行 {y0}–{y1}，列 {x0}–{x1}',
+      regionPoly: '多折框',
+      regionArmedHint: '在图上拖出方形框 / 依次点击顶点（双击或回车闭合）',
+      regionSet: '积分区域已设定，点击「计算透过率」获取结果',
+      regionCleared: '积分区域已清除',
+      clearRegion: '清除区域',
+      regionNone: '未设定积分区域',
+      vertexCount: '{count} 个顶点',
+      advanced: '高级选项',
+      subtractBorder: '扣除区域边界背景',
+      subtractBorderHint: '扣除区域边界一圈像素的本底后再积分，适合边界有明显背景的情况。',
+      compute: '计算透过率',
+      computing: '计算中...',
+      computeDone: '计算完成：成功 {success} 个，失败 {failed} 个',
+      results: '结果',
+      colFile: '文件',
+      colIntensity: '强度',
+      colTransmission: '透过率',
+      refBadge: '参考 100%',
+      failedRow: '失败',
+      noResults: '尚未计算',
+      computeFirst: '区域已设定，点击「计算透过率」获取结果',
+      export: '导出',
+      outputDir: '输出目录',
+      exportCsv: '导出 CSV',
+      exportJson: '导出 JSON',
+      exportDone: '已导出到 {dir}',
+      webExportNote: '浏览器模式：无需选择输出目录，导出文件将自动下载到本机。',
+      loading: '加载中...',
+      errorTitle: '错误',
+      errorPrefix: '错误: ',
+      emptyState: '请选择文件开始测量',
+      noPreview: '无预览',
     },
     imageMath: {
       title: '图像运算',
@@ -1176,6 +1257,8 @@ export const messages = {
       equatorialToChain: '赤道反射换算到链轴 (<cos²φ_c>=1−<cos²χ>)',
       cellParams: '晶胞参数（单斜 b-unique）',
       reflections: '反射列表',
+      reflRingHint: '图像模式下为每个反射填写各自的环带范围（与上方径向单位一致），Wilchinsky 将逐条积分 I(χ) 并显示全部曲线；⟨cos²χ⟩ 留空即自动计算，也可手动填写覆盖。',
+      cos2Placeholder: '⟨cos²χ⟩（留空自动）',
       removeReflection: '移除反射',
       addReflection: '添加反射',
       crystallinity: '结晶度（可选）',
@@ -1266,6 +1349,8 @@ export const messages = {
         warningsCol: '警告',
         failed: '失败文件',
         exportSummary: '导出汇总 CSV',
+        exportAllCurves: '导出全部曲线 CSV',
+        betaTag: '测试版',
       },
       step1Title: '① 原始与扣背景曲线 I(q)',
       appliedWindow: '实际分析窗口：q ∈ [{q0}, {q1}] {u}（{n} 点，已按上下限裁剪）',
@@ -1304,6 +1389,14 @@ export const messages = {
       lc: '晶区厚度 l_c',
       la: '非晶厚度 l_a',
       phiC: '堆叠结晶度 φ_c',
+    },
+    curveFitting: {
+      title: '衍射曲线拟合',
+      // The workbench UI itself is the verbatim PeakWorkbench port (Chinese
+      // labels, like the reference); only the page header is i18n-driven.
+      // 工作台界面为 PeakWorkbench 原样移植（与参考程序一致的中文文案）；
+      // 仅页头走 i18n。
+      subtitle: 'PeakWorkbench 谱峰工作台：数据 → 基线 → 放峰 → 拟合 → 报告；图上锚点拖拽、自动寻峰、稳健拟合，全部本机完成（拟合在 Web Worker 中运行，迭代遥测实时回传）。',
     },
     poniImporter: {
       title: 'PONI 文件转化',
@@ -1451,6 +1544,8 @@ export const messages = {
     subtitle: '基于 pyFAI 精化引擎的 Debye–Scherrer 环校正向导，无需外部 calib2 窗口',
     setup: {
       imageFile: '校正图像',
+      beamImage: '直通光图像',
+      standardImage: '标样图像',
       selectImage: '选择图像',
       uploadImage: '上传图像',
       uploadCalibrant: '上传 .D',
@@ -1460,6 +1555,7 @@ export const messages = {
       calibrantName: '内置标样',
       detector: '探测器（pyFAI 名称，可选）',
       pixelSize: '像素尺寸 (µm)',
+      noDetectorManual: '无（手动输入像素尺寸）',
       wavelength: '波长 (Å)',
       energy: '能量 (keV)',
       unitToggle: '输入单位',
@@ -1470,7 +1566,101 @@ export const messages = {
       loading: '载入中…',
       loadOk: '校正会话已建立',
       loadFail: '建立校正会话失败',
-      seedFromPoni: '从 PONI 初始化'
+      seedFromPoni: '从 PONI 初始化',
+      calibrantSource: '标样来源',
+      calibrantBuiltin: '内置标样',
+      calibrantLocalFile: '本地 .D 文件',
+      selectCalibrantFile: '选择本地 .D 文件',
+      selectedFile: '已选择文件',
+      noCalibrantFileHint: '还没有 .D 文件？',
+      goGenerator: '前往校正标样生成器'
+    },
+    // Two MUTUALLY EXCLUSIVE wizard modes (moved to the top of the setup form).
+    // 两种互斥的向导模式（置于加载表单顶部）。
+    mode: {
+      label: '校正模式',
+      calibrant: '标样校正',
+      internal: '内标定标',
+      com: '直通光定心',
+      comBeamHint: '第一步：载入直通光图（用于求光束中心），随后框选光斑',
+      standardBranch: '标样图后续流程',
+      standardBranchHint: '载入标样图后回到以下任一流程；两者都以直通光中心为固定值、只优化距离'
+    },
+    // Stepper names for the internal-standard wizard (calibrant mode keeps the
+    // existing step keys; 导出 reuses calibration.export.title in both).
+    // 内标向导的步骤名（标样模式沿用原有键；两种模式“导出”都复用
+    // calibration.export.title）。
+    steps: {
+      load: '加载',
+      ring: '内标定标',
+      preview: '几何预览',
+      beamImage: '直通光图',
+      com: '质心定心',
+      standardImage: '标样图',
+      refineFixed: '优化距离'
+    },
+    // Direct-beam centroid mode (third wizard mode) / 直通光定心（第三种模式）
+    com: {
+      title: '直通光定心',
+      hint: '框选直通光斑区域，以其强度加权质心作为光束中心（扣背景 + 阈值，抗热像素）',
+      rect: '方形框',
+      poly: '多折框',
+      clear: '清除',
+      hintRect: '在图上拖出覆盖直通光斑的矩形（中键拖动仍可平移）',
+      hintPoly: '依次点击多折框顶点，双击或回车闭合（Esc 取消）',
+      hintIdle: '选择 方形框 或 多折框 开始框选',
+      running: '正在计算质心…',
+      result: '质心中心 (px)',
+      empty: '尚未确定中心',
+      done: '直通光质心已定心：({x}, {y})',
+      failed: '直通光质心定心失败',
+      canvasRect: '拖出覆盖直通光斑的矩形框；松手即计算质心',
+      canvasPoly: '依次点击多折框顶点；双击 / 回车闭合；Esc 取消',
+      canvasIdle: '先选择框选方式',
+      shapeMismatch: '标样图尺寸 ({sw}×{sh}) 与直通光图 ({bw}×{bh}) 不同——像素中心不再通用，请确认两图使用同一探测器布局',
+      centerChanged: '直通光中心已改变——请重新载入标样图以应用新中心',
+      branchChanged: '已切换标样支路——请重新载入标样图'
+    },
+    // Internal-standard step-2 panel / 内标定标第 2 步面板
+    ring: {
+      title: '内标定标',
+      hint: '无需标样：在同一个已知衍射环上点选 ≥3 个点（右键删最近点），回车 / 双击 / “拟合并计算几何”提交',
+      zoomLabel: '放大二次选点（FIT2D 式）',
+      zoomHint: '开启后：第一次点击定位放大区域，在放大窗内点选精确位置',
+      points: '点数',
+      rms: '拟合 RMS',
+      clear: '清除点选',
+      valueLabel: '该环已知数值',
+      unitQN: 'q (nm⁻¹)',
+      unitQA: 'q (Å⁻¹)',
+      unitTth: '2θ (°)',
+      unitDA: 'd (Å)',
+      unitDN: 'd (nm)',
+      unitSd: 'SD (mm)',
+      apply: '拟合并计算几何',
+      resultTitle: '标定结果',
+      resultCenter: '中心 (px)',
+      resultRadius: '半径 (px)',
+      resultTth: '2θ (°)',
+      resultSd: '样品-探测器距离 (mm)',
+      done: '内标几何已计算',
+      doneDefaultDist: '内标几何已计算；SD 为默认值 {mm} mm（未提供环数值）',
+      needPoints: '需要同一环上至少 3 个点',
+      needValue: '数值需为正数，或留空使用默认 SD',
+      valueOptionalHint: '可留空：留空则距离取默认值（{mm} mm），仅中心有效',
+      resultDefaultDist: 'SD 为默认值 {mm} mm（未提供环数值）——导出的 .poni 将写入该标注',
+      exportDefaultDistWarning: '注意：距离为默认值 {mm} mm，未经环数值标定；导出的 .poni 文件将写入此标注',
+      exportToastNote: '（距离为默认值 {mm} mm，已在 .poni 中标注）',
+      canvasHint: '点击添加同一环上的点；右键删最近点；回车 / 双击拟合并计算几何',
+      fixedCenterHint: '中心已由直通光质心固定：环上点 ≥2 个即可（只求半径、只优化距离）',
+      needPointsCom: '中心已由直通光质心固定，环上至少再点 2 个点',
+      previewTitle: '几何预览（内标）',
+      previewHint: '几何由内标环直接计算，无精修；下方为 1D / 2D 积分预览，导出 .poni 后可去积分',
+      noGeometry: '尚无几何：请返回内标定标步骤完成拟合',
+      zoomTitle: '放大二次选点',
+      zoomConfirm: '确定',
+      zoomCancel: '取消',
+      zoomPlaceholder: '载入图像…'
     },
     canvas: {
       addPeakHint: '点击图像添加峰；右键移除最近的峰',
@@ -1482,8 +1672,10 @@ export const messages = {
       title: '峰拾取',
       count: '已选 {count} 个峰',
       auto: '自动拾取',
-      autoHint: 'Massif 峰群搜索；灵敏度越高找到的峰越多',
+      autoHint: '全图 Massif 自动拾取；灵敏度越高找到的峰越多（不作用于逐环拾取）',
       sensitivity: '灵敏度',
+      bandTol: '环带 ±dr (px)',
+      bandTolHint: '完成本环在所选环 ±dr 像素的环带内收峰（默认 5；首个收环会按引导点圆拟合自动设定初猜中心）',
       clear: '清空',
       empty: '尚无峰，请自动拾取或手动点击图像添加',
       addMode: '添加模式：开启',
@@ -1504,6 +1696,7 @@ export const messages = {
       residuals: '每峰残差 (°)',
       notConverged: '精化未收敛，请检查峰与初始距离',
       needPeaks: '请先拾取至少 4 个峰',
+      fixedCenterHint: '固定中心模式：中心与旋转角已由直通光质心确定，仅优化样品-探测器距离',
       done: '精化完成',
       centerX: '光束中心 X (px)',
       centerY: '光束中心 Y (px)'
@@ -1551,6 +1744,12 @@ export const messages = {
       reasonLabel: '依据',
       unitLabel: '积分单位'
     },
+    options: {
+      applied: '已按需求预选模块选项'
+    },
+    agentActive: {
+      tooltip: 'AI Agent 正在控制此实例（外部 agent 已接入）'
+    },
     guide: {
       started: '已开始「{name}」逐步教学',
       stepOf: '第 {current}/{total} 步',
@@ -1567,14 +1766,17 @@ export const messages = {
       countingDown: '{seconds} 秒后自动点击，点此取消',
       cancelled: '已取消自动点击',
       clicked: '已代你点击',
-      waitNext: '完成本步后我会自动继续'
+      waitNext: '完成本步后我会自动继续',
+      noAnchor: '「{title}」控件当前不在页面上（其他模式或面板未展开），请手动完成本步',
+      resumed: '检测到你已完成前 {skipped} 步，教学从第 {current}/{total} 步继续',
+      notApplicable: '{note}'
     }
   },
   },
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.2'
+      version: 'v0.3.5'
     },
     shell: {
       sections: {
@@ -1608,7 +1810,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.3.2',
+      kicker: 'Desktop Edition v0.3.5',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -1652,6 +1854,10 @@ export const messages = {
         openPlaceholder: 'Open Placeholder Workspace',
         showLogs: 'Show Log Directory',
         checkUpdate: 'Check for Updates',
+        downloadUpdate: 'Download Update',
+        checkAiUpdate: 'Check AI-assisted',
+        downloadAiUpdate: 'Download AI-assisted',
+        copyAgentSkill: 'Copy Skill Link',
         citePyFAI: 'Cite pyFAI',
         citeCalib2: 'Cite calib2',
         citeFabIO: 'Cite fabIO'
@@ -1659,9 +1865,10 @@ export const messages = {
       update: {
         checking: 'Checking for updates...',
         newVersionTitle: 'New Version Available',
-        newVersion: 'Current version {current}, latest version {latest}. Please visit the Release page to download.',
+        newVersion: 'Current version {current}, latest version {latest}. Click the red "Download Update" button to get it.',
+        autoFound: 'New version {latest} detected. Click the "Download Update" button to get it.',
         upToDate: 'You are on the latest version ({version})',
-        noRelease: 'No releases have been published yet. Please check back later.',
+        sourceUnreachable: 'Could not reach any update source. Please check your network and try again.',
         failed: 'Update check failed: {error}',
         linkCopied: 'The download link has been copied to your clipboard'
       },
@@ -1714,6 +1921,10 @@ export const messages = {
           title: '2D Background Subtraction',
           description: 'Reference-based background subtraction: result = sample / T - background, with ion chamber matching and batch processing'
         },
+        transmission: {
+          title: 'Direct-Beam Transmission',
+          description: 'Integrate a picked region to measure direct-beam/sample intensity, compute per-file transmission against a reference, and export CSV/JSON for background subtraction'
+        },
         imageMath: {
           title: 'Image Math',
           description: 'Arithmetic on two images: result = image1 × factor ± image2 × factor'
@@ -1729,6 +1940,10 @@ export const messages = {
         lamellar: {
           title: 'SAXS Lamellar Analysis',
           description: 'Long period & lamellar thickness from I(q) via the 1-D correlation function (γ₁), with per-step curves (q²I, γ₁, tangent slope) and batch processing'
+        },
+        curveFitting: {
+          title: 'Diffraction Curve Fitting',
+          description: 'PeakWorkbench spectral workbench: data → baseline → peaks → fit → report; multiple peak shapes and baselines, on-chart anchor dragging, auto detection, robust fitting and per-peak errors — all in-process'
         },
         poniImporter: {
           title: 'Switch to PONI',
@@ -2035,6 +2250,11 @@ export const messages = {
         contrastManual: 'Manual',
         contrastMin: 'Min',
         contrastMax: 'Max',
+        maskStyle: 'Mask display',
+        maskStyleRed: 'Translucent red',
+        maskStyleWhite: 'Solid white',
+        maskStyleViolet: 'Faint violet',
+        maskStyleHint: 'Translucent red: semi-transparent red marks masked areas while image detail stays visible; Solid white: masked pixels become opaque white, fully hiding the data beneath — shows the effective detector area; Faint violet: 5%-opacity deep violet, nearly non-intrusive, just hints at the masked extent'
       },
       export: {
         title: 'Export Mask',
@@ -2096,6 +2316,7 @@ export const messages = {
       outputFolderPlaceholder: '(Specify in PNG Generator)',
       thumbnailsPerRow: 'Thumbnails Per Row',
       noThumbnails: 'No Thumbnail Data',
+      removeFileFromList: 'Remove this file: excluded from display and integration',
       loadingImage: 'Loading image…',
       statsTitle: 'Stats',
       statMin: 'Min',
@@ -2558,6 +2779,8 @@ export const messages = {
       successTitle: 'Success',
       batchComplete: 'Batch Complete',
       subtractComplete: 'Subtraction Complete',
+      exportedDownload: 'Exported {count} file(s); download started',
+      webExportNote: 'Browser mode: no output directory needed — subtracted results download automatically.',
       matchThreshold: 'Match Threshold',
       matchRegex: 'Regex Pattern',
       matchRegexHint: 'Optional: filter file names',
@@ -2587,7 +2810,67 @@ export const messages = {
       methodMean: 'Mean',
       methodTrimmedMean: 'Trimmed Mean',
       transPerFile: 'Per-file Transmission',
-      tooManyFilesWarning: 'More than 10 files selected. Per-file transmission is disabled. Use manual input or ionchamber matching instead.',
+      tooManyFilesWarning: 'More than {limit} files selected. Per-file transmission is unavailable (switched back to a single value); use manual input or ionchamber matching instead.',
+      // Transmission file import (CSV/JSON from the transmission page) /
+      // 透过率文件导入（来自直通光透过率页面导出的 CSV/JSON）
+      transFile: 'Transmission File',
+      transFileHint: 'Choose “Transmission File” to import a CSV / JSON exported by the direct-beam transmission page; files are matched by name and per-file transmission is filled automatically.',
+      transFilePick: 'Select transmission file (CSV / JSON)',
+      transFileMatch: 'Match & Fill',
+      transFileMatching: 'Matching...',
+      transMatchColFile: 'File',
+      transMatchColTrans: 'Transmission',
+      transMatchColNote: 'Note',
+      transFileApplied: 'Filled transmission for {matched} file(s); {missing} unmatched',
+      transFileNoMatch: 'No file matched — check that file names agree with the transmission table',
+    },
+    transmission: {
+      title: 'Direct-Beam Transmission',
+      subtitle: 'Integrate a picked region on every file and compute transmission relative to a reference file (usually the direct-beam image) taken as 100%.',
+      notice: 'How to use: ① upload the direct-beam and sample images → ② draw the integration region (rectangle or polygon) → ③ pick one file as the reference → ④ compute transmission → ⑤ export CSV / JSON and import it by file name on the background-subtraction page.',
+      files: 'Files',
+      selectFiles: 'Select Files',
+      fileList: 'File List',
+      setReference: 'Set as reference',
+      reference: 'Reference',
+      removeFile: 'Remove',
+      noFilesSelected: 'No files selected',
+      fileCount: '{count} file(s) selected',
+      region: 'Integration Region',
+      regionRect: 'Rectangle',
+      regionRectRange: 'y {y0}–{y1}, x {x0}–{x1}',
+      regionPoly: 'Polygon',
+      regionArmedHint: 'Drag a rectangle / click vertices on the image (double-click or Enter closes)',
+      regionSet: 'Region set — click “Compute Transmission” to get results',
+      regionCleared: 'Integration region cleared',
+      clearRegion: 'Clear Region',
+      regionNone: 'No integration region set',
+      vertexCount: '{count} vertices',
+      advanced: 'Advanced',
+      subtractBorder: 'Subtract border background',
+      subtractBorderHint: 'Subtract the background ring of border pixels before integrating — useful when the region border carries visible background.',
+      compute: 'Compute Transmission',
+      computing: 'Computing...',
+      computeDone: 'Done: {success} succeeded, {failed} failed',
+      results: 'Results',
+      colFile: 'File',
+      colIntensity: 'Intensity',
+      colTransmission: 'Transmission',
+      refBadge: 'Ref 100%',
+      failedRow: 'Failed',
+      noResults: 'No results yet',
+      computeFirst: 'Region set — click “Compute Transmission” to get results',
+      export: 'Export',
+      outputDir: 'Output Directory',
+      exportCsv: 'Export CSV',
+      exportJson: 'Export JSON',
+      exportDone: 'Exported to {dir}',
+      webExportNote: 'Browser mode: no output directory needed — exported files download automatically.',
+      loading: 'Loading...',
+      errorTitle: 'Error',
+      errorPrefix: 'Error: ',
+      emptyState: 'Select files to start measuring',
+      noPreview: 'No Preview',
     },
     imageMath: {
       title: 'Image Math',
@@ -2746,6 +3029,8 @@ export const messages = {
       equatorialToChain: 'Convert equatorial reflection to chain axis (<cos²φ_c>=1−<cos²χ>)',
       cellParams: 'Unit cell (monoclinic b-unique)',
       reflections: 'Reflections',
+      reflRingHint: 'In image mode give each reflection its own ring range (same unit as above); Wilchinsky integrates one I(χ) per reflection and the chart shows every curve. Leave ⟨cos²χ⟩ empty to compute it automatically, or type a manual override.',
+      cos2Placeholder: '⟨cos²χ⟩ (auto)',
       removeReflection: 'Remove reflection',
       addReflection: 'Add reflection',
       crystallinity: 'Crystallinity (optional)',
@@ -2836,6 +3121,8 @@ export const messages = {
         warningsCol: 'Warnings',
         failed: 'Failed',
         exportSummary: 'Export summary CSV',
+        exportAllCurves: 'Export all curves CSV',
+        betaTag: 'Beta',
       },
       step1Title: '① Raw & background-subtracted I(q)',
       appliedWindow: 'Applied q window: q ∈ [{q0}, {q1}] {u} ({n} points, clipped to the limits)',
@@ -2874,6 +3161,12 @@ export const messages = {
       lc: 'Crystalline thickness l_c',
       la: 'Amorphous thickness l_a',
       phiC: 'Stack crystallinity φ_c',
+    },
+    curveFitting: {
+      title: 'Diffraction Curve Fitting',
+      // The workbench UI itself is the verbatim PeakWorkbench port (Chinese
+      // labels, like the reference); only the page header is i18n-driven.
+      subtitle: 'PeakWorkbench workbench: data → baseline → peaks → fit → report; anchor dragging, auto detection and robust fitting, all in-process (the fit runs in a Web Worker and streams iteration telemetry).',
     },
     poniImporter: {
       title: 'Switch to PONI',
@@ -3020,6 +3313,8 @@ export const messages = {
     subtitle: 'Debye–Scherrer ring calibration wizard powered by the pyFAI refinement engine — no external calib2 window',
     setup: {
       imageFile: 'Calibration image',
+      beamImage: 'Direct-beam image',
+      standardImage: 'Standard image',
       selectImage: 'Select image',
       uploadImage: 'Upload image',
       uploadCalibrant: 'Upload .D',
@@ -3029,6 +3324,7 @@ export const messages = {
       calibrantName: 'Built-in calibrant',
       detector: 'Detector (pyFAI name, optional)',
       pixelSize: 'Pixel size (µm)',
+      noDetectorManual: 'None (enter pixel size manually)',
       wavelength: 'Wavelength (Å)',
       energy: 'Energy (keV)',
       unitToggle: 'Input unit',
@@ -3039,7 +3335,101 @@ export const messages = {
       loading: 'Loading…',
       loadOk: 'Calibration session established',
       loadFail: 'Failed to establish calibration session',
-      seedFromPoni: 'Seed from PONI'
+      seedFromPoni: 'Seed from PONI',
+      calibrantSource: 'Calibrant source',
+      calibrantBuiltin: 'Built-in',
+      calibrantLocalFile: 'Local .D file',
+      selectCalibrantFile: 'Select local .D file',
+      selectedFile: 'Selected file',
+      noCalibrantFileHint: 'No .D file yet?',
+      goGenerator: 'Open the calibrant generator'
+    },
+    // Two MUTUALLY EXCLUSIVE wizard modes (moved to the top of the setup form).
+    // 两种互斥的向导模式（置于加载表单顶部）。
+    mode: {
+      label: 'Calibration mode',
+      calibrant: 'Calibrant',
+      internal: 'Internal standard',
+      com: 'Direct-beam centre',
+      comBeamHint: 'Step 1: load the direct-beam image (used to find the beam centre), then box the spot',
+      standardBranch: 'Standard-image branch',
+      standardBranchHint: 'After loading the standard image, continue with either branch below — both keep the direct-beam centre FIXED and optimise the distance only'
+    },
+    // Stepper names for the internal-standard wizard (calibrant mode keeps the
+    // existing step keys; the export step reuses calibration.export.title in
+    // both). / 内标向导步骤名（标样模式沿用原有键；导出均复用
+    // calibration.export.title）。
+    steps: {
+      load: 'Load',
+      ring: 'Internal standard',
+      preview: 'Geometry preview',
+      beamImage: 'Beam image',
+      com: 'Centroid',
+      standardImage: 'Standard image',
+      refineFixed: 'Fit distance'
+    },
+    // Direct-beam centroid mode (third wizard mode) / 直通光定心（第三种模式）
+    com: {
+      title: 'Direct-beam centre',
+      hint: 'Box the direct-beam spot; its intensity-weighted centroid becomes the beam centre (background-subtracted, thresholded, hot-pixel safe)',
+      rect: 'Rectangle',
+      poly: 'Polygon',
+      clear: 'Clear',
+      hintRect: 'Drag a rectangle over the direct-beam spot (middle-drag still pans)',
+      hintPoly: 'Click polygon vertices; double-click or Enter closes (Esc cancels)',
+      hintIdle: 'Pick Rectangle or Polygon to start',
+      running: 'Computing centroid…',
+      result: 'Centroid (px)',
+      empty: 'No centre yet',
+      done: 'Direct-beam centroid set: ({x}, {y})',
+      failed: 'Direct-beam centroid failed',
+      canvasRect: 'Drag a box over the direct-beam spot; release computes the centroid',
+      canvasPoly: 'Click polygon vertices; double-click / Enter closes; Esc cancels',
+      canvasIdle: 'Choose a selection shape first',
+      shapeMismatch: 'Standard image is {sw}×{sh} but the beam image was {bw}×{bh} — pixel centre no longer transfers; confirm both frames share the same detector layout',
+      centerChanged: 'Direct-beam centre changed — reload the standard image to apply it',
+      branchChanged: 'Standard branch switched — reload the standard image'
+    },
+    // Internal-standard step-2 panel / 内标定标第 2 步面板
+    ring: {
+      title: 'Internal standard',
+      hint: 'No calibrant needed: click ≥3 points on ONE known diffraction ring (right-click removes the nearest); Enter / double-click / Apply & compute submits',
+      zoomLabel: 'Zoomed second pick (FIT2D style)',
+      zoomHint: 'When on: the first click opens a zoom window; pick the exact position there',
+      points: 'Points',
+      rms: 'Fit RMS',
+      clear: 'Clear points',
+      valueLabel: 'Known value of that ring',
+      unitQN: 'q (nm⁻¹)',
+      unitQA: 'q (Å⁻¹)',
+      unitTth: '2θ (°)',
+      unitDA: 'd (Å)',
+      unitDN: 'd (nm)',
+      unitSd: 'SD (mm)',
+      apply: 'Fit & compute geometry',
+      resultTitle: 'Calibration result',
+      resultCenter: 'Centre (px)',
+      resultRadius: 'Radius (px)',
+      resultTth: '2θ (°)',
+      resultSd: 'Sample-detector distance (mm)',
+      done: 'Internal-standard geometry computed',
+      doneDefaultDist: 'Internal-standard geometry computed; SD is the default {mm} mm (no ring value provided)',
+      needPoints: 'At least 3 points on one ring are required',
+      needValue: 'The value must be a positive number — or leave it empty to use the default SD',
+      valueOptionalHint: 'Optional: leave empty to use the default distance ({mm} mm); only the centre is calibrated',
+      resultDefaultDist: 'SD is the default {mm} mm (no ring value provided) — the exported .poni will carry this annotation',
+      exportDefaultDistWarning: 'Note: the distance is the default {mm} mm, not calibrated from a ring value; the exported .poni file will carry this annotation',
+      exportToastNote: '(distance defaulted to {mm} mm, annotated in the .poni)',
+      canvasHint: 'Click to add points on one ring; right-click removes the nearest; Enter / double-click fits and computes the geometry',
+      fixedCenterHint: 'Centre fixed by the direct-beam centroid: ≥2 points on the ring suffice (radius only, distance-only optimisation)',
+      needPointsCom: 'With the centre fixed by the centroid, pick at least 2 more points on the ring',
+      previewTitle: 'Geometry preview (internal standard)',
+      previewHint: 'The geometry comes straight from the standard ring — no refinement; the 1D / 2D integration preview follows, and the .poni can be exported for integration',
+      noGeometry: 'No geometry yet: go back to the internal-standard step and fit',
+      zoomTitle: 'Zoomed second pick',
+      zoomConfirm: 'OK',
+      zoomCancel: 'Cancel',
+      zoomPlaceholder: 'Loading image…'
     },
     canvas: {
       addPeakHint: 'Click the image to add a peak; right-click removes the nearest peak',
@@ -3051,8 +3441,10 @@ export const messages = {
       title: 'Peak picking',
       count: '{count} peaks selected',
       auto: 'Auto-pick',
-      autoHint: 'Massif peak-group search; higher sensitivity finds more peaks',
+      autoHint: 'Full-image Massif search; higher sensitivity finds more peaks (does not affect ring-by-ring picking)',
       sensitivity: 'Sensitivity',
+      bandTol: 'Ring band ±dr (px)',
+      bandTolHint: 'Finish-ring harvests peaks within ±dr pixels of the picked ring (default 5; the first harvest auto-seeds the initial centre from the guide-point circle fit)',
       clear: 'Clear',
       empty: 'No peaks yet — auto-pick or click the image to add them manually',
       addMode: 'Add mode: ON',
@@ -3073,6 +3465,7 @@ export const messages = {
       residuals: 'Per-peak residuals (°)',
       notConverged: 'Refinement did not converge — check peaks and the initial distance',
       needPeaks: 'Pick at least 4 peaks first',
+      fixedCenterHint: 'Fixed-centre mode: the centre and rotations come from the direct-beam centroid — only the sample-detector distance is optimised',
       done: 'Refinement complete',
       centerX: 'Beam center X (px)',
       centerY: 'Beam center Y (px)'
@@ -3120,6 +3513,12 @@ export const messages = {
       reasonLabel: 'Basis',
       unitLabel: 'Output unit'
     },
+    options: {
+      applied: 'Pre-selected module options from your request'
+    },
+    agentActive: {
+      tooltip: 'An AI agent is operating this instance (external agent docked)'
+    },
     guide: {
       started: 'Guided tour started: {name}',
       stepOf: 'Step {current}/{total}',
@@ -3136,7 +3535,10 @@ export const messages = {
       countingDown: 'Auto-click in {seconds}s — click to cancel',
       cancelled: 'Auto-click cancelled',
       clicked: 'Clicked for you',
-      waitNext: "I'll continue automatically once this step is done"
+      waitNext: "I'll continue automatically once this step is done",
+      noAnchor: 'The "{title}" control is not on the page right now (another mode or panel not open) — please finish this step manually',
+      resumed: 'You already finished the first {skipped} step(s); the tour resumes at step {current}/{total}',
+      notApplicable: '{note}'
     }
   }
   }

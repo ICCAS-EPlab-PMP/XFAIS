@@ -1,7 +1,13 @@
 /**
  * calibration.ts — Guided tour for the geometry calibration wizard.
  * Requires CalibrationView to report: filesCount (calibrant image loaded),
- * extras.ringsCount, extras.refined, extras.exported.
+ * extras.ringsCount, extras.refined, extras.exported, extras.mode (2026-10-25).
+ *
+ * 2026-10-25: the peak step no longer anchors to the removed 高级 full-image
+ * auto-detect button — ring picking is manual ring-by-ring (finish-ring), and
+ * the tour is GATED to the calibrant (standard) branch: the com /
+ * internal-standard branches have different steps and controls, so starting
+ * this table there would only spotlight missing anchors.
  */
 
 import type { GuideDefinition } from '../types'
@@ -9,6 +15,17 @@ import type { GuideDefinition } from '../types'
 export const CALIBRATION_GUIDE: GuideDefinition = {
   routeName: 'calibration',
   title: { zh: '几何校正', en: 'Geometry Calibration' },
+  // The com (direct-beam) and internal-standard branches have their own flows;
+  // this step table describes the standard calibrant branch only.
+  // com（直通光）与内标支路各有流程；本表只描述标样校正支路。
+  applicable: (s) => {
+    const mode = s?.extras?.mode
+    return mode !== 'com' && mode !== 'internal'
+  },
+  inapplicableNote: {
+    zh: '当前处于直通光定心或内标定标支路——本教程对应「标样校正」支路（设置里切换模式后可用）',
+    en: 'You are on the direct-beam or internal-standard branch — this tour covers the calibrant branch (switch the mode in setup)',
+  },
   steps: [
     {
       id: 'load',
@@ -23,11 +40,11 @@ export const CALIBRATION_GUIDE: GuideDefinition = {
     },
     {
       id: 'peaks',
-      aiId: 'calibration:auto-peaks',
-      title: { zh: '自动拾取衍射环', en: 'Auto-detect rings' },
+      aiId: 'calibration:finish-ring',
+      title: { zh: '逐一环选收峰', en: 'Pick rings one by one' },
       tip: {
-        zh: '自动寻峰圈出 Debye–Scherrer 环；不满意可逐环手动修正',
-        en: 'Auto-detect the Debye–Scherrer rings; refine individual rings manually if needed',
+        zh: '在当前环上点击 ≥3 个引导点后「完成本环」收环；数字框设环号，收完自动进下一环（回退可撤销，框选可批量删点）',
+        en: 'Click ≥3 guide points on the current ring, then Finish ring; the spinner sets the ring number and advances (undo / box-erase help clean up)',
       },
       done: (s) => Number(s?.extras?.ringsCount ?? 0) > 0,
       autoClick: true,

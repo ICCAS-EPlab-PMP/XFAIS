@@ -107,6 +107,8 @@ interface Window {
       getStatus: () => Promise<DesktopPythonStatus>
       onStatusChange: (listener: (status: DesktopPythonStatus) => void) => () => void
       restart: () => Promise<DesktopPythonStatus>
+      /** Agent bridge (AI build): reserved Python WebSocket port. */
+      wsPort: () => Promise<number>
     }
     task: {
       submit: (command: string, params: Record<string, unknown>) => Promise<TaskSubmitResponse>

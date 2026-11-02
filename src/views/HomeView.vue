@@ -13,12 +13,30 @@
         <p class="hero-notice-inline"><strong>{{ t('home.heroPanel.notice') }}</strong></p>
         <p class="hero-open-source-notice">{{ t('home.heroPanel.openSourceNotice') }}</p>
         <div class="hero-actions">
+          <!-- 普通版更新通道（AI 构建隐藏，2026-10-26 用户需求：AI 版的检查/
+               下载一律走 AI 通道，杜绝 AI 版用户误下普通版安装包）。
+               Normal-channel button, hidden in the AI build — the AI build's
+               update check/download is ALWAYS the AI channel. -->
           <button
-            class="hero-action primary"
+            v-if="!aiBuild"
+            :class="availableUpdate ? 'hero-action update-available' : 'hero-action primary'"
             type="button"
-            @click="checkUpdate"
+            @click="availableUpdate ? downloadUpdate() : checkUpdate()"
           >
-            {{ t('home.actions.checkUpdate') }}
+            {{ availableUpdate ? t('home.actions.downloadUpdate') : t('home.actions.checkUpdate') }}
+          </button>
+          <!-- AI 辅助版通道（普通版也展示，2026-10-26：普通版用户可一键检查/
+               下载 AI 版；AI 版内这是唯一的更新通道）：有 AI 新版 → 红色
+               「下载AI辅助版」；无 → 「检查AI辅助版」。读 OSS latest-ai.json。
+               AI-assisted channel, shown in BOTH builds; in the AI build it is
+               the ONLY update channel. -->
+          <button
+            :class="availableAiUpdate ? 'hero-action update-available' : 'hero-action secondary'"
+            type="button"
+            data-ai-id="home:ai-update"
+            @click="availableAiUpdate ? downloadAiUpdate() : checkAiUpdate()"
+          >
+            {{ availableAiUpdate ? t('home.actions.downloadAiUpdate') : t('home.actions.checkAiUpdate') }}
           </button>
           <button
             class="hero-action secondary"
@@ -41,6 +59,18 @@
             @click="openFabIOCitation"
           >
             {{ t('home.actions.citeFabIO') }}
+          </button>
+          <!-- AI 版专属：一键复制 agent 装配 skill 下载链接（普通版构建不渲染
+               该节点）。AI build only: one-click copy of the agent-bootstrap
+               skill link. -->
+          <button
+            v-if="aiBuild"
+            class="hero-action secondary"
+            type="button"
+            data-ai-id="home:copy-agent-skill"
+            @click="copyAgentSkillLink"
+          >
+            {{ t('home.actions.copyAgentSkill') }}
           </button>
         </div>
       </div>
@@ -232,14 +262,45 @@
 </template>
 
 <script setup lang="ts">
+import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
+import {
+  AGENT_SKILL_URL_GITHUB,
+  AGENT_SKILL_URL_OSS,
+  fetchLatestAiRelease,
+  fetchLatestRelease,
+  isNewerVersion,
+  primaryDownloadUrl,
+  type LatestReleaseInfo
+} from '@/lib/updateCheck'
+// AI 构建标记（普通版构建中 VITE_JEV_BUILD 未定义 → false，AI 通道全灭）
+// AI-build marker (undefined in the normal build → the AI channel is dead code).
+import { isJevBuild } from '@/lib/settings'
 
 const { t, locale } = useI18n()
 const toast = useToast()
 const transport = useTransport()
+
+/**
+ * AI 版：一键复制 agent 装配 skill 的下载链接，按界面语言分流——
+ * 中文 → OSS 直链（国内直连快），英文 → 团队库 LLM 分支 GitHub raw
+ * 直链（海外可达）。普通版构建不渲染该按钮（aiBuild=false）。
+ * AI build only: copy the agent-bootstrap skill link, locale-split
+ * (zh → OSS, en → GitHub raw).
+ */
+function copyAgentSkillLink(): void {
+  const url = locale.value === 'en' ? AGENT_SKILL_URL_GITHUB : AGENT_SKILL_URL_OSS
+  void copyToClipboard(url).then(() => {
+    toast.push({
+      title: t('home.actions.copyAgentSkill'),
+      message: `${url}\n${t('home.update.linkCopied')}`,
+      tone: 'success'
+    })
+  })
+}
 
 interface FeatureCard {
   key: string
@@ -292,6 +353,11 @@ const applicationCards: FeatureCard[] = [
     key: 'lamellar',
     route: '/workspace/lamellar-analysis',
     icon: '≡'
+  },
+  {
+    key: 'curveFitting',
+    route: '/workspace/curve-fitting',
+    icon: 'ƒ'
   }
 ]
 
@@ -334,6 +400,11 @@ const bgSubtractCards: FeatureCard[] = [
     key: 'bgSubtract',
     route: '/workspace/bg-subtract',
     icon: '⊖'
+  },
+  {
+    key: 'transmission',
+    route: '/workspace/transmission',
+    icon: '⤓'
   },
   {
     key: 'imageMath',
@@ -379,14 +450,98 @@ const showLogDirectory = async (): Promise<void> => {
   })
 }
 
-const REPO_OWNER = 'ICCAS-EPlab-PMP'
-const REPO_NAME = 'XFAIS'
-const RELEASES_API = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`
-// 中文模式下载链接（直链 zip），英文模式使用 GitHub Release 页面
-const ZH_DOWNLOAD_URL = 'https://www.polymcrystal.com/download/XFAIS-latest.zip'
+// 有新版本时「检测更新」按钮变红为「下载更新」 / red "Download Update" state when a newer release exists
+const availableUpdate = ref<LatestReleaseInfo | null>(null)
+// AI 辅助版通道（仅 AI 构建激活；普通版 aiBuild=false，逻辑全灭）
+// AI-assisted channel (active only in the AI build; dead otherwise).
+const aiBuild = isJevBuild()
+const availableAiUpdate = ref<LatestReleaseInfo | null>(null)
 
-function pickDownloadUrl(releaseUrl: string): string {
-  return locale.value === 'en' ? releaseUrl : ZH_DOWNLOAD_URL
+onMounted(() => {
+  // 每次打开应用静默检查更新：失败不打扰；发现新版则按钮变红并提醒。
+  // AI 构建只检查 AI 通道（latest-ai.json）——普通通道按钮在该构建不渲染，
+  // 自动检查也不跑，避免把普通版新版本误报给 AI 版用户（2026-10-26）。
+  // The AI build checks ONLY the AI channel; the normal channel is neither
+  // rendered nor auto-checked there.
+  window.setTimeout(() => {
+    if (!aiBuild) void autoCheckUpdate()
+    void autoCheckAiUpdate()
+  }, 2500)
+})
+
+async function autoCheckUpdate(): Promise<void> {
+  try {
+    const [meta, info] = await Promise.all([transport.getAppMeta(), fetchLatestRelease()])
+    if (info && isNewerVersion(info.version, meta.appVersion)) {
+      availableUpdate.value = info
+      toast.push({
+        title: t('home.update.newVersionTitle'),
+        message: t('home.update.autoFound', { latest: info.version }),
+        tone: 'success'
+      })
+    }
+  } catch {
+    // 自动检查失败保持静默，不打扰启动
+  }
+}
+
+async function autoCheckAiUpdate(): Promise<void> {
+  try {
+    const [meta, info] = await Promise.all([transport.getAppMeta(), fetchLatestAiRelease()])
+    if (info && isNewerVersion(info.version, meta.appVersion)) {
+      availableAiUpdate.value = info
+      toast.push({
+        title: t('home.actions.downloadAiUpdate'),
+        message: t('home.update.autoFound', { latest: info.version }),
+        tone: 'success'
+      })
+    }
+  } catch {
+    // AI 通道失败静默
+  }
+}
+
+function downloadUpdate(): void {
+  const url = availableUpdate.value ? primaryDownloadUrl(availableUpdate.value) : ''
+  if (url) window.open(url, '_blank', 'noopener')
+}
+
+async function checkAiUpdate(): Promise<void> {
+  toast.push({
+    title: t('home.actions.checkAiUpdate'),
+    message: t('home.update.checking'),
+    tone: 'info',
+  })
+  try {
+    const [meta, info] = await Promise.all([transport.getAppMeta(), fetchLatestAiRelease()])
+    if (info && isNewerVersion(info.version, meta.appVersion)) {
+      availableAiUpdate.value = info
+      const downloadUrl = primaryDownloadUrl(info)
+      await copyToClipboard(downloadUrl)
+      toast.push({
+        title: t('home.update.newVersionTitle'),
+        message: `${t('home.update.newVersion', { current: meta.appVersion, latest: info.version })}\n${downloadUrl}\n${t('home.update.linkCopied')}`,
+        tone: 'success',
+      })
+    } else {
+      toast.push({
+        title: t('home.actions.checkAiUpdate'),
+        message: t('home.update.upToDate', { version: meta.appVersion }),
+        tone: 'info',
+      })
+    }
+  } catch (err) {
+    toast.push({
+      title: t('home.actions.checkAiUpdate'),
+      message: t('home.update.failed', { error: err instanceof Error ? err.message : String(err) }),
+      tone: 'error',
+    })
+  }
+}
+
+function downloadAiUpdate(): void {
+  const url = availableAiUpdate.value ? primaryDownloadUrl(availableAiUpdate.value) : ''
+  if (url) window.open(url, '_blank', 'noopener')
 }
 
 async function copyToClipboard(text: string): Promise<void> {
@@ -418,41 +573,30 @@ async function checkUpdate(): Promise<void> {
   })
 
   try {
-    const meta = await transport.getAppMeta()
-    const currentVersion = meta.appVersion
-
-    const resp = await fetch(RELEASES_API, {
-      headers: { Accept: 'application/vnd.github+json' },
-    })
-    if (!resp.ok) {
-      throw new Error(`HTTP ${resp.status}`)
+    const [meta, info] = await Promise.all([transport.getAppMeta(), fetchLatestRelease()])
+    if (!info) {
+      toast.push({
+        title: t('home.actions.checkUpdate'),
+        message: t('home.update.failed', { error: t('home.update.sourceUnreachable') }),
+        tone: 'error',
+      })
+      return
     }
-    const data = await resp.json() as { tag_name?: string; html_url?: string }
-    const latestTag = data.tag_name ?? ''
-    const latestVersion = latestTag.replace(/^v/, '')
 
-    if (latestVersion && latestVersion !== currentVersion) {
-      const fallbackReleaseUrl = `https://github.com/${REPO_OWNER}/${REPO_NAME}/releases/latest`
-      const releaseUrl = data.html_url ?? fallbackReleaseUrl
-      const downloadUrl = pickDownloadUrl(releaseUrl)
+    if (isNewerVersion(info.version, meta.appVersion)) {
+      availableUpdate.value = info
+      const downloadUrl = primaryDownloadUrl(info)
       // 成功检查到新版本时自动复制下载链接到剪贴板
       await copyToClipboard(downloadUrl)
       toast.push({
         title: t('home.update.newVersionTitle'),
-        message: `${t('home.update.newVersion', { current: currentVersion, latest: latestVersion })}\n${downloadUrl}\n${t('home.update.linkCopied')}`,
+        message: `${t('home.update.newVersion', { current: meta.appVersion, latest: info.version })}\n${downloadUrl}\n${t('home.update.linkCopied')}`,
         tone: 'success',
       })
-    } else if (latestVersion) {
-      toast.push({
-        title: t('home.actions.checkUpdate'),
-        message: t('home.update.upToDate', { version: currentVersion }),
-        tone: 'info',
-      })
     } else {
-      // No releases yet
       toast.push({
         title: t('home.actions.checkUpdate'),
-        message: t('home.update.noRelease'),
+        message: t('home.update.upToDate', { version: meta.appVersion }),
         tone: 'info',
       })
     }
@@ -572,6 +716,36 @@ function openFabIOCitation(): void {
 .hero-action.primary:active {
   transform: translateY(0);
   box-shadow: 0 2px 4px rgba(var(--primary-rgb, 37, 99, 235), 0.3);
+}
+
+/* 有新版本可下载：按钮变红并轻微呼吸提示 */
+.hero-action.update-available {
+  background: #dc2626;
+  color: var(--text-inverse);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  animation: update-available-pulse 2s ease-in-out infinite;
+}
+
+.hero-action.update-available:hover {
+  background: #b91c1c;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.4);
+}
+
+.hero-action.update-available:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(220, 38, 38, 0.3);
+}
+
+@keyframes update-available-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.45);
+  }
+
+  50% {
+    box-shadow: 0 0 0 8px rgba(220, 38, 38, 0);
+  }
 }
 
 .hero-panel {

@@ -9,52 +9,48 @@
       <!-- NPT radial / 径向点数 -->
       <label class="aof-field">
         <span class="aof-field-label">{{ t('business.advancedOptions.nptRad') }}</span>
-        <input
-          type="number"
+        <NumberField
           class="aof-input"
           min="10"
           step="100"
-          :value="modelValue.nptRad"
+          :model-value="modelValue.nptRad"
           :data-testid="testIds.advancedNptRad"
-          @input="onFieldInput('nptRad', ($event.target as HTMLInputElement).value)"
+          @update:model-value="onFieldInput('nptRad', $event)"
         />
       </label>
 
       <!-- NPT azimuthal / 方位角点数 -->
       <label class="aof-field">
         <span class="aof-field-label">{{ t('business.advancedOptions.nptAzim') }}</span>
-        <input
-          type="number"
+        <NumberField
           class="aof-input"
           min="1"
           step="1"
-          :value="modelValue.nptAzim"
+          :model-value="modelValue.nptAzim"
           :data-testid="testIds.advancedNptAzim"
-          @input="onFieldInput('nptAzim', ($event.target as HTMLInputElement).value)"
+          @update:model-value="onFieldInput('nptAzim', $event)"
         />
       </label>
 
       <!-- Radial range / 径向范围 -->
       <label class="aof-field">
         <span class="aof-field-label">{{ t('business.advancedOptions.radialMin') }}</span>
-        <input
-          type="number"
+        <NumberField
           class="aof-input"
           step="0.1"
-          :value="modelValue.radialMin"
+          :model-value="modelValue.radialMin"
           :data-testid="testIds.advancedRadialMin"
-          @input="onFieldInput('radialMin', ($event.target as HTMLInputElement).value)"
+          @update:model-value="onFieldInput('radialMin', $event)"
         />
       </label>
       <label class="aof-field">
         <span class="aof-field-label">{{ t('business.advancedOptions.radialMax') }}</span>
-        <input
-          type="number"
+        <NumberField
           class="aof-input"
           step="0.1"
-          :value="modelValue.radialMax"
+          :model-value="modelValue.radialMax"
           :data-testid="testIds.advancedRadialMax"
-          @input="onFieldInput('radialMax', ($event.target as HTMLInputElement).value)"
+          @update:model-value="onFieldInput('radialMax', $event)"
         />
       </label>
 
@@ -148,6 +144,7 @@ export const UNIT_OPTIONS: Array<{ value: string; label: string }> = [
  */
 import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
+import NumberField from '@/components/common/NumberField.vue'
 
 /** Integration unit type / 积分单位类型 */
 export type IntegrationUnit = 'q_nm' | 'q_A' | '2th_deg' | '2th_rad'
@@ -226,19 +223,18 @@ const integratorOptions: Array<{ value: IntegratorType; label: string }> = [
   { value: 'legacy', label: 'Legacy' },
 ]
 
-function onFieldInput(field: keyof AdvancedOptions, raw: string): void {
+function onFieldInput(field: keyof AdvancedOptions, value: number | null): void {
   // Radial range inputs must be clearable: an empty input means "no limit".
   // Without this, a stale value silently keeps truncating results after the
   // user clears the field ("invisible range" bug).
   // 径向范围输入必须可清空：空输入表示"不限"。
   // 否则用户清空输入框后，残留旧值仍会静默截断结果（"隐形范围" bug）。
-  if ((field === 'radialMin' || field === 'radialMax') && raw.trim() === '') {
+  if ((field === 'radialMin' || field === 'radialMax') && value == null) {
     emit('update:modelValue', { ...props.modelValue, [field]: null })
     return
   }
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
-  emit('update:modelValue', { ...props.modelValue, [field]: num })
+  if (value == null || !Number.isFinite(value)) return
+  emit('update:modelValue', { ...props.modelValue, [field]: value })
 }
 
 function onUnitChange(event: Event): void {

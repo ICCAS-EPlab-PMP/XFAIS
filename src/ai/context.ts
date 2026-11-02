@@ -53,10 +53,18 @@ export const NAV_CATALOG: NavEntry[] = [
   },
   { routeName: 'cell-calibrant-generator', path: '/workspace/cell-calibrant-generator', zh: '校正标样生成器', en: 'Calibrant Generator' },
   { routeName: 'bg-subtract', path: '/workspace/bg-subtract', zh: '背景扣除', en: 'Background Subtraction' },
+  {
+    routeName: 'transmission',
+    path: '/workspace/transmission',
+    zh: '透过率测量',
+    en: 'Transmission Measurement',
+    aiId: 'trans:files',
+  },
   { routeName: 'image-math', path: '/workspace/image-math', zh: '图像运算', en: 'Image Math' },
   { routeName: 'image-stitch', path: '/workspace/image-stitch', zh: '图像拼接', en: 'Image Stitch' },
   { routeName: 'orientation-analysis', path: '/workspace/orientation-analysis', zh: '聚合物取向度分析', en: 'Polymer Orientation Analysis' },
   { routeName: 'lamellar-analysis', path: '/workspace/lamellar-analysis', zh: 'SAXS 片晶结构分析', en: 'SAXS Lamellar Analysis' },
+  { routeName: 'curve-fitting', path: '/workspace/curve-fitting', zh: '衍射曲线拟合', en: 'Diffraction Curve Fitting', aiId: 'curvefit:batch-open' },
   { routeName: 'poni-importer', path: '/workspace/poni-importer', zh: 'PONI 文件转化', en: 'Switch to PONI' },
   // Added in parallel (Settings work) — exists at runtime even if the route
   // registration lands in another commit. / 并行开发中的设置页。

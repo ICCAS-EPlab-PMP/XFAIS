@@ -26,35 +26,32 @@
               <div class="fib-grid">
                 <label class="fib-field">
                   <span class="fib-label">rot1 (°)</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.001"
-                    :value="fiberParams.rot1Deg"
+                    :model-value="fiberParams.rot1Deg"
                     :data-testid="testIds.fiberRot1"
-                    @input="onFiberParam('rot1Deg', $event)"
+                    @update:model-value="onFiberParam('rot1Deg', $event)"
                   />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">rot2 (°)</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.001"
-                    :value="fiberParams.rot2Deg"
+                    :model-value="fiberParams.rot2Deg"
                     :data-testid="testIds.fiberRot2"
-                    @input="onFiberParam('rot2Deg', $event)"
+                    @update:model-value="onFiberParam('rot2Deg', $event)"
                   />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">rot3 (°)</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.001"
-                    :value="fiberParams.rot3Deg"
+                    :model-value="fiberParams.rot3Deg"
                     :data-testid="testIds.fiberRot3"
-                    @input="onFiberParam('rot3Deg', $event)"
+                    @update:model-value="onFiberParam('rot3Deg', $event)"
                   />
                 </label>
               </div>
@@ -83,24 +80,22 @@
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">{{ t('integrateFiber.incidentAngle') }}</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.001"
-                    :value="fiberParams.incidentAngleDeg"
+                    :model-value="fiberParams.incidentAngleDeg"
                     :data-testid="testIds.fiberIncidentAngle"
-                    @input="onFiberParam('incidentAngleDeg', $event)"
+                    @update:model-value="onFiberParam('incidentAngleDeg', $event)"
                   />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">{{ t('integrateFiber.tiltAngle') }}</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.001"
-                    :value="fiberParams.tiltAngleDeg"
+                    :model-value="fiberParams.tiltAngleDeg"
                     :data-testid="testIds.fiberTiltAngle"
-                    @input="onFiberParam('tiltAngleDeg', $event)"
+                    @update:model-value="onFiberParam('tiltAngleDeg', $event)"
                   />
                 </label>
               </div>
@@ -188,46 +183,42 @@
               <div v-if="!fiberParams.autoRange" class="fib-grid fib-range-grid">
                 <label class="fib-field">
                   <span class="fib-label">{{ t('integrateFiber.ipMin') }}</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.1"
-                    :value="fiberParams.ipMin"
+                    :model-value="fiberParams.ipMin"
                     :data-testid="testIds.fiberIpMin"
-                    @input="onFiberParam('ipMin', $event)"
+                    @update:model-value="onFiberParam('ipMin', $event)"
                   />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">{{ t('integrateFiber.ipMax') }}</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.1"
-                    :value="fiberParams.ipMax"
+                    :model-value="fiberParams.ipMax"
                     :data-testid="testIds.fiberIpMax"
-                    @input="onFiberParam('ipMax', $event)"
+                    @update:model-value="onFiberParam('ipMax', $event)"
                   />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">{{ t('integrateFiber.oopMin') }}</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.1"
-                    :value="fiberParams.oopMin"
+                    :model-value="fiberParams.oopMin"
                     :data-testid="testIds.fiberOopMin"
-                    @input="onFiberParam('oopMin', $event)"
+                    @update:model-value="onFiberParam('oopMin', $event)"
                   />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">{{ t('integrateFiber.oopMax') }}</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     step="0.1"
-                    :value="fiberParams.oopMax"
+                    :model-value="fiberParams.oopMax"
                     :data-testid="testIds.fiberOopMax"
-                    @input="onFiberParam('oopMax', $event)"
+                    @update:model-value="onFiberParam('oopMax', $event)"
                   />
                 </label>
               </div>
@@ -239,26 +230,24 @@
               <div class="fib-grid">
                 <label class="fib-field">
                   <span class="fib-label">{{ t('integrateFiber.nptIp') }}</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     min="50"
                     step="50"
-                    :value="fiberParams.nptIp"
+                    :model-value="fiberParams.nptIp"
                     :data-testid="testIds.fiberNptIp"
-                    @input="onFiberParam('nptIp', $event)"
+                    @update:model-value="onFiberParam('nptIp', $event)"
                   />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">{{ t('integrateFiber.nptOop') }}</span>
-                  <input
-                    type="number"
+                  <NumberField
                     class="fib-input"
                     min="50"
                     step="50"
-                    :value="fiberParams.nptOop"
+                    :model-value="fiberParams.nptOop"
                     :data-testid="testIds.fiberNptOop"
-                    @input="onFiberParam('nptOop', $event)"
+                    @update:model-value="onFiberParam('nptOop', $event)"
                   />
                 </label>
                 <!-- pyFAI integration algorithm (same set as the 1D page) -->
@@ -309,11 +298,11 @@
             </label>
             <label v-if="resultClimMode === 'manual'" class="fib-field fib-contrast-field">
               <span class="fib-label">{{ t('business.display.climMin') }}</span>
-              <input v-model.number="resultClimMin" type="number" class="fib-input" step="any" />
+              <NumberField :model-value="resultClimMin" class="fib-input" step="any" @update:model-value="resultClimMin = $event" />
             </label>
             <label v-if="resultClimMode === 'manual'" class="fib-field fib-contrast-field">
               <span class="fib-label">{{ t('business.display.climMax') }}</span>
-              <input v-model.number="resultClimMax" type="number" class="fib-input" step="any" />
+              <NumberField :model-value="resultClimMax" class="fib-input" step="any" @update:model-value="resultClimMax = $event" />
             </label>
             <!-- Log floor: clamp sub-threshold values in log mode (collapsed by default) -->
             <!-- 对数阈值：对数模式下 clamp 小于阈值的值（默认折叠关闭） -->
@@ -323,7 +312,7 @@
             </label>
             <label v-if="logFloorEnabled && useLog" class="fib-field fib-contrast-field">
               <span class="fib-label">{{ t('integrateFiber.logFloor') }}</span>
-              <input v-model.number="logFloorValue" type="number" class="fib-input" step="any" min="0" />
+              <NumberField :model-value="logFloorValue" class="fib-input" step="any" min="0" @update:model-value="(v) => { if (v != null) logFloorValue = v }" />
               <span class="fib-hint">{{ t('integrateFiber.logFloorHint') }}</span>
             </label>
           </div>
@@ -481,7 +470,9 @@
               :loading="thumbLoading"
               :sync-with-main="false"
               :columns-per-row="thumbColsPerRow"
+              deletable
               @select="handleThumbSelect"
+              @remove="removeFileAt"
               @prev-page="handleThumbPrevPage"
               @next-page="handleThumbNextPage"
               @jump-to-page="handleThumbJumpToPage"
@@ -649,23 +640,23 @@
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">IP min</span>
-                  <input v-model.number="roiIpMin" type="number" class="fib-input" step="any" />
+                  <NumberField :model-value="roiIpMin" class="fib-input" step="any" @update:model-value="(v) => { if (v != null) roiIpMin = v }" />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">IP max</span>
-                  <input v-model.number="roiIpMax" type="number" class="fib-input" step="any" />
+                  <NumberField :model-value="roiIpMax" class="fib-input" step="any" @update:model-value="(v) => { if (v != null) roiIpMax = v }" />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">OOP min</span>
-                  <input v-model.number="roiOopMin" type="number" class="fib-input" step="any" />
+                  <NumberField :model-value="roiOopMin" class="fib-input" step="any" @update:model-value="(v) => { if (v != null) roiOopMin = v }" />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">OOP max</span>
-                  <input v-model.number="roiOopMax" type="number" class="fib-input" step="any" />
+                  <NumberField :model-value="roiOopMax" class="fib-input" step="any" @update:model-value="(v) => { if (v != null) roiOopMax = v }" />
                 </label>
                 <label class="fib-field">
                   <span class="fib-label">npt</span>
-                  <input v-model.number="roiNpt" type="number" class="fib-input" min="50" step="50" />
+                  <NumberField :model-value="roiNpt" class="fib-input" min="50" step="50" @update:model-value="(v) => { if (v != null) roiNpt = v }" />
                 </label>
               </div>
 
@@ -795,7 +786,7 @@
                 <div class="fib-grid">
                   <label class="fib-field">
                     <span class="fib-label">Font size / 字号</span>
-                    <input v-model.number="pngFontSize" type="number" class="fib-input" min="6" max="36" step="1" />
+                    <NumberField :model-value="pngFontSize" class="fib-input" min="6" max="36" step="1" @update:model-value="(v) => { if (v != null) pngFontSize = v }" />
                   </label>
                   <label class="fib-field">
                     <span class="fib-label">DPI / 分辨率</span>
@@ -831,7 +822,7 @@
                 <div class="fib-grid" style="margin-top:8px">
                   <label class="fib-field">
                     <span class="fib-label">Border / 边框粗细</span>
-                    <input v-model.number="pngBorderWidth" type="number" class="fib-input" min="0" max="6" step="0.5" />
+                    <NumberField :model-value="pngBorderWidth" class="fib-input" min="0" max="6" step="0.5" @update:model-value="(v) => { if (v != null) pngBorderWidth = v }" />
                   </label>
                   <label class="fib-field">
                     <span class="fib-label">Edge color / 边框颜色</span>
@@ -877,11 +868,11 @@
                 <div v-if="pngShowTicks" class="fib-grid" style="margin-top:8px">
                   <label class="fib-field">
                     <span class="fib-label">{{ t('integrateFiber.xTickStep') }}</span>
-                    <input v-model.number="pngXTickStep" type="number" class="fib-input" step="any" :placeholder="t('integrateFiber.tickStepPlaceholder')" />
+                    <NumberField :model-value="pngXTickStep" class="fib-input" step="any" :placeholder="t('integrateFiber.tickStepPlaceholder')" @update:model-value="pngXTickStep = $event" />
                   </label>
                   <label class="fib-field">
                     <span class="fib-label">{{ t('integrateFiber.yTickStep') }}</span>
-                    <input v-model.number="pngYTickStep" type="number" class="fib-input" step="any" :placeholder="t('integrateFiber.tickStepPlaceholder')" />
+                    <NumberField :model-value="pngYTickStep" class="fib-input" step="any" :placeholder="t('integrateFiber.tickStepPlaceholder')" @update:model-value="pngYTickStep = $event" />
                   </label>
                 </div>
 
@@ -938,6 +929,7 @@ import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } fro
 import type { ColormapName } from '@/lib/chart-utils'
 
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
+import NumberField from '@/components/common/NumberField.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
 import type { ExportFormat, ExportMode } from '@/components/business/ExportDialog.vue'
 import GeometryForm from '@/components/business/GeometryForm.vue'
@@ -1970,6 +1962,45 @@ function handleThumbSelect(index: number): void {
   }
 }
 
+/**
+ * Remove ONE input file (2026-10-22 user request: the thumbnail ✕ button
+ * deletes unneeded files so they no longer take part in display or fiber
+ * integration). Falls back to the clear-all cleanup when the list empties;
+ * otherwise clamps the selection, refreshes the preview when the selected file
+ * was removed, and reloads the current thumbnail page (items carry global
+ * indices). The batch input set changed, so every cached batch result is
+ * invalidated the same way clearAllFiles() does it.
+ * 删除单个输入文件（2026-10-22 用户要求：缩略图 ✕ 删除不需要的文件，不再
+ * 参与展示与积分）。删空时走清空流程；否则收敛选中索引、选中项被删时刷新
+ * 预览，并重载当前页缩略图（条目带全局索引）。批量输入集已变，按
+ * clearAllFiles() 的做法使全部批结果缓存失效。
+ */
+function removeFileAt(index: number): void {
+  if (index < 0 || index >= files.value.length) return
+  files.value.splice(index, 1)
+  if (files.value.length === 0) {
+    clearAllFiles()
+    return
+  }
+  result.value = null
+  batchCachePath.value = null
+  resultSummaries.value = []
+  currentResultIndex.value = 0
+  resultThumbnailItems.value = []
+  resultContrast.value = null
+  roi1dResult.value = null
+  const wasSelected = selectedPreviewIndex.value === index
+  if (selectedPreviewIndex.value >= files.value.length) {
+    selectedPreviewIndex.value = files.value.length - 1
+  }
+  if (wasSelected) {
+    const path = files.value[selectedPreviewIndex.value]
+    if (path) loadPreview(path)
+  }
+  thumbCurrentPage.value = Math.min(thumbCurrentPage.value, thumbTotalPages.value)
+  void loadThumbnailPage()
+}
+
 function handleThumbPrevPage(): void {
   if (thumbCurrentPage.value <= 1) return
   thumbCurrentPage.value -= 1
@@ -1999,12 +2030,10 @@ function handleThumbPageSizeChange(size: number): void {
 
 // ── Event handlers ────────────────────────────────────────────────────────
 
-function onFiberParam(field: keyof FiberParams, event: Event): void {
-  const raw = (event.target as HTMLInputElement).value
-  const num = parseFloat(raw)
-  if (isNaN(num)) return
+function onFiberParam(field: keyof FiberParams, value: number | null): void {
+  if (value == null || !Number.isFinite(value)) return
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ;(fiberParams as any)[field] = num
+  ;(fiberParams as any)[field] = value
 }
 
 function onSelectParam(field: keyof FiberParams, event: Event): void {
