@@ -109,6 +109,41 @@ export async function fetchLatestRelease(): Promise<LatestReleaseInfo | null> {
   return null
 }
 
+// AI 辅助版通道：仅 OSS latest-ai.json（AI 版只在 OSS 发布，无 GitHub 兜底）。
+// 缺文件/无版本号返回 null（= 尚无 AI 版发布）。普通版首页也展示该通道的
+// 检查/下载入口，让普通版用户一键跳到 AI 版（2026-10-26 用户需求）。
+// AI-assisted channel: OSS latest-ai.json only (no GitHub fallback). Surfaces
+// in the NORMAL build's home too, so normal users can hop to the AI build.
+const OSS_LATEST_AI_URL = 'https://xfais.oss-cn-beijing.aliyuncs.com/latest-ai.json'
+
+export async function fetchLatestAiRelease(): Promise<LatestReleaseInfo | null> {
+  try {
+    const resp = await fetchWithTimeout(`${OSS_LATEST_AI_URL}?t=${Date.now()}`, { cache: 'no-store' })
+    if (!resp.ok) return null
+    const data = (await resp.json()) as OssLatestJson
+    const version = typeof data.version === 'string' ? data.version.trim() : ''
+    if (!version) return null
+    const downloads = Array.isArray(data.downloads)
+      ? data.downloads.filter(
+          (item): item is UpdateDownload =>
+            !!item &&
+            typeof item === 'object' &&
+            typeof (item as UpdateDownload).url === 'string' &&
+            (item as UpdateDownload).url.length > 0
+        )
+      : []
+    if (downloads.length === 0) return null
+    return {
+      version,
+      date: typeof data.date === 'string' ? data.date : undefined,
+      downloads,
+      source: 'oss'
+    }
+  } catch {
+    return null
+  }
+}
+
 /**
  * 语义化版本比较（x.y.z 数字段；带预发布后缀视为低于同号正式版）。
  * 返回 >0 表示 a 更新，<0 表示 b 更新，0 表示相同。

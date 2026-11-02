@@ -85,28 +85,41 @@
       </button>
     </div>
 
-    <!-- Pick initial centre (2026-10-20): arms a SINGLE-SHOT canvas mode that
-         sends the next click to set_center (centre seed + auto ring
-         re-derivation under the new coordinate system). /
-         点选初猜中心（2026-10-20）：武装一次性画布模式——下一次点击发送给
-         set_center（中心种子 + 自动环号按新坐标系重排）。 -->
+    <!-- Box-erase of existing points (2026-10-25, replaces the old
+         "移除拾取区已有点" checkbox that never took effect): arming switches
+         the canvas to rect-region mode — the cursor becomes a crosshair, the
+         user drags a box (zoom/pan stays available) and every existing peak
+         inside is removed. One shot: disarms after the box lands.
+         框选移除已有点（2026-10-25，取代从未生效的“移除拾取区已有点”勾选）：
+         激活后画布切矩形框选模式——光标变十字，拖框（可缩放平移）删除框内
+         全部已有峰；一次性，落框后自动退出。 -->
     <div class="cpp-row">
       <button
         type="button"
         class="cpp-btn"
         :class="{ 'cpp-btn--armed': centerPicking }"
-        :disabled="ringPicking"
+        :disabled="ringPicking || eraseArmed"
         :title="centerPickTitle"
         @click="$emit('toggle-center-pick')"
       >
         {{ centerPickLabel }}
       </button>
+      <button
+        type="button"
+        class="cpp-btn"
+        :class="{ 'cpp-btn--armed': eraseArmed }"
+        :disabled="peaks.length === 0 || ringPicking || centerPicking"
+        data-ai-id="calibration:erase-existing"
+        :title="eraseTitle"
+        @click="$emit('toggle-erase')"
+      >
+        {{ eraseLabel }}
+      </button>
     </div>
 
-    <!-- Extraction options (calib2 parity): beyond mask = calib2 "Ring" tool
-         tooltip "Extract peaks, beyond masked values"; remove existing =
-         calib2 "Rubber" tool semantics applied to the harvested band/arc.
-         提取选项（对标 calib2）：越过掩码 / 移除拾取区已有点。 -->
+    <!-- Extraction option (calib2 parity): beyond mask = calib2 "Ring" tool
+         tooltip "Extract peaks, beyond masked values".
+         提取选项（对标 calib2）：越过掩码。 -->
     <div class="cpp-options">
       <label class="cpp-check" :title="beyondMaskTitle">
         <input
@@ -117,53 +130,24 @@
         />
         <span>{{ beyondMaskLabel }}</span>
       </label>
-      <label class="cpp-check" :title="removeExistingTitle">
-        <input
-          type="checkbox"
-          :checked="removeExisting"
-          data-ai-id="calibration:opt-remove-existing"
-          @change="$emit('update:removeExisting', ($event.target as HTMLInputElement).checked)"
-        />
-        <span>{{ removeExistingLabel }}</span>
-      </label>
     </div>
 
-    <!-- Advanced (open by default since 2026-10-22, user request: peak
-         recognition was too wide at the old default sensitivity and the knob
-         was hidden in the collapsed area): full-image auto detection only /
-         高级（2026-10-22 起默认展开，用户要求：原默认灵敏度下峰识别偏宽，
-         而旋钮藏在折叠区）：仅保留全图自动拾取，先按理论环分配再重新分组 -->
-    <details class="cpp-advanced" open>
-      <summary class="cpp-advanced-summary">{{ advancedLabel }}</summary>
-      <div class="cpp-advanced-body">
-        <div class="cpp-field">
-          <label class="cpp-label">{{ t('calibration.peaks.sensitivity') }}: {{ sensitivity.toFixed(2) }}</label>
-          <input
-            type="range"
-            class="cpp-slider"
-            min="0"
-            max="1"
-            step="0.05"
-            :value="sensitivity"
-            @input="$emit('update:sensitivity', Number(($event.target as HTMLInputElement).value))"
-          />
-        </div>
-        <button
-          type="button"
-          class="cpp-btn"
-          :disabled="detecting"
-          data-ai-id="calibration:auto-peaks"
-          :title="autoTitle"
-          @click="$emit('auto')"
-        >
-          {{ detecting ? detectingLabel : autoLabel }}
-        </button>
-      </div>
-    </details>
-
-    <!-- Clear peaks + ring refresh/self-check (calib2 peak table parity) /
-         清空峰 + 刷新环号/自检（对标 calib2 峰表） -->
+    <!-- Undo + clear peaks + ring refresh/self-check (calib2 peak table
+         parity). 回退 undoes the LAST user peak operation (harvest / erase /
+         delete-ring / renumber / refresh / single-point remove).
+         回退 + 清空峰 + 刷新环号/自检（对标 calib2 峰表）。回退撤销上一次
+         用户峰操作（收环 / 框选擦除 / 删环 / 改号 / 刷新 / 单点删除）。 -->
     <div class="cpp-row">
+      <button
+        type="button"
+        class="cpp-btn"
+        :disabled="!canUndo"
+        data-ai-id="calibration:undo"
+        :title="undoTitle"
+        @click="$emit('undo')"
+      >
+        {{ undoLabel }}
+      </button>
       <button
         type="button"
         class="cpp-btn"
@@ -194,7 +178,8 @@
     <!-- Per-ring summary table (REQ: one row per ring, not per peak) /
          每环汇总表：一行一环（而非一行一峰）。
          环号带色块（与画布峰标记同色，环号可直接编辑=整环改号）｜峰数｜
-         平均Δ2θ°｜可疑数（>0 时整行标红）。再次拾取同一环自动并入该环统计；
+         可疑数（>0 时整行标红）｜删除该环（2026-10-25：平均Δ2θ 列移除，
+         改为整环删除按钮）。再次拾取同一环自动并入该环统计；
          右键删峰自动从该环计数扣减。 -->
     <div class="cpp-table-wrap">
       <table v-if="ringRows.length > 0" class="cpp-table">
@@ -202,8 +187,8 @@
           <tr>
             <th :title="ringColTitle">{{ t('calibration.peaks.colRing') }}</th>
             <th>{{ countColLabel }}</th>
-            <th :title="deltaColTitle">平均Δ2θ°</th>
             <th :title="suspectColTitle">⚠</th>
+            <th aria-label="delete" />
           </tr>
         </thead>
         <tbody>
@@ -241,10 +226,17 @@
             </td>
             <td>{{ row.count }}</td>
             <td :class="{ 'cpp-delta--suspect': row.suspects > 0 }">
-              {{ row.meanDtheta == null ? '—' : row.meanDtheta.toFixed(2) }}
-            </td>
-            <td :class="{ 'cpp-delta--suspect': row.suspects > 0 }">
               {{ row.suspects > 0 ? row.suspects : '·' }}
+            </td>
+            <td>
+              <button
+                type="button"
+                class="cpp-del"
+                :title="deleteRingTitle(row.ring)"
+                @click="$emit('delete-ring', row.ring)"
+              >
+                ✕
+              </button>
             </td>
           </tr>
         </tbody>
@@ -264,10 +256,11 @@
  * (calib2 "+" semantics, 1-based, defaults to max(existing)+1) → click ≥3
  * guide points on that ring on the canvas → 完成本环 / Enter / double-click
  * harvests the ring via ring_pick with `assignRing` → the spinner advances to
- * max+1. Full-image auto detection survives ONLY as a collapsed 高级 action.
+ * max+1. (2026-10-25: the full-image auto-detect 高级 section was removed —
+ * user: useless; ring picking is manual-only now.)
  * 逐一环选：先在数字框设定当前环号（1 起，默认 = 现有最大环号 +1），在画布上
  * 该环点 ≥3 个引导点，“完成本环 / 回车 / 双击”以 assignRing 收环，随后数字框
- * 自动跳到 max+1；全图自动拾取仅保留为折叠的“高级”动作。
+ * 自动跳到 max+1；全图自动拾取“高级”区已按用户要求移除（2026-10-25）。
  */
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -276,11 +269,10 @@ import { calibPeakRingColor } from '@/components/calibration/CalibCanvas.vue'
 
 const props = withDefaults(defineProps<{
   peaks: CalibPeak[]
-  sensitivity: number
   /**
    * Ring-band half-width ±dr (px) sent to ring_pick's tolPx. 2026-10-23:
-   * previously a hidden backend constant (15 px). / 环带半宽 ±dr（px），
-   * 此前是后端隐藏常量。
+   * user-settable, default 5 px (was a hidden 15 px constant, too wide).
+   * 环带半宽 ±dr（px），默认 5px（原为后端隐藏常量 15px，偏宽）。
    */
   bandTol?: number
   /**
@@ -289,42 +281,41 @@ const props = withDefaults(defineProps<{
    * 当前环号（界面 1 起；父组件换算为 0 起的后端 assignRing）。
    */
   currentRing: number
-  /** Whether automatic detection is in flight (高级 action). */
-  detecting?: boolean
   /** Number of ring-guide points collected so far. */
   guideCount?: number
   /** Whether ring_pick is in flight (disables the ring controls). */
   ringPicking?: boolean
   /** Whether the SINGLE-SHOT pick-initial-centre canvas mode is armed. */
   centerPicking?: boolean
+  /** Whether the box-erase canvas mode is armed (2026-10-25). */
+  eraseArmed?: boolean
+  /** Whether a peak operation can be undone (回退, 2026-10-25). */
+  canUndo?: boolean
   /** calib2 "Ring" tool parity: extract peaks beyond masked values. */
   beyondMask?: boolean
-  /** calib2 "Rubber" parity: remove existing points inside the extraction area. */
-  removeExisting?: boolean
   /** Whether the ring refresh/self-check (刷新环号/自检) call is in flight. */
   refreshing?: boolean
 }>(), {
-  detecting: false,
   guideCount: 0,
   ringPicking: false,
   centerPicking: false,
+  eraseArmed: false,
+  canUndo: false,
   beyondMask: false,
-  removeExisting: false,
   refreshing: false,
-  bandTol: 15,
+  bandTol: 5,
 })
 
 const emit = defineEmits<{
-  auto: []
-  'update:sensitivity': [value: number]
   'update:bandTol': [value: number]
   'update:currentRing': [value: number]
   clear: []
   'finish-ring': []
   'clear-guides': []
   'toggle-center-pick': []
+  'toggle-erase': []
+  undo: []
   'update:beyondMask': [value: boolean]
-  'update:removeExisting': [value: boolean]
   'refresh-rings': []
   /**
    * User renumbered a ring in the summary table: every peak currently on
@@ -332,6 +323,11 @@ const emit = defineEmits<{
    * 汇总表中整环改号：该环全部峰移到新环号（均 0 起后端环号）。
    */
   'update-ring': [oldRing: number, newRing: number]
+  /**
+   * Delete EVERY peak of one ring (null = the unassigned leftovers row).
+   * 删除该环全部峰（null = 未分配行）。
+   */
+  'delete-ring': [ring: number | null]
 }>()
 
 const { t, locale } = useI18n()
@@ -365,13 +361,21 @@ const centerPickTitle = computed(() =>
     ? '在图像上单击光束中心的大致位置：作为初猜中心（poni 种子），自动环号会立即按新坐标系重排，您指定的环号保持不变；设置后自动退出该模式'
     : 'Click the approximate beam centre on the image: it seeds the geometry centre; auto ring numbers re-derive under the new coordinate system (your picked rings stay). The mode disarms after one set',
 )
-const advancedLabel = computed(() => (isZh.value ? '高级' : 'Advanced'))
-const autoLabel = computed(() => (isZh.value ? '高级：全图自动拾取' : 'Advanced: full-image auto pick'))
-const detectingLabel = computed(() => (isZh.value ? '自动拾取中…' : 'Detecting…'))
-const autoTitle = computed(() =>
+const eraseLabel = computed(() =>
   isZh.value
-    ? '全图 Massif 自动拾取：按理论环分配环号后重新分组（替换现有峰列表）'
-    : 'Full-image Massif detection: assigns theoretical rings then re-groups (replaces the list)',
+    ? (props.eraseArmed ? '框选移除中…（拖框删除）' : '框选移除已有点')
+    : (props.eraseArmed ? 'Box-erasing… (drag to remove)' : 'Box-erase existing pts'),
+)
+const eraseTitle = computed(() =>
+  isZh.value
+    ? '激活后光标变十字，在图上拖出一个矩形（可先滚轮/按钮放大再框），框内全部已有峰将被删除；落框后自动退出该模式，Esc 取消当前草稿'
+    : 'The cursor becomes a crosshair — drag a rectangle (zoom in first if needed) and every existing peak inside is removed. Disarms after the box lands; Esc cancels the draft',
+)
+const undoLabel = computed(() => (isZh.value ? '回退' : 'Undo'))
+const undoTitle = computed(() =>
+  isZh.value
+    ? '撤销上一次峰操作：收环 / 框选移除 / 删除该环 / 整环改号 / 刷新环号 / 单点删除（不含精修与中心设置）'
+    : 'Undo the last peak operation: harvest / box-erase / delete-ring / renumber / refresh / single-point remove (refine and set-centre excluded)',
 )
 
 const beyondMaskLabel = computed(() => (isZh.value ? '越过掩码提取' : 'Beyond mask'))
@@ -379,12 +383,6 @@ const beyondMaskTitle = computed(() =>
   isZh.value
     ? 'calib2 Ring 工具：越过掩码值提取——收整环且掩码/死像素不阻断提取'
     : 'calib2 Ring tool: "Extract peaks, beyond masked values" — full-ring harvest never blocked by masked positions',
-)
-const removeExistingLabel = computed(() => (isZh.value ? '移除拾取区已有点' : 'Remove existing pts'))
-const removeExistingTitle = computed(() =>
-  isZh.value
-    ? 'calib2 Rubber 工具语义：环选提取前，先移除提取区域内的已有峰点'
-    : 'calib2 Rubber semantics: remove already-identified peaks inside the extraction area before merging',
 )
 const refreshLabel = computed(() => (isZh.value ? '刷新环号 / 自检' : 'Refresh rings / check'))
 const refreshRunningLabel = computed(() => (isZh.value ? '自检中…' : 'Checking…'))
@@ -418,9 +416,13 @@ const ringUserTitle = computed(() =>
 const suspectColTitle = computed(() =>
   isZh.value ? '可疑峰数（偏离所分配理论环）' : 'Suspect peaks (deviating from their assigned ring)',
 )
-const deltaColTitle = computed(() =>
-  isZh.value ? '该环各峰与理论环 2θ 偏差的均值（度）' : 'Mean per-peak 2θ deviation of the ring (deg)',
-)
+/** Per-row delete-ring tooltip: numbered rings show their (1-based) number;
+ *  the null row removes the unassigned leftovers. */
+function deleteRingTitle(ring: number | null): string {
+  return isZh.value
+    ? (ring == null ? '删除全部未分配环号的峰' : `删除第 ${ring + 1} 环的全部峰`)
+    : (ring == null ? 'Delete every unassigned peak' : `Delete all peaks of ring ${ring + 1}`)
+}
 
 /** Spinner −/+ steps (floor at 1, calib2 rejects ring numbers < 1). */
 function stepRing(delta: number): void {
@@ -451,17 +453,16 @@ function onBandTolInput(e: Event): void {
 }
 
 /**
- * One summary row per ring: ring number (null = unassigned), peak count,
- * mean signed Δ2θ (null when no peak of the ring carries one) and the
- * suspect count (刷新环号/自检 self-check). Display-only aggregation over
+ * One summary row per ring: ring number (null = unassigned), peak count and
+ * the suspect count (刷新环号/自检 self-check). Display-only aggregation over
  * the full peak list — the backend still receives every individual peak.
- * 每环一行汇总：环号（null=未分配）、峰数、平均Δ2θ、可疑数。仅显示层聚合，
- * 后端仍接收完整逐峰列表。
+ * （2026-10-25：平均Δ2θ 列按用户要求移除，改为整环删除按钮。）
+ * 每环一行汇总：环号（null=未分配）、峰数、可疑数。仅显示层聚合，后端仍
+ * 接收完整逐峰列表。
  */
 interface CalibRingRow {
   ring: number | null
   count: number
-  meanDtheta: number | null
   suspects: number
   /** True when ≥1 peak of the ring carries a user-set ring number (★). */
   userOwned: boolean
@@ -477,13 +478,9 @@ const ringRows = computed<CalibRingRow[]>(() => {
   }
   const rows: CalibRingRow[] = []
   for (const [ring, bucket] of byRing) {
-    const dthetas = bucket.map(p => p.dthetaDeg).filter((d): d is number => d != null)
     rows.push({
       ring,
       count: bucket.length,
-      meanDtheta: dthetas.length > 0
-        ? dthetas.reduce((a, b) => a + b, 0) / dthetas.length
-        : null,
       suspects: bucket.filter(p => p.suspect).length,
       userOwned: bucket.some(p => p.ringUser === true),
     })
@@ -647,28 +644,6 @@ function onRingEdit(oldRing: number, e: Event): void {
   border-color: var(--border-focus);
 }
 
-/* Advanced (collapsed) section / 高级折叠区 */
-.cpp-advanced {
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-md);
-  padding: 6px 10px;
-}
-
-.cpp-advanced-summary {
-  font-size: 0.78rem;
-  font-weight: 600;
-  color: var(--text-secondary);
-  cursor: pointer;
-  user-select: none;
-}
-
-.cpp-advanced-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding-top: 8px;
-}
-
 /* Extraction options (calib2 parity) / 提取选项 */
 .cpp-options {
   display: flex;
@@ -691,23 +666,6 @@ function onRingEdit(oldRing: number, e: Event): void {
   width: 13px;
   height: 13px;
   flex: none;
-}
-
-.cpp-field {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.cpp-label {
-  font-size: 0.8125rem;
-  color: var(--text-secondary);
-  font-weight: 500;
-}
-
-.cpp-slider {
-  width: 100%;
-  accent-color: var(--primary);
 }
 
 .cpp-row {
@@ -863,6 +821,27 @@ function onRingEdit(oldRing: number, e: Event): void {
 .cpp-delta--suspect {
   color: #f87171;
   font-weight: 700;
+}
+
+/* Per-row delete-ring button (2026-10-25) / 整环删除按钮 */
+.cpp-del {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.cpp-del:hover {
+  border-color: #f87171;
+  color: #f87171;
 }
 
 .cpp-empty {

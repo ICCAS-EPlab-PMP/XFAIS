@@ -252,6 +252,54 @@ def test_full_calibration_flow(synthetic_edf: str, tmp_path: Path):
     assert overlay_b["rings"] == rings, "unchanged geometry must reuse the cached 2θ map"
 
 
+def test_ring_overlay_segments_when_ring_exceeds_frame(synthetic_edf: str):
+    """A ring extending beyond the frame must come back as SEPARATE segments.
+    silx find_contours clips an oversized ring into several corner arcs; the
+    old flat concatenation made the canvas bridge the arcs with straight
+    lines (v0.3.5 fix). dist guess 300 mm scales the second ring to ~310 px
+    (> the 256 px half-frame) so it crosses all four edges.
+    超出画布的环必须按段返回。silx 会把超大环裁成若干角弧；旧扁平拼接让前端
+    把弧段间空隙画成横穿画布的直线（v0.3.5 修复）。距离初猜 300 mm 使第二环
+    半径约 310 px（> 256 px 半幅），四个边都裁到。
+    """
+    setup = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": 300.0,
+    }))
+    sid = setup["sessionId"]
+    # One dummy peak is enough to establish the first-guess geometry.
+    # 一个占位峰即可建立初猜几何（不 refine）。
+    _ok(_run({
+        "action": "update_peaks", "sessionId": sid,
+        "peaks": [{"y": 256.0, "x": 256.0}],
+    }))
+    overlay = _ok(_run({"action": "ring_overlay", "sessionId": sid}))
+    rings = overlay["rings"]
+    assert rings, "expected at least one overlay ring"
+    multi_segment_rings = 0
+    for ring in rings:
+        segments = ring["segments"]
+        assert isinstance(segments, list) and segments, ring
+        flat = [pt for seg in segments for pt in seg]
+        assert flat == ring["points"], "flat points must be the concatenation"
+        assert 0 < len(ring["points"]) <= 600
+        for seg in segments:
+            assert len(seg) >= 2
+            for row, col in seg:
+                assert 0.0 <= row < SHAPE[0]
+                assert 0.0 <= col < SHAPE[1]
+        if len(segments) > 1:
+            multi_segment_rings += 1
+    assert multi_segment_rings >= 1, (
+        f"off-frame rings must be split into several segments, got 1 segment "
+        f"everywhere: {[(r['ring'], len(r['segments'])) for r in rings]}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # PERFORMANCE: session Massif cache / 会话级 Massif 缓存
 # ---------------------------------------------------------------------------
@@ -307,37 +355,37 @@ def test_massif_cache_equivalence_and_hit_logged(synthetic_edf: str, caplog):
     ], "cache clearing must not change the harvest"
 
 
-def test_ring_pick_sensitivity_and_tolpx(synthetic_edf: str):
-    """2026-10-23: the sensitivity slider now reaches the RING-BAND harvest
-    (std-term scale k = 1.6·(1−sensitivity) with a two-step relaxation) and
-    tolPx is the user-set band half-width. Higher sensitivity must harvest
-    ≥ points (its candidate set is a superset); a narrow band stays a valid
-    call and echoes back in ``region``.
-    灵敏度接入环带阈值：高灵敏度收点 ≥ 低灵敏度；tolPx 窄带合法且回显。"""
+def test_ring_pick_tolpx_and_center_autoseed(synthetic_edf: str):
+    """2026-10-23 (round 2): the band half-width defaults to 5 px and echoes
+    in ``region``; the sensitivity knob is GONE from ring_pick (user: effect
+    invisible); and the FIRST harvest auto-seeds the centre from the
+    guide-point circle fit — everything used to stay anchored at the IMAGE
+    centre (user report: ring numbers ran absurdly high, refine unrecoverable).
+    A second harvest must NOT re-seed. / 环带默认 5px 且回显；首个收环按圆
+    拟合自动落中心种子（原锚定图像中心——环号冲高、精修修不回）；第二次
+    不再重播。"""
     sid = _setup_session(synthetic_edf)
     r0 = _first_ring_radius_px()
     guides = _ring_guide_points(r0, [0.0, 90.0, 180.0])
 
     np.random.seed(RNG_SEED)
-    strict = _ok(_run({
-        "action": "ring_pick", "sessionId": sid, "points": guides,
-        "sensitivity": 0.0,
-    }))
-    np.random.seed(RNG_SEED)
-    loose = _ok(_run({
-        "action": "ring_pick", "sessionId": sid, "points": guides,
-        "sensitivity": 1.0,
-    }))
-    assert strict["peaks"], "strict band harvest must still find the ring"
-    assert len(loose["peaks"]) >= len(strict["peaks"]), (
-        "higher sensitivity must not reduce the band harvest"
-    )
+    first = _ok(_run({"action": "ring_pick", "sessionId": sid, "points": guides}))
+    assert first["peaks"], "band harvest must find the ring"
+    assert first["region"]["tolPx"] == 5, "default band half-width must be 5 px"
 
-    narrow = _ok(_run({
-        "action": "ring_pick", "sessionId": sid, "points": guides,
-        "tolPx": 3, "sensitivity": 0.5,
-    }))
-    assert narrow["region"]["tolPx"] == 3, "tolPx must echo back in region"
+    seeded = first.get("centerSeeded")
+    assert seeded, "first harvest must auto-seed the centre from the circle fit"
+    # The circle through three exact guide points on the first ring recovers
+    # the TRUE centre (the fixture builds rings around 256, 256).
+    assert abs(seeded["x"] - CENTER_X_PX) <= 3.0, seeded
+    assert abs(seeded["y"] - CENTER_Y_PX) <= 3.0, seeded
+
+    # Second harvest on the same session: the centre is seeded now — the
+    # auto-seed must not fire again (an explicit set_center/refine also wins).
+    np.random.seed(RNG_SEED)
+    second = _ok(_run({"action": "ring_pick", "sessionId": sid, "points": guides}))
+    assert second["peaks"]
+    assert "centerSeeded" not in second, "auto-seed must fire only once"
 
 
 @pytest.fixture(scope="module")
@@ -898,6 +946,92 @@ def _first_ring_radius_px() -> float:
     calibrant.wavelength = WAVELENGTH_M
     tth0 = next(v for v in calibrant.get_2th() if v is not None)
     return DIST_M * math.tan(tth0) / PIXEL_M
+
+
+def _ring_radius_px(n: int) -> float:
+    """Ground-truth pixel radius of LaB6's n-th ring (0-based). /
+    LaB6 第 n 环（0 起）的真实像素半径。"""
+    import math
+
+    import pyFAI.calibrant as calibrant_mod
+
+    calibrant = calibrant_mod.get_calibrant(CALIBRANT_NAME)
+    calibrant.wavelength = WAVELENGTH_M
+    finite = [v for v in calibrant.get_2th() if v is not None]
+    return DIST_M * math.tan(finite[n]) / PIXEL_M
+
+
+def test_user_rings_survive_far_off_initial_guess(synthetic_edf: str):
+    """2026-10-23 (user demand): even when the initial-guess centre is FAR
+    off (~186 px), USER-picked ring numbers are NEVER re-derived —
+    update_peaks('keep') and the refine's automatic refresh both honour them;
+    the optimizer fits the geometry TO the user's rings (calib2 semantics),
+    it must never relabel them to "better" (absurdly high) rings.
+    初猜中心偏差巨大时，用户环号在 update_peaks 与精修的自动重排中绝不改号
+    ——几何向环号靠拢（calib2 语义），而非环号向几何靠拢。"""
+    import math
+
+    # Setup with a DELIBERATELY WRONG centre seed (user's own seed wins —
+    # ring_pick's auto-seed must not fire, matching the explicit-seed rule).
+    sid = _ok(_run({
+        "action": "setup",
+        "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME,
+        "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A,
+        "distGuessMm": DIST_MM,
+        "centerX": CENTER_X_PX - 136.0,
+        "centerY": CENTER_Y_PX - 126.0,
+    }))["sessionId"]
+
+    # Ring-by-ring harvest with USER ring numbers 0/1/2 (true-geometry guide
+    # points — the far-off guess changes nothing about what the user calls
+    # each ring). / 逐环收峰，用户环号 0/1/2（引导点按真值几何取）。"""
+    all_peaks = []
+    for ring in (0, 1, 2):
+        r = _ring_radius_px(ring)
+        guides = [
+            {
+                "y": CENTER_Y_PX + r * math.sin(math.radians(a)),
+                "x": CENTER_X_PX + r * math.cos(math.radians(a)),
+            }
+            for a in (20.0, 140.0, 260.0)
+        ]
+        np.random.seed(RNG_SEED)
+        res = _ok(_run({
+            "action": "ring_pick", "sessionId": sid,
+            "points": guides, "assignRing": ring, "extractMode": "beyond_mask",
+        }))
+        assert res["peaks"], f"ring {ring} harvest must not be empty"
+        assert "centerSeeded" not in res, "explicit (wrong) seed must block auto-seed"
+        for p in res["peaks"]:
+            all_peaks.append({
+                "y": p["y"], "x": p["x"], "ring": ring, "ringUser": True,
+            })
+
+    # Push with mode 'keep': under the far-off centre the peaks' computed 2θ
+    # is wildly wrong — the user's ring numbers must survive bit-for-bit.
+    kept = _ok(_run({
+        "action": "update_peaks", "sessionId": sid, "mode": "keep",
+        "peaks": all_peaks,
+    }))
+    assert all(p.get("ring") in (0, 1, 2) for p in kept["peaks"]), (
+        sorted({p["ring"] for p in kept["peaks"]})
+    )
+    assert sorted({p["ring"] for p in kept["peaks"] if p.get("ring_user")}) == [0, 1, 2]
+
+    # Refine: the pre-refine automatic refresh keeps the user rings too, and
+    # the optimizer pulls the geometry TOWARD the truth with those rings.
+    ref = _ok(_run({"action": "refine", "sessionId": sid, "passes": 2}))
+    assert all(p.get("ring") in (0, 1, 2) for p in ref["peaks"]), (
+        sorted({p["ring"] for p in ref["peaks"]})
+    )
+    geom = ref["geometry"]
+    start_err = math.hypot(136.0, 126.0)
+    end_err = math.hypot(
+        geom["center_x_px"] - CENTER_X_PX, geom["center_y_px"] - CENTER_Y_PX,
+    )
+    assert end_err < start_err, (start_err, end_err)
 
 
 def _ring_guide_points(radius_px: float, angles_deg) -> list:

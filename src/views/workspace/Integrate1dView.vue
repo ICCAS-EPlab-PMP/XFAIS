@@ -47,7 +47,13 @@
             <span>{{ t('business.advancedOptions.title') }}</span>
           </div>
           <div v-show="advancedExpanded" class="i1d-collapsible-body">
-            <AdvancedOptionsForm v-model="advancedOptions" :show-integration-method="true" :hide-unit="true" :bare="true" />
+            <AdvancedOptionsForm
+              :model-value="advancedOptions"
+              :show-integration-method="true"
+              :hide-unit="true"
+              :bare="true"
+              @update:model-value="onAdvancedOptionsUpdate"
+            />
           </div>
         </div>
 
@@ -422,6 +428,26 @@ function onUnitChange(event: Event): void {
   // stale numbers can't silently clip the result window.
   // 径向范围数值与单位绑定，切换单位时清空，避免残留数值截断结果窗口。
   Object.assign(advancedOptions, { unit: val, radialMin: null, radialMax: null })
+}
+
+/**
+ * Merge the child form's emit into the reactive options object.
+ * 把子表单回传的选项合并进响应式对象。
+ *
+ * Do NOT bind `v-model` to `advancedOptions`: it is a `reactive()` const, so the
+ * compiler rewrites `v-model` into `let` + `advancedOptions = $event`, and the
+ * child emits a plain spread copy — the reactive proxy is then replaced by a
+ * plain object, silently killing every downstream dependency (x-axis unit
+ * label / chart axis title froze after touching any advanced option, the
+ * 2026-10-29 "unit doesn't follow" report). Merging keeps the proxy identity.
+ * 不要对 `advancedOptions` 用 `v-model`：它是 `reactive()` 常量，编译器会把
+ * `v-model` 改写成 `let` + `advancedOptions = $event`，而子组件回传的是普通
+ * 展开副本——响应式代理被普通对象替换，所有下游依赖（x 轴单位标签 / 图表轴
+ * 标题）在用户动过任一高级选项后静默失效，即 2026-10-29「单位不跟随」故障。
+ * 改为合并赋值，保留代理身份。
+ */
+function onAdvancedOptionsUpdate(next: AdvancedOptions): void {
+  Object.assign(advancedOptions, next)
 }
 
 // === Form state / 表单状态 ===

@@ -398,7 +398,12 @@ class TestBgSubtractHandlerIntegration:
         np.testing.assert_allclose(rendered["max"], 100.0)
 
     def test_ionchamber_match_handler(self, tmp_path) -> None:
-        """Ionchamber match handler returns matches."""
+        """Ionchamber match handler returns matches with computed transmission.
+
+        The background ionchamber file is mandatory (2026-10-29): without it
+        the handler now reports an explicit error instead of returning a table
+        with an empty transmission column.
+        """
         # Create ionchamber files
         ion_dir = tmp_path / "ions"
         ion_dir.mkdir()
@@ -423,6 +428,7 @@ class TestBgSubtractHandlerIntegration:
                     "action": "ionchamber_match",
                     "data_files": ["wkf-G1-Q-30-2-waxs-11.9s_00001.tiff"],
                     "ionchamber_files": [sample_ion_path, bg_ion_path],
+                    "bg_ionchamber_path": bg_ion_path,
                 },
                 _noop_progress,
                 asyncio.Event(),
@@ -431,6 +437,10 @@ class TestBgSubtractHandlerIntegration:
 
         assert result["status"] == "ok"
         assert result["count"] == 1
+        row = result["matches"][0]
+        assert row["transmission_computed"] is True
+        # median(sample) / median(bg) = 2.8085675e-7 / 3.305e-7
+        assert row["transmission"] == pytest.approx(0.849793, rel=1e-4)
 
 
 # ===========================================================================

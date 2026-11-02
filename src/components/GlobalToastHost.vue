@@ -70,6 +70,12 @@ const store = useToast()
 
 .toast-close {
   align-self: flex-start;
+  /* Never let the CJK label stack vertically inside a narrow toast — the
+   * two-character label wrapped to one glyph per line at 1440px (visual
+   * review 2026-10-25). / 窄 toast 里「关闭」两字曾被压成每行一字竖排
+   * （视觉审查 2026-10-25）。 */
+  white-space: nowrap;
+  flex: 0 0 auto;
   border: none;
   background: transparent;
   color: var(--text-secondary);

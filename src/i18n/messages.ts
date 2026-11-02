@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.4'
+      version: 'v0.3.5'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.3.4',
+      kicker: '桌面集成版 v0.3.5',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -83,6 +83,8 @@ export const messages = {
         showLogs: '显示日志目录',
         checkUpdate: '检测更新',
         downloadUpdate: '下载更新',
+        checkAiUpdate: '检查AI辅助版',
+        downloadAiUpdate: '下载AI辅助版',
         citePyFAI: '引用 pyFAI',
         citeCalib2: '引用 calib2',
         citeFabIO: '引用 fabIO'
@@ -145,6 +147,10 @@ export const messages = {
         bgSubtract: {
           title: '2D 背景扣除',
           description: '有参考背景扣除：result = sample / T - background，支持电离室匹配与批量处理'
+        },
+        transmission: {
+          title: '直通光透过率测量',
+          description: '框选积分区域测量直通光/样品强度，按参考文件计算逐文件透过率，导出 CSV/JSON 供背景扣除使用'
         },
         imageMath: {
           title: '图像运算',
@@ -471,6 +477,11 @@ export const messages = {
         contrastManual: '手动',
         contrastMin: '最小值',
         contrastMax: '最大值',
+        maskStyle: '掩膜显示',
+        maskStyleRed: '淡红叠加',
+        maskStyleWhite: '纯白填充',
+        maskStyleViolet: '深紫轻覆',
+        maskStyleHint: '淡红叠加：半透明红色标记掩膜区域，其下图像细节仍清晰可见；纯白填充：掩膜像素涂为不透明白色，完全遮挡下方数据，直观呈现有效探测范围；深紫轻覆：5% 透明度的深紫着色，几乎不干扰原图判读，仅提示掩膜大致范围'
       },
       export: {
         title: '导出 Mask',
@@ -643,7 +654,11 @@ export const messages = {
         climMin: '最小值',
         climMax: '最大值',
         climAuto: '自动',
-        climManual: '手动'
+        climManual: '手动',
+        chartLine: '线图',
+        chartPoints: '点图',
+        yLog: '对数',
+        yLinear: '线性'
       },
       geometry: {
         title: '几何参数设置',
@@ -1027,6 +1042,79 @@ export const messages = {
       methodTrimmedMean: '去极值均值 (Trimmed Mean)',
       transPerFile: '分别设置透射率',
       tooManyFilesWarning: '文件超过 {limit} 张，分别设置透射率不可用（已切回统一输入），请使用统一手动输入或电离室匹配',
+      // Transmission file import (CSV/JSON from the transmission page) /
+      // 透过率文件导入（来自直通光透过率页面导出的 CSV/JSON）
+      transFile: '透过率文件',
+      transFileHint: '选择「透过率文件」后，可导入直通光页面导出的 CSV / JSON，按文件名自动匹配并填充逐文件透过率。',
+      transFilePick: '选择透过率文件 (CSV / JSON)',
+      transFileMatch: '匹配并填充',
+      transFileMatching: '匹配中...',
+      transMatchColFile: '文件',
+      transMatchColTrans: '透过率',
+      transMatchColNote: '备注',
+      transFileApplied: '已填充 {matched} 个文件的透过率，{missing} 个未匹配',
+      transFileNoMatch: '没有任何文件匹配成功，请检查文件名是否与透过率表一致',
+      // Ionchamber match → per-file backfill / 电离室匹配 → 逐文件回填
+      errorNoBgIonchamber: '请先选择背景电离室文件（匹配后用于计算透射率）',
+      ionchamberAppliedHint: '匹配结果已填入逐文件透射率（可在文件列表修改），执行时按逐文件数值扣除。',
+      ionchamberMatchApplied: '已填充 {matched} 个文件的透射率，{missing} 个未计算',
+      ionchamberNoTransmission: '没有可用的透射率：请确认背景电离室文件已选择且格式正确后重新匹配',
+      ionchamberNoMatch: '没有文件匹配到电离室文件，请检查文件名或降低匹配阈值',
+      // Execute prerequisites / 执行前置条件
+      executeBlocked: '尚不能执行扣除，还缺：{items}',
+      reqSamples: '样品文件',
+      reqBackground: '背景图像',
+      reqOutput: '输出目录',
+      reqIonchamberMatch: '电离室匹配透射率',
+      reqIonchamberCoverage: '有 {count} 个文件没有匹配到电离室透射率（请重新匹配）',
+    },
+    transmission: {
+      title: '直通光透过率测量',
+      subtitle: '框选积分区域测量每个文件的强度，以指定参考文件（通常为直通光图）为 100% 计算透过率。',
+      notice: '用法：① 上传直通光图与样品图 → ② 在图上框选积分区域（方形框或多折框）→ ③ 指定一个文件为参考 → ④ 计算透过率 → ⑤ 导出 CSV / JSON，并在背景扣除页面按文件名导入。',
+      files: '文件',
+      selectFiles: '选择文件',
+      fileList: '文件列表',
+      setReference: '设为参考',
+      reference: '参考',
+      removeFile: '移除',
+      noFilesSelected: '未选择文件',
+      fileCount: '{count} 个文件已选择',
+      region: '积分区域',
+      regionRect: '方形框',
+      regionRectRange: '行 {y0}–{y1}，列 {x0}–{x1}',
+      regionPoly: '多折框',
+      regionArmedHint: '在图上拖出方形框 / 依次点击顶点（双击或回车闭合）',
+      regionSet: '积分区域已设定，点击「计算透过率」获取结果',
+      regionCleared: '积分区域已清除',
+      clearRegion: '清除区域',
+      regionNone: '未设定积分区域',
+      vertexCount: '{count} 个顶点',
+      advanced: '高级选项',
+      subtractBorder: '扣除区域边界背景',
+      subtractBorderHint: '扣除区域边界一圈像素的本底后再积分，适合边界有明显背景的情况。',
+      compute: '计算透过率',
+      computing: '计算中...',
+      computeDone: '计算完成：成功 {success} 个，失败 {failed} 个',
+      results: '结果',
+      colFile: '文件',
+      colIntensity: '强度',
+      colTransmission: '透过率',
+      refBadge: '参考 100%',
+      failedRow: '失败',
+      noResults: '尚未计算',
+      computeFirst: '区域已设定，点击「计算透过率」获取结果',
+      export: '导出',
+      outputDir: '输出目录',
+      exportCsv: '导出 CSV',
+      exportJson: '导出 JSON',
+      exportDone: '已导出到 {dir}',
+      webExportNote: '浏览器模式：无需选择输出目录，导出文件将自动下载到本机。',
+      loading: '加载中...',
+      errorTitle: '错误',
+      errorPrefix: '错误: ',
+      emptyState: '请选择文件开始测量',
+      noPreview: '无预览',
     },
     imageMath: {
       title: '图像运算',
@@ -1593,10 +1681,10 @@ export const messages = {
       title: '峰拾取',
       count: '已选 {count} 个峰',
       auto: '自动拾取',
-      autoHint: 'Massif 峰群搜索；灵敏度越高找到的峰越多',
+      autoHint: '全图 Massif 自动拾取；灵敏度越高找到的峰越多（不作用于逐环拾取）',
       sensitivity: '灵敏度',
       bandTol: '环带 ±dr (px)',
-      bandTolHint: '完成本环在所选环 ±dr 像素的环带内收峰（2026-10-23 起灵敏度同样作用于环带阈值：越高收得越多）',
+      bandTolHint: '完成本环在所选环 ±dr 像素的环带内收峰（默认 5；首个收环会按引导点圆拟合自动设定初猜中心）',
       clear: '清空',
       empty: '尚无峰，请自动拾取或手动点击图像添加',
       addMode: '添加模式：开启',
@@ -1632,7 +1720,10 @@ export const messages = {
       citationPyfai: 'pyFAI 论文',
       licenseNote: 'pyFAI 采用 MIT 许可证发布。',
       goIntegrate: '去 1D 积分',
-      pathLabel: '保存路径'
+      pathLabel: '保存路径',
+      downloadPoni: '下载 .poni',
+      downloaded: 'PONI 已下载',
+      downloadFailed: '下载失败：{file}'
     },
     errors: {
       noSession: '校正会话不存在，请重新载入',
@@ -1644,7 +1735,7 @@ export const messages = {
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.4'
+      version: 'v0.3.5'
     },
     shell: {
       sections: {
@@ -1678,7 +1769,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.3.4',
+      kicker: 'Desktop Edition v0.3.5',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -1723,6 +1814,8 @@ export const messages = {
         showLogs: 'Show Log Directory',
         checkUpdate: 'Check for Updates',
         downloadUpdate: 'Download Update',
+        checkAiUpdate: 'Check AI-assisted',
+        downloadAiUpdate: 'Download AI-assisted',
         citePyFAI: 'Cite pyFAI',
         citeCalib2: 'Cite calib2',
         citeFabIO: 'Cite fabIO'
@@ -1785,6 +1878,10 @@ export const messages = {
         bgSubtract: {
           title: '2D Background Subtraction',
           description: 'Reference-based background subtraction: result = sample / T - background, with ion chamber matching and batch processing'
+        },
+        transmission: {
+          title: 'Direct-Beam Transmission',
+          description: 'Integrate a picked region to measure direct-beam/sample intensity, compute per-file transmission against a reference, and export CSV/JSON for background subtraction'
         },
         imageMath: {
           title: 'Image Math',
@@ -2111,6 +2208,11 @@ export const messages = {
         contrastManual: 'Manual',
         contrastMin: 'Min',
         contrastMax: 'Max',
+        maskStyle: 'Mask display',
+        maskStyleRed: 'Translucent red',
+        maskStyleWhite: 'Solid white',
+        maskStyleViolet: 'Faint violet',
+        maskStyleHint: 'Translucent red: semi-transparent red marks masked areas while image detail stays visible; Solid white: masked pixels become opaque white, fully hiding the data beneath — shows the effective detector area; Faint violet: 5%-opacity deep violet, nearly non-intrusive, just hints at the masked extent'
       },
       export: {
         title: 'Export Mask',
@@ -2283,7 +2385,11 @@ export const messages = {
         climMin: 'Min',
         climMax: 'Max',
         climAuto: 'Auto',
-        climManual: 'Manual'
+        climManual: 'Manual',
+        chartLine: 'Line',
+        chartPoints: 'Points',
+        yLog: 'Log',
+        yLinear: 'Linear'
       },
       geometry: {
         title: 'Geometry Parameters',
@@ -2667,6 +2773,79 @@ export const messages = {
       methodTrimmedMean: 'Trimmed Mean',
       transPerFile: 'Per-file Transmission',
       tooManyFilesWarning: 'More than {limit} files selected. Per-file transmission is unavailable (switched back to a single value); use manual input or ionchamber matching instead.',
+      // Transmission file import (CSV/JSON from the transmission page) /
+      // 透过率文件导入（来自直通光透过率页面导出的 CSV/JSON）
+      transFile: 'Transmission File',
+      transFileHint: 'Choose “Transmission File” to import a CSV / JSON exported by the direct-beam transmission page; files are matched by name and per-file transmission is filled automatically.',
+      transFilePick: 'Select transmission file (CSV / JSON)',
+      transFileMatch: 'Match & Fill',
+      transFileMatching: 'Matching...',
+      transMatchColFile: 'File',
+      transMatchColTrans: 'Transmission',
+      transMatchColNote: 'Note',
+      transFileApplied: 'Filled transmission for {matched} file(s); {missing} unmatched',
+      transFileNoMatch: 'No file matched — check that file names agree with the transmission table',
+      // Ionchamber match → per-file backfill / 电离室匹配 → 逐文件回填
+      errorNoBgIonchamber: 'Select a background ionchamber file first (it is used to compute transmission)',
+      ionchamberAppliedHint: 'Matched transmissions were filled per file (editable in the file list) and will be used for the run.',
+      ionchamberMatchApplied: 'Filled transmission for {matched} file(s); {missing} not computed',
+      ionchamberNoTransmission: 'No usable transmission — check the background ionchamber file and match again',
+      ionchamberNoMatch: 'No file matched an ionchamber file — check file names or lower the match threshold',
+      // Execute prerequisites / 执行前置条件
+      executeBlocked: 'Cannot run yet — missing: {items}',
+      reqSamples: 'sample files',
+      reqBackground: 'background image',
+      reqOutput: 'output directory',
+      reqIonchamberMatch: 'ionchamber transmission match',
+      reqIonchamberCoverage: '{count} file(s) have no ionchamber transmission — match again',
+    },
+    transmission: {
+      title: 'Direct-Beam Transmission',
+      subtitle: 'Integrate a picked region on every file and compute transmission relative to a reference file (usually the direct-beam image) taken as 100%.',
+      notice: 'How to use: ① upload the direct-beam and sample images → ② draw the integration region (rectangle or polygon) → ③ pick one file as the reference → ④ compute transmission → ⑤ export CSV / JSON and import it by file name on the background-subtraction page.',
+      files: 'Files',
+      selectFiles: 'Select Files',
+      fileList: 'File List',
+      setReference: 'Set as reference',
+      reference: 'Reference',
+      removeFile: 'Remove',
+      noFilesSelected: 'No files selected',
+      fileCount: '{count} file(s) selected',
+      region: 'Integration Region',
+      regionRect: 'Rectangle',
+      regionRectRange: 'y {y0}–{y1}, x {x0}–{x1}',
+      regionPoly: 'Polygon',
+      regionArmedHint: 'Drag a rectangle / click vertices on the image (double-click or Enter closes)',
+      regionSet: 'Region set — click “Compute Transmission” to get results',
+      regionCleared: 'Integration region cleared',
+      clearRegion: 'Clear Region',
+      regionNone: 'No integration region set',
+      vertexCount: '{count} vertices',
+      advanced: 'Advanced',
+      subtractBorder: 'Subtract border background',
+      subtractBorderHint: 'Subtract the background ring of border pixels before integrating — useful when the region border carries visible background.',
+      compute: 'Compute Transmission',
+      computing: 'Computing...',
+      computeDone: 'Done: {success} succeeded, {failed} failed',
+      results: 'Results',
+      colFile: 'File',
+      colIntensity: 'Intensity',
+      colTransmission: 'Transmission',
+      refBadge: 'Ref 100%',
+      failedRow: 'Failed',
+      noResults: 'No results yet',
+      computeFirst: 'Region set — click “Compute Transmission” to get results',
+      export: 'Export',
+      outputDir: 'Output Directory',
+      exportCsv: 'Export CSV',
+      exportJson: 'Export JSON',
+      exportDone: 'Exported to {dir}',
+      webExportNote: 'Browser mode: no output directory needed — exported files download automatically.',
+      loading: 'Loading...',
+      errorTitle: 'Error',
+      errorPrefix: 'Error: ',
+      emptyState: 'Select files to start measuring',
+      noPreview: 'No Preview',
     },
     imageMath: {
       title: 'Image Math',
@@ -3230,10 +3409,10 @@ export const messages = {
       title: 'Peak picking',
       count: '{count} peaks selected',
       auto: 'Auto-pick',
-      autoHint: 'Massif peak-group search; higher sensitivity finds more peaks',
+      autoHint: 'Full-image Massif search; higher sensitivity finds more peaks (does not affect ring-by-ring picking)',
       sensitivity: 'Sensitivity',
       bandTol: 'Ring band ±dr (px)',
-      bandTolHint: 'Finish-ring harvests peaks within ±dr pixels of the picked ring (since 2026-10-23 the sensitivity also drives the band threshold: higher finds more)',
+      bandTolHint: 'Finish-ring harvests peaks within ±dr pixels of the picked ring (default 5; the first harvest auto-seeds the initial centre from the guide-point circle fit)',
       clear: 'Clear',
       empty: 'No peaks yet — auto-pick or click the image to add them manually',
       addMode: 'Add mode: ON',
@@ -3269,7 +3448,10 @@ export const messages = {
       citationPyfai: 'pyFAI paper',
       licenseNote: 'pyFAI is distributed under the MIT license.',
       goIntegrate: 'Go to 1D integration',
-      pathLabel: 'Save path'
+      pathLabel: 'Save path',
+      downloadPoni: 'Download .poni',
+      downloaded: 'PONI downloaded',
+      downloadFailed: 'Download failed: {file}'
     },
     errors: {
       noSession: 'Calibration session missing — please reload',

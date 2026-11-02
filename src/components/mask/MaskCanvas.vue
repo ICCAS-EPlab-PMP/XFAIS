@@ -19,10 +19,26 @@
         draggable="false"
       />
 
-      <!-- Layer 2: Mask overlay (semi-transparent) -->
+      <!-- Layer 2: Mask overlay — redrawn ONLY when the mask data or display
+           style changes (full-frame ImageData pass; doing this per mousemove
+           made large-detector drawing laggy). / 掩膜层：仅在掩膜数据或显示
+           风格变化时整帧重画（此前每次鼠标移动都全量重画大图导致卡顿）。 -->
       <canvas
         v-if="imageLoaded"
         ref="overlayCanvasRef"
+        class="mc-overlay"
+        :width="imageWidth"
+        :height="imageHeight"
+        :style="transformStyle"
+      />
+
+      <!-- Layer 3: Sketch preview — the cheap per-mousemove layer (clear +
+           stroke only), so dragging feels instant. Also carries the polygon
+           rubber-band line to the cursor. / 勾勒预览层：每帧只清空+描线，
+           代价极小；多边形“上一顶点→光标”的实时跟随线也画在这里。 -->
+      <canvas
+        v-if="imageLoaded"
+        ref="previewCanvasRef"
         class="mc-overlay"
         :width="imageWidth"
         :height="imageHeight"
@@ -55,10 +71,11 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { MaskTool, MaskMode, DrawState } from '@/types/mask'
+import type { MaskDisplayStyle } from '@/lib/maskDisplay'
 
 const { t } = useI18n()
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   imageSrc: string | null
   imageWidth: number
   imageHeight: number
@@ -68,7 +85,17 @@ const props = defineProps<{
   activeTool: MaskTool
   maskMode: MaskMode
   placeholder?: string
-}>()
+  /**
+   * Mask overlay display style (shared preference, see src/lib/maskDisplay.ts).
+   * 'red' = translucent red (default), 'white' = opaque white, 'violet' =
+   * 5%-opacity deep violet. / 掩膜叠加显示风格（共享偏好，见
+   * src/lib/maskDisplay.ts）：'red' 淡红半透明（默认）、'white' 纯白不透明、
+   * 'violet' 5% 透明度深紫。
+   */
+  maskStyle?: MaskDisplayStyle
+}>(), {
+  maskStyle: 'red',
+})
 
 const emit = defineEmits<{
   'shape-drawn': [params: {
@@ -82,6 +109,12 @@ const emit = defineEmits<{
 const containerRef = ref<HTMLDivElement | null>(null)
 const viewportRef = ref<HTMLDivElement | null>(null)
 const overlayCanvasRef = ref<HTMLCanvasElement | null>(null)
+/**
+ * Layer-3 sketch canvas (see template): the per-mousemove preview lives here
+ * so the heavy mask-overlay layer never repaints during drawing.
+ * 勾勒预览层画布（见模板）：高频预览画在这层，绘制期间不再触碰重型掩膜层。
+ */
+const previewCanvasRef = ref<HTMLCanvasElement | null>(null)
 
 // ── Zoom & Pan state ──────────────────────────────────────────────────────────
 const zoom = ref(1)
@@ -258,7 +291,13 @@ function onMouseMove(e: MouseEvent): void {
   }
 
   if (!drawing.value) return
-  if (props.activeTool === 'polygon') return // Polygon vertices added on click
+  // Polygon vertices are added on CLICK, but the mousemove still matters:
+  // it drives the rubber-band line from the last vertex to the cursor (the
+  // preview layer redraw is cheap). The old early-return here froze that
+  // line at the last click — the "no live connector" regression.
+  // 多边形顶点仍在点击时添加，但鼠标移动必须放行：预览层的
+  // “上一顶点→光标”跟随线靠它实时更新（预览层重绘代价极小）。
+  // 此处旧版的提前 return 正是跟随线冻结丢失的根因。
 
   const pixel = screenToPixel(e.clientX, e.clientY)
   if (!pixel) return
@@ -360,21 +399,31 @@ function emitShapeFromDrawState(): void {
 // ── Preview rendering (dashed outlines during drawing) ────────────────────────
 
 function renderPreview(): void {
-  const canvas = overlayCanvasRef.value
+  // PREVIEW LAYER ONLY (Layer 3): clear + stroke. The mask overlay (Layer 2)
+  // stays untouched here — it used to be fully rebuilt (full-frame ImageData
+  // + putImageData) on EVERY mousemove, which lagged badly on large detector
+  // frames. / 只操作预览层：清空+描线。掩膜层不再随鼠标移动整帧重建
+  // （此前每次 mousemove 都全量 putImageData，大图严重卡顿）。
+  const canvas = previewCanvasRef.value
   if (!canvas || !props.maskData) return
 
   const ctx = canvas.getContext('2d')
   if (!ctx) return
 
-  // Redraw mask overlay first
-  renderMaskOverlay(ctx, canvas.width, canvas.height)
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
 
   // Draw preview shape
   const ds = drawState.value
   if (!ds.active) return
 
   ctx.save()
-  ctx.strokeStyle = '#3B82F6'
+  // Pure white outline: the preview (dashed rectangle/disk/ellipse/polygon)
+  // must stay readable on BOTH bright and dark image content — the previous
+  // blue was invisible on bluish detector frames. Every shape in this switch
+  // shares this one stroke style.
+  // 纯白勾勒：绘制预览（矩形/圆/椭圆/多边形虚线）必须在亮暗两种图像内容上
+  // 都可读——原先的蓝色在偏蓝的探测器图像上看不清。下方各形状共用这一笔刷。
+  ctx.strokeStyle = '#FFFFFF'
   ctx.lineWidth = 2 / zoom.value
   ctx.setLineDash([6 / zoom.value, 4 / zoom.value])
 
@@ -432,11 +481,13 @@ function renderPreview(): void {
 }
 
 function clearPreview(): void {
-  const canvas = overlayCanvasRef.value
+  // Preview layer only — the mask layer beneath keeps its last full render.
+  // 仅清预览层——下方掩膜层保持上次整帧渲染结果。
+  const canvas = previewCanvasRef.value
   if (!canvas) return
   const ctx = canvas.getContext('2d')
   if (!ctx) return
-  renderMaskOverlay(ctx, canvas.width, canvas.height)
+  ctx.clearRect(0, 0, canvas.width, canvas.height)
 }
 
 // ── Mask overlay rendering ────────────────────────────────────────────────────
@@ -451,14 +502,37 @@ function renderMaskOverlay(ctx: CanvasRenderingContext2D, w: number, h: number):
   const imageData = ctx.createImageData(w, h)
   const pixels = imageData.data
 
+  // Three-tier display style shared with the calibration render bar (see
+  // src/lib/maskDisplay.ts). Alpha is the 0–255 quantization of the tier's
+  // opacity: red 0.28→71, white opaque→255, violet 0.05→13. The old constant
+  // was white at A=140 — 'red' being the default tier now intentionally
+  // unifies the pixel-level mask with the calibration coarse grid.
+  // 与标定渲染条共用的三档显示风格（见 src/lib/maskDisplay.ts）。alpha 为各档
+  // 不透明度的 0–255 量化：红 0.28→71、白不透明→255、紫 0.05→13。旧实现是
+  // A=140 的白色——默认档改红后，像素级掩膜与标定粗网格有意统一。
+  let mr: number, mg: number, mb: number, ma: number
+  switch (props.maskStyle) {
+    case 'white':
+      mr = 255; mg = 255; mb = 255; ma = 255
+      break
+    case 'violet':
+      mr = 76; mg = 29; mb = 149; ma = 13
+      break
+    case 'red':
+    default:
+      mr = 248; mg = 113; mb = 113; ma = 71
+      break
+  }
+
   for (let i = 0; i < props.maskData.length; i++) {
     const idx = i * 4
     if (props.maskData[i] !== 0) {
-      // Masked pixel: semi-transparent white overlay
-      pixels[idx] = 255     // R
-      pixels[idx + 1] = 255 // G
-      pixels[idx + 2] = 255 // B
-      pixels[idx + 3] = 140 // A
+      // Masked pixel: overlay tinted by the selected display tier
+      // 掩膜像素：按所选显示档着色
+      pixels[idx] = mr      // R
+      pixels[idx + 1] = mg  // G
+      pixels[idx + 2] = mb  // B
+      pixels[idx + 3] = ma  // A
     } else {
       // Unmasked: fully transparent
       pixels[idx + 3] = 0
@@ -472,6 +546,21 @@ function renderMaskOverlay(ctx: CanvasRenderingContext2D, w: number, h: number):
 
 watch(
   () => props.maskVersion,
+  () => {
+    const canvas = overlayCanvasRef.value
+    if (!canvas) return
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    renderMaskOverlay(ctx, canvas.width, canvas.height)
+  }
+)
+
+// Redraw when the shared display style changes (switched from either view —
+// the preference is a module-level ref, see src/lib/maskDisplay.ts).
+// 显示风格变化时重绘（可从任一视图切换——偏好为模块级 ref，见
+// src/lib/maskDisplay.ts）。
+watch(
+  () => props.maskStyle,
   () => {
     const canvas = overlayCanvasRef.value
     if (!canvas) return
@@ -505,7 +594,17 @@ watch(
     panX.value = 0
     panY.value = 0
     drawing.value = false
-    nextTick(() => zoomFit())
+    nextTick(() => {
+      zoomFit()
+      // The v-if canvases are re-created on image change — repaint the mask
+      // layer once (the view bumps maskVersion when it supplies maskData)
+      // and start the preview layer clean.
+      // 换图时 v-if 画布会重建——掩膜层补画一次，预览层清空起步。
+      const canvas = overlayCanvasRef.value
+      const ctx = canvas?.getContext('2d')
+      if (canvas && ctx) renderMaskOverlay(ctx, canvas.width, canvas.height)
+      clearPreview()
+    })
   }
 )
 </script>

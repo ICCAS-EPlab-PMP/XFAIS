@@ -37,6 +37,7 @@
         :mask-version="maskVersion"
         :active-tool="activeTool"
         :mask-mode="maskMode"
+        :mask-style="maskStyle"
         :placeholder="t('maskMaker.empty')"
         @shape-drawn="handleShapeDrawn"
       />
@@ -52,12 +53,14 @@
         :clim-mode="climMode"
         :clim-min="climMin"
         :clim-max="climMax"
+        :mask-style="maskStyle"
         @apply-threshold="handleApplyThreshold"
         @update:colormap="onDisplayChange('colormap', $event)"
       @update:use-log="onDisplayChange('useLog', $event)"
       @update:clim-mode="onDisplayChange('climMode', $event)"
       @update:clim-min="onDisplayChange('climMin', $event)"
       @update:clim-max="onDisplayChange('climMax', $event)"
+      @update:mask-style="onMaskStyleChange"
     />
 
     <!-- Export dialog -->
@@ -76,6 +79,7 @@ import { useTransport } from '@/lib/transport'
 import { useToast } from '@/lib/toast'
 import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 import { matchesExtensions, useDropZone } from '@/lib/fileDrop'
+import { MASK_DISPLAY_STYLES, getMaskDisplayStyle, setMaskDisplayStyle, type MaskDisplayStyle } from '@/lib/maskDisplay'
 import { MaskStore } from '@/lib/mask/mask-store'
 import type {
   MaskTool,
@@ -176,6 +180,27 @@ function onDisplayChange(field: DisplayField, value: number | boolean | string):
   }
   if (imageFilePath.value) {
     void loadImage(imageFilePath.value)
+  }
+}
+
+// ── Mask display style / 掩膜显示风格 ─────────────────────────────────────────
+
+// Shared three-tier preference: the computed reads the module-level ref in
+// src/lib/maskDisplay.ts, so a switch made in the calibration render bar
+// updates this panel and the canvas instantly (and vice versa).
+// 三档共享偏好：computed 读 src/lib/maskDisplay.ts 的模块级 ref，在标定渲染条
+// 里切换会即时更新本面板与画布（反之亦然）。
+const maskStyle = computed(() => getMaskDisplayStyle())
+
+// The <select> itself lives in MaskProperties (the colormap display group),
+// which owns the per-tier i18n key map — this view only relays the change.
+// 下拉框本身位于 MaskProperties（色图显示组，各档 i18n 键映射也在那里），
+// 本视图只负责中转变更。
+function onMaskStyleChange(value: string): void {
+  // The select only offers valid tiers; this guard is belt-and-braces against
+  // programmatic dispatch. / 下拉只含合法档位；此守卫防程序化派发越界。
+  if ((MASK_DISPLAY_STYLES as string[]).includes(value)) {
+    setMaskDisplayStyle(value as MaskDisplayStyle)
   }
 }
 

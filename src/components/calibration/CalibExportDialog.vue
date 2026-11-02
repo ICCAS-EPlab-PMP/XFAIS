@@ -4,8 +4,8 @@
       <h3 class="ced-title">{{ t('calibration.export.title') }}</h3>
 
       <div class="ced-body">
-        <!-- Save path / 保存路径 -->
-        <div class="ced-group">
+        <!-- Save path (desktop only; web downloads instead) / 保存路径（仅桌面；web 改为下载） -->
+        <div v-if="transport.isDesktop()" class="ced-group">
           <label class="ced-label">{{ t('calibration.export.pathLabel') }}</label>
           <div class="ced-path-row">
             <input
@@ -29,15 +29,16 @@
         <button
           type="button"
           class="ced-btn ced-btn--primary"
-          :disabled="!savePath.trim() || saving"
+          :disabled="saving || (transport.isDesktop() && !savePath.trim())"
           @click="doSave"
         >
-          {{ t('calibration.export.savePoni') }}
+          {{ transport.isDesktop() ? t('calibration.export.savePoni') : t('calibration.export.downloadPoni') }}
         </button>
 
         <!-- Saved path / 已保存路径 -->
         <p v-if="result?.path" class="ced-saved">
-          {{ t('calibration.export.saved') }}: <code>{{ result.path }}</code>
+          {{ transport.isDesktop() ? t('calibration.export.saved') : t('calibration.export.downloaded') }}:
+          <code>{{ transport.isDesktop() ? result.path : baseName(result.path) }}</code>
         </p>
 
         <!-- Citation panel / 引用面板 -->
@@ -76,9 +77,9 @@
 <script setup lang="ts">
 /**
  * CalibExportDialog.vue — 标定向导第 4 步：导出 .poni + 引用面板
- * Calibration wizard step 4: save the .poni (desktop save dialog / web path
- * input), then show the citation panel (calib2 + pyFAI papers, MIT note)
- * with DOI link buttons and a shortcut into 1-D integration.
+ * Calibration wizard step 4: save the .poni (desktop save dialog / web
+ * browser download), then show the citation panel (calib2 + pyFAI papers, MIT
+ * note) with DOI link buttons and a shortcut into 1-D integration.
  */
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -112,7 +113,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
-  save: [path: string]
+  save: [path: string | null]
   /**
    * 去积分: routed through the PARENT (CalibrationView.goIntegrate) so the
    * dialog footer shares the step-4 auto-export-to-temp + poni-query flow.
@@ -125,6 +126,12 @@ const { t } = useI18n()
 const transport = useTransport()
 
 const savePath = ref('')
+
+/** Basename for the web "downloaded" echo. / web 已下载回显用的文件名。 */
+function baseName(filePath: string): string {
+  const parts = filePath.split(/[\\/]/)
+  return parts[parts.length - 1] || filePath
+}
 
 // Fallback DOI links, used when the backend citation omits them.
 // 后端引用信息缺失时的兜底 DOI 链接。
@@ -146,9 +153,9 @@ async function browseSavePath(): Promise<void> {
 }
 
 function doSave(): void {
-  const path = savePath.value.trim()
-  if (!path) return
-  emit('save', path)
+  // Web mode: no server path to type — the parent autoSaves + downloads.
+  // Web 模式：无需输入服务器路径——由父组件 autoSave 并触发下载。
+  emit('save', transport.isDesktop() ? savePath.value.trim() : null)
 }
 
 function openDoi(which: 'calib2' | 'pyfai'): void {

@@ -46,6 +46,8 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   manual_calibrant_generate: '/api/manual_calibrant_generate',
   list_space_groups: '/api/list_space_groups',
   bg_subtract: '/api/bg_subtract',
+  // v0.3.5: direct-beam transmission measurement / 直通光透过率测量
+  transmission: '/api/transmission',
   image_math: '/api/image_math',
   poni_importer: '/api/poni_importer',
   image_stitch: '/api/image_stitch',

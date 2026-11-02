@@ -20,6 +20,19 @@
           >
             {{ availableUpdate ? t('home.actions.downloadUpdate') : t('home.actions.checkUpdate') }}
           </button>
+          <!-- AI 辅助版通道（普通版也展示，2026-10-26 用户需求：普通版用户可
+               一键检查/下载 AI 版）：有 AI 新版 → 红色「下载AI辅助版」；无 →
+               「检查AI辅助版」。读 OSS latest-ai.json，下载指向 AI 安装包。
+               AI-assisted channel, shown in the NORMAL build too: one-click
+               hop to the AI build via OSS latest-ai.json. -->
+          <button
+            :class="availableAiUpdate ? 'hero-action update-available' : 'hero-action secondary'"
+            type="button"
+            data-ai-id="home:ai-update"
+            @click="availableAiUpdate ? downloadAiUpdate() : checkAiUpdate()"
+          >
+            {{ availableAiUpdate ? t('home.actions.downloadAiUpdate') : t('home.actions.checkAiUpdate') }}
+          </button>
           <button
             class="hero-action secondary"
             type="button"
@@ -204,6 +217,7 @@
       <p>
         {{ t('home.acknowledgments.thanks') }}
         <a href="https://zcode.z.ai/" target="_blank" rel="noopener">Z-code</a>、
+        <a href="https://github.com/deepseek-ai/deepseek-harness" target="_blank" rel="noopener">DeepSeek Harness</a>、
         <a href="https://github.com/anomalyco/opencode" target="_blank" rel="noopener">opencode</a>、
         <a href="https://github.com/code-yeongyu/oh-my-openagent" target="_blank" rel="noopener">oh-my-openagent</a>、
         <a href="https://github.com/esengine/DeepSeek-Reasonix" target="_blank" rel="noopener">Reasonix</a>
@@ -238,6 +252,7 @@ import { useToast } from '@/lib/toast'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
 import {
+  fetchLatestAiRelease,
   fetchLatestRelease,
   isNewerVersion,
   primaryDownloadUrl,
@@ -348,6 +363,11 @@ const bgSubtractCards: FeatureCard[] = [
     icon: '⊖'
   },
   {
+    key: 'transmission',
+    route: '/workspace/transmission',
+    icon: '⤓'
+  },
+  {
     key: 'imageMath',
     route: '/workspace/image-math',
     icon: '⊕'
@@ -393,11 +413,15 @@ const showLogDirectory = async (): Promise<void> => {
 
 // 有新版本时「检测更新」按钮变红为「下载更新」 / red "Download Update" state when a newer release exists
 const availableUpdate = ref<LatestReleaseInfo | null>(null)
+// AI 辅助版通道状态（普通版同样展示，见模板注释）
+// AI-assisted channel state (also surfaced in the normal build).
+const availableAiUpdate = ref<LatestReleaseInfo | null>(null)
 
 onMounted(() => {
   // 每次打开应用静默检查更新：失败不打扰；发现新版则按钮变红并提醒
   window.setTimeout(() => {
     void autoCheckUpdate()
+    void autoCheckAiUpdate()
   }, 2500)
 })
 
@@ -417,9 +441,63 @@ async function autoCheckUpdate(): Promise<void> {
   }
 }
 
+async function autoCheckAiUpdate(): Promise<void> {
+  try {
+    const [meta, info] = await Promise.all([transport.getAppMeta(), fetchLatestAiRelease()])
+    if (info && isNewerVersion(info.version, meta.appVersion)) {
+      availableAiUpdate.value = info
+      toast.push({
+        title: t('home.actions.downloadAiUpdate'),
+        message: t('home.update.autoFound', { latest: info.version }),
+        tone: 'success'
+      })
+    }
+  } catch {
+    // AI 通道失败静默
+  }
+}
+
 function downloadUpdate(): void {
   const url = availableUpdate.value ? primaryDownloadUrl(availableUpdate.value) : ''
   if (url) window.open(url, '_blank', 'noopener')
+}
+
+function downloadAiUpdate(): void {
+  const url = availableAiUpdate.value ? primaryDownloadUrl(availableAiUpdate.value) : ''
+  if (url) window.open(url, '_blank', 'noopener')
+}
+
+async function checkAiUpdate(): Promise<void> {
+  toast.push({
+    title: t('home.actions.checkAiUpdate'),
+    message: t('home.update.checking'),
+    tone: 'info',
+  })
+  try {
+    const [meta, info] = await Promise.all([transport.getAppMeta(), fetchLatestAiRelease()])
+    if (info && isNewerVersion(info.version, meta.appVersion)) {
+      availableAiUpdate.value = info
+      const downloadUrl = primaryDownloadUrl(info)
+      await copyToClipboard(downloadUrl)
+      toast.push({
+        title: t('home.update.newVersionTitle'),
+        message: `${t('home.update.newVersion', { current: meta.appVersion, latest: info.version })}\n${downloadUrl}\n${t('home.update.linkCopied')}`,
+        tone: 'success',
+      })
+    } else {
+      toast.push({
+        title: t('home.actions.checkAiUpdate'),
+        message: t('home.update.upToDate', { version: meta.appVersion }),
+        tone: 'info',
+      })
+    }
+  } catch (err) {
+    toast.push({
+      title: t('home.actions.checkAiUpdate'),
+      message: t('home.update.failed', { error: err instanceof Error ? err.message : String(err) }),
+      tone: 'error',
+    })
+  }
 }
 
 async function copyToClipboard(text: string): Promise<void> {

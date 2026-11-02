@@ -166,7 +166,10 @@ def parse_ionchamber_file(path: str) -> Optional[pd.DataFrame]:
         or None on failure.
     """
     content: Optional[str] = None
-    for encoding in ("utf-8", "gbk", "latin-1"):
+    # utf-8-sig first: a BOM (common in Windows-created files) would otherwise
+    # hide the leading '#' and make the whole file unparsable.
+    # 优先 utf-8-sig：Windows 生成的 BOM 会遮住行首 '#'，导致整份文件解析失败。
+    for encoding in ("utf-8-sig", "utf-8", "gbk", "latin-1"):
         try:
             with open(path, "r", encoding=encoding) as handle:
                 content = handle.read()
@@ -398,10 +401,19 @@ def _match_single(
         if ion_base == data_base and ion_state == data_state
     ]
     if data_state is not None and same_base_state:
-        chosen = min(
-            same_base_state,
-            key=lambda item: item[2] if item[2] is not None else float("inf"),
-        )
+        # Prefer the ion file whose number is CLOSEST to the data file's own
+        # number — the lowest number is simply the oldest scan and pairs the
+        # wrong background with the wrong image (silently wrong transmission).
+        # 选编号与数据文件「最接近」的电离室文件——取最小编号等于配到最早的
+        # 扫描，背景与图像张冠李戴（透射率静默出错）。
+        numbered = [item for item in same_base_state if item[2] is not None]
+        if data_number is not None and numbered:
+            chosen = min(numbered, key=lambda item: abs(item[2] - data_number))
+        else:
+            chosen = min(
+                same_base_state,
+                key=lambda item: item[2] if item[2] is not None else float("inf"),
+            )
         score = 1.0 if len(same_base_state) == 1 else 0.95
         return chosen[0], "base_state", score, _state_similarity(
             data_state, chosen[1]
