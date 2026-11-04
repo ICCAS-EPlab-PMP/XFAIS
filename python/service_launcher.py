@@ -72,6 +72,7 @@ API_ROUTES: list[str] = [
     "/api/manual_calibrant_generate",
     "/api/list_space_groups",
     "/api/bg_subtract",
+    "/api/transmission",
     "/api/poni_importer",
     "/api/image_math",
     "/api/image_stitch",
@@ -154,6 +155,7 @@ ImageRenderer = _LazyImportProxy("python.services.image_renderer", "ImageRendere
 fabio = _LazyImportProxy("fabio")
 Cell = _LazyImportProxy("pyFAI.crystallography.cell", "Cell")
 BgSubtractor = _LazyImportProxy("python.services.bg_subtractor")
+Transmission = _LazyImportProxy("python.services.transmission")
 PoniImporter = _LazyImportProxy("python.services.poni_importer")
 ImageMath = _LazyImportProxy("python.services.image_math")
 ImageStitch = _LazyImportProxy("python.services.image_stitch")
@@ -4446,11 +4448,19 @@ async def _handle_bg_ionchamber_match(
     if not ionchamber_files:
         ionchamber_folder = payload.get("ionchamber_folder", "")
         if ionchamber_folder and os.path.isdir(ionchamber_folder):
-            # Only include ionchamber-specific files, exclude image files
-            # 只包含电离室文件，排除图像文件
+            # Prefer real ionchamber files (known extensions); fall back to
+            # "everything but images" only when none matched, so folders that
+            # also hold reports/CSV results never become transmission donors.
+            # 优先按电离室扩展名收集；一个都没匹配到才回退到"非图像即候选"，
+            # 避免同目录的报告/结果文件混进透射率来源。
             _ion_exts = {".ionchamber", ".txt", ".log", ".csv"}
             _image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5", ".png", ".jpg", ".jpeg"}
             ionchamber_files = [
+                os.path.join(ionchamber_folder, fn)
+                for fn in sorted(os.listdir(ionchamber_folder))
+                if os.path.isfile(os.path.join(ionchamber_folder, fn))
+                and os.path.splitext(fn)[1].lower() in _ion_exts
+            ] or [
                 os.path.join(ionchamber_folder, fn)
                 for fn in sorted(os.listdir(ionchamber_folder))
                 if os.path.isfile(os.path.join(ionchamber_folder, fn))
@@ -4461,6 +4471,26 @@ async def _handle_bg_ionchamber_match(
         return {"status": "error", "message": "Missing data_files"}
     if not ionchamber_files:
         return {"status": "error", "message": "Missing ionchamber_files"}
+
+    # A background ionchamber file is mandatory here: without it no
+    # transmission can be computed. The old code silently returned a table
+    # with an empty transmission column, which users read as "the feature
+    # did nothing". Fail loudly with an actionable message instead.
+    # 背景电离室文件是本动作的必需项：没有它算不出任何透射率。旧实现静默返回
+    # 一整列“—”的匹配表，用户会以为功能失效。现在直接明确报错。
+    if not bg_ionchamber_path:
+        return {
+            "status": "error",
+            "message": (
+                "Missing bg_ionchamber_path: select a background ionchamber file "
+                "to compute transmission. / 缺少背景电离室文件，无法计算透射率。"
+            ),
+        }
+    if not os.path.isfile(bg_ionchamber_path):
+        return {
+            "status": "error",
+            "message": f"Background ionchamber file not found: {bg_ionchamber_path}",
+        }
 
     # Match ionchamber files to data files / 匹配电离室文件到数据文件
     matches = await _run_blocking(
@@ -4476,19 +4506,36 @@ async def _handle_bg_ionchamber_match(
     _regex_compiled = _re.compile(regex_pattern) if regex_pattern else None
 
     # Load background ionchamber data / 加载背景电离室数据
-    bg_ion_df = None
-    if bg_ionchamber_path and os.path.isfile(bg_ionchamber_path):
-        try:
-            bg_ion_df = await _run_blocking(
-                BgSubtractor.parse_ionchamber_file, bg_ionchamber_path,
-            )
-            await send_progress(0.5, f"Loaded background ionchamber: {os.path.basename(bg_ionchamber_path)}")
-        except Exception as exc:
-            print(f"[bg_subtract] Failed to load background ionchamber: {exc}", flush=True)
+    await send_progress(0.5, f"Loading background ionchamber: {os.path.basename(bg_ionchamber_path)}")
+    try:
+        bg_ion_df = await _run_blocking(
+            BgSubtractor.parse_ionchamber_file, bg_ionchamber_path,
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": (
+                f"Failed to read background ionchamber file "
+                f"{os.path.basename(bg_ionchamber_path)}: {exc}"
+            ),
+        }
+    if bg_ion_df is None:
+        return {
+            "status": "error",
+            "message": (
+                f"Failed to parse background ionchamber file "
+                f"{os.path.basename(bg_ionchamber_path)}: no valid data rows found. "
+                f"Expected 'Y-M-D H:M:S  Ionchamber0  Ionchamber1  Ionchamber2'. "
+                f"/ 背景电离室文件解析失败，请检查文件格式。"
+            ),
+        }
 
     # Compute transmission for each match / 计算每个匹配的透射率
     await send_progress(0.6, "Computing transmissions...")
     results = []
+    computed_count = 0
+    unmatched_count = 0
+    failed_count = 0
     for i, match in enumerate(matches):
         if cancel_event.is_set():
             return {"status": "cancelled", "message": "Cancelled by user"}
@@ -4512,25 +4559,34 @@ async def _handle_bg_ionchamber_match(
         }
 
         ion_path = match.get("matched_ion")
-        if ion_path and bg_ion_df is not None:
+        if not ion_path:
+            entry["transmission_computed"] = False
+            entry["note"] = "No ionchamber file matched"
+            unmatched_count += 1
+        else:
             try:
                 sample_ion_df = await _run_blocking(
                     BgSubtractor.parse_ionchamber_file, ion_path,
                 )
-                if sample_ion_df is not None:
+                if sample_ion_df is None:
+                    entry["error"] = (
+                        f"Failed to parse ionchamber file: "
+                        f"{os.path.basename(str(ion_path))}"
+                    )
+                    entry["transmission_computed"] = False
+                    failed_count += 1
+                else:
                     transmission = await _run_blocking(
                         BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
                         ionchamber_channel, ionchamber_method,
                     )
                     entry["transmission"] = float(transmission)
                     entry["transmission_computed"] = True
+                    computed_count += 1
             except Exception as exc:
                 entry["error"] = str(exc)
                 entry["transmission_computed"] = False
-        else:
-            entry["transmission_computed"] = False
-            if bg_ion_df is None:
-                entry["note"] = "No background ionchamber provided"
+                failed_count += 1
 
         results.append(entry)
 
@@ -4542,8 +4598,119 @@ async def _handle_bg_ionchamber_match(
         "status": "ok",
         "matches": results,
         "count": len(results),
-        "bg_ionchamber_loaded": bg_ion_df is not None,
+        "computed_count": computed_count,
+        "unmatched_count": unmatched_count,
+        "failed_count": failed_count,
+        "bg_ionchamber_loaded": True,
     }
+
+
+def _merge_payload_transmissions(files: list[str], payload_map: Any) -> dict[str, float]:
+    """Merge imported per-file transmissions onto the batch file list.
+
+    The transmission-file import (2026-10-25) finally gives the existing
+    frontend per-file transmission channel a backend consumer: the renderer
+    sends ``payload["transmissions"] = {<path or basename>: <T>}`` and this
+    helper resolves each key onto an actual file. A full-path hit wins;
+    otherwise the key's normcase'd basename must match exactly one file
+    (ambiguous basenames are skipped so a wrong file never inherits a
+    transmission). Non-numeric, non-finite, and ≤ 0 values are dropped — a
+    transmission of 0 would divide by zero in ``subtract_with_reference``.
+
+    透过率文件导入（2026-10-25）终于让既有前端的逐文件透过率通路有了后端
+    消费者：渲染层发送 ``payload["transmissions"] = {<路径或 basename>: <T>}``，
+    本函数把每个键解析到真实文件。完整路径命中优先；否则按键的 normcase
+    basename 要求在当前文件列表中唯一命中（重名跳过，避免张冠李戴）。
+    非数值、非有限、≤0 的值一律丢弃——T=0 会让 subtract_with_reference
+    除零。
+    """
+    merged: dict[str, float] = {}
+    if not isinstance(payload_map, dict) or not files:
+        return merged
+
+    basename_counts: dict[str, int] = {}
+    basename_first: dict[str, str] = {}
+    for fpath in files:
+        key = os.path.normcase(os.path.basename(str(fpath)))
+        basename_counts[key] = basename_counts.get(key, 0) + 1
+        basename_first.setdefault(key, str(fpath))
+
+    exact = {str(fpath) for fpath in files}
+    for raw_key, raw_value in payload_map.items():
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(value) or value <= 0.0:
+            continue
+        key_str = str(raw_key)
+        if key_str in exact:
+            merged[key_str] = value
+            continue
+        base_key = os.path.normcase(os.path.basename(key_str))
+        if basename_counts.get(base_key, 0) == 1:
+            merged[basename_first[base_key]] = value
+    return merged
+
+
+async def _handle_bg_transmission_file_match(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Match an imported transmission file (CSV/JSON) to data files.
+
+    Accepts ``data_files`` or a ``sample_folder`` to scan (same image
+    extensions as the ionchamber matcher). Parsing + matching live in
+    services/transmission.py so this handler is a thin, validating wrapper.
+    把导入的透过率文件（CSV/JSON）匹配到数据文件。接受 ``data_files`` 或
+    待扫描的 ``sample_folder``（图像扩展名与电离室匹配一致）。解析与匹配在
+    services/transmission.py 中，本处理函数只做校验与转发。
+    """
+    await send_progress(0.0, "Reading transmission file...")
+    data_files = payload.get("data_files", [])
+    if not data_files:
+        sample_folder = payload.get("sample_folder", "")
+        if sample_folder and os.path.isdir(sample_folder):
+            image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5"}
+            data_files = [
+                os.path.join(sample_folder, fn)
+                for fn in sorted(os.listdir(sample_folder))
+                if os.path.isfile(os.path.join(sample_folder, fn))
+                and os.path.splitext(fn)[1].lower() in image_exts
+            ]
+
+    if not data_files:
+        return {"status": "error", "message": "Missing data_files"}
+
+    transmission_file = payload.get("transmission_file", "")
+    if not transmission_file:
+        return {"status": "error", "message": "Missing transmission_file"}
+    if not os.path.isfile(transmission_file):
+        return {
+            "status": "error",
+            "message": f"Transmission file not found: {transmission_file}",
+        }
+
+    file_list = [str(f) for f in data_files if f]
+    try:
+        entries = await _run_blocking(
+            Transmission.parse_transmission_file, transmission_file,
+        )
+        matches = await _run_blocking(
+            Transmission.match_transmission_entries, file_list, entries,
+        )
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": f"Failed to read transmission file: {exc}",
+        }
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    await send_progress(1.0, "Complete")
+    return {"status": "ok", "matches": matches, "count": len(matches)}
 
 
 async def _handle_bg_subtract_batch(
@@ -4614,47 +4781,146 @@ async def _handle_bg_subtract_batch(
 
     # Auto-match ionchamber files if folder provided / 如提供文件夹则自动匹配电离室文件
     transmissions: dict[str, float] = {}
-    if ionchamber_folder and os.path.isdir(ionchamber_folder):
+    # Transmission-file import (2026-10-25): the renderer's per-file
+    # transmissions (from an imported transmission.csv/json) are merged FIRST,
+    # so the ionchamber block below can override them with freshly computed
+    # values. Keys are full paths or basenames; see
+    # ``_merge_payload_transmissions`` for the resolution rules.
+    # 透过率文件导入（2026-10-25）：渲染层的逐文件透过率（来自导入的
+    # transmission.csv/json）先合并，下方电离室块计算出的值再覆盖它。键可为
+    # 完整路径或 basename，解析规则见 ``_merge_payload_transmissions``。
+    transmissions.update(
+        _merge_payload_transmissions(files, payload.get("transmissions"))
+    )
+    if ionchamber_folder:
+        # Ionchamber mode was explicitly requested: every file must end up with
+        # a computed transmission. Previously a missing/unparsable background
+        # ionchamber file (or a per-file parse failure) was printed to stdout
+        # and the run silently continued with T = 1.0, producing wrong results
+        # that looked successful. Every failure below is now an explicit error.
+        # 用户显式选择了电离室模式：每个文件都必须有由电离室算出的透射率。旧实现
+        # 在缺背景电离室/解析失败/逐文件失败时只打印日志，然后用 T=1.0 静默继续，
+        # 产出“看起来成功”的错误结果。现在每种失败都明确报错。
+        if not os.path.isdir(ionchamber_folder):
+            return {
+                "status": "error",
+                "message": f"Ionchamber folder not found: {ionchamber_folder}",
+            }
         await send_progress(0.1, "Matching ionchamber files...")
+        # Same whitelist-first rule as _handle_bg_ionchamber_match: known
+        # ionchamber extensions win; non-image fallback only when none match.
+        # 与 _handle_bg_ionchamber_match 一致的白名单优先规则：已知电离室
+        # 扩展名优先；一个都没匹配到才回退到非图像候选。
+        _ion_exts = {".ionchamber", ".txt", ".log", ".csv"}
         _image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5", ".png", ".jpg", ".jpeg"}
         ion_files = [
             os.path.join(ionchamber_folder, fn)
             for fn in sorted(os.listdir(ionchamber_folder))
             if os.path.isfile(os.path.join(ionchamber_folder, fn))
+            and os.path.splitext(fn)[1].lower() in _ion_exts
+        ] or [
+            os.path.join(ionchamber_folder, fn)
+            for fn in sorted(os.listdir(ionchamber_folder))
+            if os.path.isfile(os.path.join(ionchamber_folder, fn))
             and os.path.splitext(fn)[1].lower() not in _image_exts
         ]
-        if ion_files:
-            matches = await _run_blocking(
-                BgSubtractor.match_ionchamber, files, ion_files,
+        if not ion_files:
+            return {
+                "status": "error",
+                "message": f"No ionchamber files found in folder: {ionchamber_folder}",
+            }
+        if not bg_ionchamber_path:
+            return {
+                "status": "error",
+                "message": (
+                    "Missing bg_ionchamber_path: ionchamber transmission cannot "
+                    "be computed without a background ionchamber file. "
+                    "/ 缺少背景电离室文件，无法按电离室计算透射率。"
+                ),
+            }
+        if not os.path.isfile(bg_ionchamber_path):
+            return {
+                "status": "error",
+                "message": f"Background ionchamber file not found: {bg_ionchamber_path}",
+            }
+
+        # Load background ionchamber once / 一次性加载背景电离室数据
+        try:
+            bg_ion_df = await _run_blocking(
+                BgSubtractor.parse_ionchamber_file, bg_ionchamber_path,
             )
+        except Exception as exc:
+            return {
+                "status": "error",
+                "message": (
+                    f"Failed to read background ionchamber file "
+                    f"{os.path.basename(bg_ionchamber_path)}: {exc}"
+                ),
+            }
+        if bg_ion_df is None:
+            return {
+                "status": "error",
+                "message": (
+                    f"Failed to parse background ionchamber file "
+                    f"{os.path.basename(bg_ionchamber_path)}: no valid data rows found. "
+                    f"/ 背景电离室文件解析失败，请检查文件格式。"
+                ),
+            }
 
-            # Load background ionchamber once / 一次性加载背景电离室数据
-            bg_ion_df = None
-            if bg_ionchamber_path and os.path.isfile(bg_ionchamber_path):
-                try:
-                    bg_ion_df = await _run_blocking(
-                        BgSubtractor.parse_ionchamber_file, bg_ionchamber_path,
-                    )
-                except Exception as exc:
-                    print(f"[bg_subtract] batch: failed to load bg ionchamber: {exc}", flush=True)
-
-            for match in matches:
-                data_f = match.get("data_file", "")
-                # match_ionchamber() returns "matched_ion" (not "ionchamber_file")
-                ion_path = match.get("matched_ion")
-                if ion_path and bg_ion_df is not None:
-                    try:
-                        sample_ion_df = await _run_blocking(
-                            BgSubtractor.parse_ionchamber_file, ion_path,
+        matches = await _run_blocking(
+            BgSubtractor.match_ionchamber, files, ion_files,
+        )
+        transmission_errors: list[tuple[str, str]] = []
+        for match in matches:
+            data_f = match.get("data_file", "")
+            # match_ionchamber() returns "matched_ion" (not "ionchamber_file")
+            ion_path = match.get("matched_ion")
+            if not ion_path:
+                if data_f not in transmissions:
+                    transmission_errors.append((data_f, "no ionchamber file matched"))
+                continue
+            try:
+                sample_ion_df = await _run_blocking(
+                    BgSubtractor.parse_ionchamber_file, ion_path,
+                )
+                if sample_ion_df is None:
+                    if data_f not in transmissions:
+                        transmission_errors.append(
+                            (data_f,
+                             f"cannot parse {os.path.basename(str(ion_path))}")
                         )
-                        if sample_ion_df is not None:
-                            t = await _run_blocking(
-                                BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
-                                ionchamber_channel, ionchamber_method,
-                            )
-                            transmissions[data_f] = float(t)
-                    except Exception as exc:
-                        print(f"[bg_subtract] batch: ionchamber match failed for {data_f}: {exc}", flush=True)
+                    continue
+                t = await _run_blocking(
+                    BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
+                    ionchamber_channel, ionchamber_method,
+                )
+                transmissions[data_f] = float(t)
+            except Exception as exc:
+                if data_f not in transmissions:
+                    transmission_errors.append((data_f, str(exc)))
+
+        if transmission_errors:
+            preview = "; ".join(
+                f"{os.path.basename(path) or path}: {reason}"
+                for path, reason in transmission_errors[:5]
+            )
+            extra = (
+                f" (+{len(transmission_errors) - 5} more)"
+                if len(transmission_errors) > 5 else ""
+            )
+            return {
+                "status": "error",
+                "message": (
+                    f"Ionchamber transmission could not be computed for "
+                    f"{len(transmission_errors)} file(s): {preview}{extra}. "
+                    f"Aborted instead of silently falling back to T=1. "
+                    f"/ 电离室透射率未能对全部文件计算，已中止，避免静默按 T=1 扣除。"
+                ),
+                "transmission_errors": [
+                    {"data_file": path, "error": reason}
+                    for path, reason in transmission_errors
+                ],
+            }
 
     if cancel_event.is_set():
         return {"status": "cancelled", "message": "Cancelled by user"}
@@ -4783,6 +5049,344 @@ async def _handle_bg_subtract_scan_folder(
     return {"status": "ok", "files": files, "count": len(files)}
 
 
+# ---------------------------------------------------------------------------
+# Direct-beam transmission measurement (2026-10-25)
+# 直通光透过率测量（2026-10-25）
+# ---------------------------------------------------------------------------
+
+
+async def _handle_transmission_preview(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Render one image for the transmission region picker. 透过率取区预览。
+
+    The renderer overlays the rect / polygon on this PNG (client-side, same
+    canvas contract as the mask editor), so the payload mirrors
+    ``_handle_bg_subtract_preview`` and returns the identical response shape
+    including ``__binary_png__``.
+    渲染层在同一 PNG 上叠加方形框/多折框（客户端，与掩膜编辑器同一画布约定），
+    因此载荷与 ``_handle_bg_subtract_preview`` 一致，返回形状（含
+    ``__binary_png__``）也完全相同。
+    """
+    # Accept multiple param names for compatibility / 兼容多种参数名
+    file_path = payload.get("file_path") or payload.get("path") or ""
+    if not file_path:
+        return {"status": "error", "message": "Missing file_path"}
+
+    if not os.path.isfile(file_path):
+        return {"status": "error", "message": f"File not found: {file_path}"}
+
+    await send_progress(0.2, "Loading image...")
+    load_result = await _run_blocking(ImageLoader.load, file_path)
+    if isinstance(load_result, tuple):
+        data = load_result[0]
+    elif isinstance(load_result, dict):
+        data = load_result.get("data")
+    else:
+        data = load_result
+    if data is None:
+        return {"status": "error", "message": f"Failed to load image: {file_path}"}
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    await send_progress(0.6, "Rendering preview...")
+    stats = ImageRenderer.compute_stats(data)
+    auto_clim = (stats.get("autoMin", 0.0), stats.get("autoMax", 1.0))
+
+    cmap = payload.get("cmap", "viridis") or "viridis"
+    use_log = bool(payload.get("use_log", False))
+    clim_min = payload.get("clim_min")
+    clim_max = payload.get("clim_max")
+    if clim_min is not None and clim_max is not None:
+        clim = (float(clim_min), float(clim_max))
+    else:
+        clim = auto_clim
+
+    render_settings = {
+        "cmap": cmap,
+        "use_log": use_log,
+        "clim": clim,
+    }
+    png_bytes = await _run_blocking(ImageRenderer.render_png, data, render_settings)
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "__binary_png__": png_bytes,
+        "mime": "image/png",
+        "width": int(data.shape[-1]),
+        "height": int(data.shape[-2]),
+        "stats": stats,
+        "result": {
+            "shape": list(data.shape),
+            "dtype": str(data.dtype),
+            "min": float(np.nanmin(data)),
+            "max": float(np.nanmax(data)),
+        },
+    }
+
+
+async def _handle_transmission_integrate(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Integrate every file over the same rect / polygon region.
+
+    Full integration semantics (no threshold / no centre-of-mass weighting,
+    optional border-median background) live in
+    ``services.transmission.region_pixel_sum``. A failing file is recorded in
+    ``failed`` and does not stop the batch. When ``reference`` is supplied,
+    ``transmission = I / I_ref`` is attached to every successful row.
+    对同一方形框/多折框区域逐文件积分。完全积分语义（无阈值、无质心加权，
+    可选边缘中位背景）在 ``services.transmission.region_pixel_sum``。单个文件
+    失败只记入 ``failed`` 不中断批处理；提供 ``reference`` 时给每个成功行附加
+    ``transmission = I / I_ref``。
+    """
+    files_raw = payload.get("files")
+    if not isinstance(files_raw, list) or not files_raw:
+        return {"status": "error", "message": "files (non-empty list) is required / 需要非空的 files 列表"}
+    files = [str(f) for f in files_raw if f]
+    if not files:
+        return {"status": "error", "message": "files (non-empty list) is required / 需要非空的 files 列表"}
+
+    region = payload.get("region")
+    if not isinstance(region, dict):
+        return {"status": "error", "message": "region (rect or polygon) is required / 需要 region（方形框或多折框）"}
+    # Structural validation up front so an unusable region is a request-level
+    # error, not one failure per file. / 先做结构校验：非法区域应整体报错，
+    # 而不是每个文件各报一次。
+    try:
+        await _run_blocking(Transmission.validate_region, region)
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+
+    subtract_border = bool(payload.get("subtract_border", False))
+    reference = payload.get("reference") or ""
+
+    total = len(files)
+    rows: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
+
+    for i, fpath in enumerate(files):
+        if cancel_event.is_set():
+            return {
+                "status": "cancelled",
+                "message": "Cancelled by user",
+                "rows": rows,
+                "failed": failed,
+            }
+        await send_progress(i / total, f"Integrating {os.path.basename(fpath)}...")
+        try:
+            if not os.path.isfile(fpath):
+                raise ValueError(f"File not found: {fpath}")
+            load_result = await _run_blocking(ImageLoader.load, fpath)
+            if isinstance(load_result, tuple):
+                data = load_result[0]
+            elif isinstance(load_result, dict):
+                data = load_result.get("data")
+            else:
+                data = load_result
+            if data is None:
+                raise ValueError(f"Failed to load image: {fpath}")
+            stats = await _run_blocking(
+                Transmission.region_pixel_sum, data, region, subtract_border,
+            )
+            row = {"file": fpath}
+            row.update(stats)
+            # ``compute_transmission_rows`` and the CSV column speak
+            # "intensity"; the region integral IS that intensity. Keep
+            # ``total`` too so the UI can show the raw integral unchanged.
+            # 比值计算与 CSV 列名用 "intensity"，而区域积分值就是该强度；
+            # 同时保留 total，供界面原样显示积分值。
+            row["intensity"] = stats["total"]
+            rows.append(row)
+        except Exception as exc:
+            failed.append({"file": fpath, "error": str(exc)})
+
+    if cancel_event.is_set():
+        return {
+            "status": "cancelled",
+            "message": "Cancelled by user",
+            "rows": rows,
+            "failed": failed,
+        }
+
+    if reference:
+        try:
+            rows = await _run_blocking(
+                Transmission.compute_transmission_rows, rows, reference,
+            )
+        except ValueError as exc:
+            return {
+                "status": "error",
+                "message": str(exc),
+                "rows": rows,
+                "failed": failed,
+            }
+
+    await send_progress(1.0, "Complete")
+    return {"status": "ok", "rows": rows, "failed": failed}
+
+
+async def _handle_transmission_export(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Write the transmission table as CSV or JSON.
+
+    Default file name is ``transmission.csv`` / ``transmission.json`` inside
+    ``output_dir`` (or the first row's folder, or the process CWD). Both the
+    directory and the final file path pass through the output-path choke
+    point — writing to a user-supplied path never bypasses validation.
+    把透过率表写成 CSV 或 JSON。默认文件名为 ``output_dir``（或首行文件所在
+    目录，或进程当前目录）下的 ``transmission.csv`` / ``transmission.json``。
+    目录与最终文件路径都过输出路径收口，写盘不绕过校验。
+    """
+    rows_raw = payload.get("rows")
+    if not isinstance(rows_raw, list) or not rows_raw:
+        return {"status": "error", "message": "rows (non-empty list) is required / 需要非空的 rows 列表"}
+
+    rows: list[dict[str, Any]] = []
+    for index, item in enumerate(rows_raw):
+        if not isinstance(item, dict):
+            return {
+                "status": "error",
+                "message": f"rows[{index}] must be an object / rows[{index}] 必须是对象",
+            }
+        file_value = item.get("file")
+        if not isinstance(file_value, str) or not file_value.strip():
+            return {
+                "status": "error",
+                "message": f"rows[{index}] is missing file / rows[{index}] 缺少 file",
+            }
+        try:
+            transmission_value = float(item.get("transmission"))
+        except (TypeError, ValueError):
+            return {
+                "status": "error",
+                "message": (
+                    f"rows[{index}] ({file_value}) has no valid transmission / "
+                    f"rows[{index}]（{file_value}）没有有效透过率"
+                ),
+            }
+        if not math.isfinite(transmission_value):
+            return {
+                "status": "error",
+                "message": (
+                    f"rows[{index}] ({file_value}) has a non-finite transmission / "
+                    f"rows[{index}]（{file_value}）透过率不是有限数值"
+                ),
+            }
+        intensity_value = 0.0
+        raw_intensity = item.get("intensity")
+        if raw_intensity is not None and not (
+            isinstance(raw_intensity, str) and not raw_intensity.strip()
+        ):
+            try:
+                intensity_value = float(raw_intensity)
+            except (TypeError, ValueError):
+                return {
+                    "status": "error",
+                    "message": (
+                        f"rows[{index}] ({file_value}) has an invalid intensity / "
+                        f"rows[{index}]（{file_value}）强度无效"
+                    ),
+                }
+            if not math.isfinite(intensity_value):
+                return {
+                    "status": "error",
+                    "message": (
+                        f"rows[{index}] ({file_value}) has a non-finite intensity / "
+                        f"rows[{index}]（{file_value}）强度不是有限数值"
+                    ),
+                }
+        rows.append({
+            "file": file_value,
+            "intensity": intensity_value,
+            "transmission": transmission_value,
+        })
+
+    export_format = str(payload.get("format") or "csv").strip().lower()
+    if export_format not in ("csv", "json"):
+        return {
+            "status": "error",
+            "message": f"Unknown format {export_format!r}: expected 'csv' or 'json' / 未知导出格式",
+        }
+
+    try:
+        output_dir = validated_output_path_optional(
+            payload.get("output_dir", ""), field="output_dir",
+        )
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+    if not output_dir:
+        output_dir = os.path.dirname(rows[0]["file"]) if rows[0]["file"] else ""
+    if not output_dir:
+        output_dir = os.getcwd()
+
+    os.makedirs(output_dir, exist_ok=True)
+    file_name = "transmission.csv" if export_format == "csv" else "transmission.json"
+    try:
+        out_path = validated_output_path(
+            os.path.realpath(os.path.join(output_dir, file_name)),
+            field="output_path",
+        )
+    except ValueError as exc:
+        return {"status": "error", "message": str(exc)}
+
+    await send_progress(0.5, "Exporting...")
+    try:
+        if export_format == "csv":
+            written = await _run_blocking(
+                Transmission.export_transmission_csv, rows, out_path,
+            )
+        else:
+            written = await _run_blocking(
+                Transmission.export_transmission_json, rows, out_path,
+            )
+    except Exception as exc:
+        return {"status": "error", "message": f"Export failed: {exc}"}
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "output_files": [os.path.abspath(str(written or out_path))],
+        "output_dir": output_dir,
+    }
+
+
+async def handle_transmission(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Handle direct-beam transmission requests. 直通光透过率请求处理函数。
+
+    Actions:
+      - preview: Render one image for the region picker / 取区预览
+      - integrate: Integrate files over the region (+ optional ratio)
+      - export: Write transmission.csv / transmission.json
+      - scan_folder: Reuse the background module's image-folder scan
+    """
+    action = payload.get("action", "integrate")
+
+    if action == "preview":
+        return await _handle_transmission_preview(payload, send_progress, cancel_event)
+    elif action == "integrate":
+        return await _handle_transmission_integrate(payload, send_progress, cancel_event)
+    elif action == "export":
+        return await _handle_transmission_export(payload, send_progress, cancel_event)
+    elif action == "scan_folder":
+        return await _handle_bg_subtract_scan_folder(payload, send_progress, cancel_event)
+    else:
+        return {"status": "error", "message": f"Unknown action: {action}"}
+
+
 async def _handle_bg_subtract_preview(
     payload: dict[str, Any],
     send_progress: Callable[[float, str], Awaitable[None]],
@@ -4902,6 +5506,7 @@ async def handle_bg_subtract(
       - subtract: Single file subtraction (sample / T - background)
       - preview_sample / preview_background / preview_result: Preview image file
       - ionchamber_match: Auto-match ionchamber files to data files
+      - transmission_file_match: Match an imported transmission CSV/JSON to data files
       - batch: Batch process a folder of files
       - scan_folder: Scan folder and return list of image files
     """
@@ -4922,6 +5527,10 @@ async def handle_bg_subtract(
         return await _handle_bg_subtract_preview(payload, send_progress, cancel_event)
     elif action == "ionchamber_match":
         return await _handle_bg_ionchamber_match(payload, send_progress, cancel_event)
+    elif action == "transmission_file_match":
+        return await _handle_bg_transmission_file_match(
+            payload, send_progress, cancel_event,
+        )
     elif action == "batch":
         return await _handle_bg_subtract_batch(payload, send_progress, cancel_event)
     elif action == "scan_folder":
@@ -6649,6 +7258,7 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/manual_calibrant_generate": handle_manual_calibrant_generate,
     "/api/list_space_groups": handle_list_space_groups,
     "/api/bg_subtract": handle_bg_subtract,
+    "/api/transmission": handle_transmission,
     "/api/poni_importer": handle_poni_importer,
     "/api/image_math": handle_image_math,
     "/api/image_stitch": handle_image_stitch,

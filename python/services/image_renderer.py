@@ -360,7 +360,7 @@ class ImageRenderer:
         Returns / 返回
         -------
         dict
-            Keys: ``min``, ``max``, ``adjustedMax``, ``std``.
+            Keys: ``min``, ``max``, ``adjustedMax``, ``std``, ``mean``.
         """
         arr = np.asarray(data, dtype=np.float32)
         finite = arr[np.isfinite(arr)]
@@ -370,12 +370,18 @@ class ImageRenderer:
                 "max": 0.0,
                 "adjustedMax": 0.0,
                 "std": 0.0,
+                "mean": 0.0,
             }
         return {
             "min": float(np.min(finite)),
             "max": float(np.max(finite)),
             "adjustedMax": float(ImageRenderer.adjusted_max(arr)),
             "std": float(np.std(finite)),
+            # Added 2026-10-25: the preview stats bars (transmission /
+            # bg-subtract) display Mean, which was always "—" before because
+            # no caller ever produced this key. / 预览统计条要显示 Mean，此前
+            # 任何调用方都不产出该键，恒显示「—」（2026-10-25 补）。
+            "mean": float(np.mean(finite)),
         }
 
     @staticmethod

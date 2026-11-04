@@ -11,9 +11,14 @@ Covers:
     Group E: subtract_h5_stack (2D/3D, transmission validation)
     Group F: find_h5_transmissions (root / nested / attribute)
     Group G: Golden-file comparison against BGsub reference formula
+    Group H: Ionchamber end-to-end chain through the service handler
+             (parse → match → transmission → table rows → execute)
 """
 
+import asyncio
 import logging
+import os
+from pathlib import Path
 
 import h5py
 import numpy as np
@@ -203,6 +208,20 @@ class TestParseIonchamberFile:
         ion_file.write_text("", encoding="utf-8")
         result = parse_ionchamber_file(str(ion_file))
         assert result is None
+
+    def test_parse_ionchamber_utf8_bom(self, tmp_path):
+        """A UTF-8 BOM must not make the file unparsable (Windows exports)."""
+        ion_file = tmp_path / "bom.Ionchamber"
+        ion_file.write_bytes(
+            (
+                "\ufeff# Time  Ionchamber0  Ionchamber1  Ionchamber2\n"
+                "2026-01-19 12:34:34.130671238  2.807135e-7  2.388761e-8  9.71103e-10\n"
+            ).encode("utf-8")
+        )
+        df = parse_ionchamber_file(str(ion_file))
+        assert df is not None
+        assert len(df) == 1
+        assert df["Ionchamber0"].iloc[0] == pytest.approx(2.807135e-7)
 
     def test_parse_ionchamber_skips_comments_and_blanks(self, tmp_path):
         """Lines starting with # and blank lines should be ignored."""
@@ -628,3 +647,303 @@ class TestGoldenFileFormula:
             assert np.allclose(xfais, ref.astype(np.float32), rtol=1e-4), (
                 f"T={T}: max diff = {np.max(np.abs(xfais - ref.astype(np.float32)))}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Group H: Ionchamber end-to-end chain (service handler)
+# 电离室端到端链路：解析 → 匹配 → 透射率 → 落表 → 执行扣除
+# ---------------------------------------------------------------------------
+
+
+def _write_ionchamber(path: Path, intensity: float, rows: int = 4) -> None:
+    """Write a synthetic SSRF-style .Ionchamber file."""
+    lines = [
+        "#       Time: 2026-01-19 12:33:25.121156492",
+        "#   Beamline: BL16B1",
+        "#Time      Ionchamber0      Ionchamber1      Ionchamber2",
+    ]
+    for i in range(rows):
+        lines.append(
+            f"2026-01-19 12:33:{25 + i:02d}.121156492      "
+            f"{intensity:.6e}      {intensity * 1e-1:.6e}      {intensity * 1e-2:.6e}"
+        )
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _write_h5_image(path: Path, value: float, shape=(16, 16)) -> None:
+    """Write a minimal single-dataset HDF5 image readable by ImageLoader."""
+    with h5py.File(path, "w") as fh:
+        fh.create_dataset("data", data=np.full(shape, value, dtype=np.float32))
+
+
+async def _noop_progress(_progress: float, _message: str) -> None:
+    """Progress callback stub."""
+
+
+def _run_handler(payload: dict) -> dict:
+    """Invoke the real background-subtraction handler (no image monkeypatching
+    — the synthetic .h5 images go through ImageLoader for real)."""
+    from python.service_launcher import handle_bg_subtract
+
+    return asyncio.run(
+        handle_bg_subtract(payload, _noop_progress, asyncio.Event())
+    )
+
+
+def _read_h5_image(path: Path) -> np.ndarray:
+    with h5py.File(path, "r") as fh:
+        return np.asarray(fh["data"])
+
+
+def _build_dataset(tmp_path: Path) -> dict:
+    """Synthetic dataset: 2 samples (T=0.4 / 0.8), 1 background image.
+
+    Naming mirrors real SSRF exports: data ``..._00001.h5`` vs ionchamber
+    ``..._001.Ionchamber`` (zero-padding differs, the matcher must still hit
+    the exact-number priority).
+    """
+    samples = tmp_path / "samples"
+    ions = tmp_path / "ions"
+    out = tmp_path / "out"
+    samples.mkdir()
+    ions.mkdir()
+    out.mkdir()
+
+    names = {
+        "wkf-G1-Q-30-2-waxs-11.9s_00001": 4.0e-7,   # T = 0.4
+        "wkf-G1-Q-30-2-waxs-11.9s_00002": 8.0e-7,   # T = 0.8
+    }
+    data_files: list[str] = []
+    ion_files: list[str] = []
+    for name, intensity in names.items():
+        data_path = samples / f"{name}.h5"
+        _write_h5_image(data_path, 100.0)
+        data_files.append(str(data_path))
+        ion_path = ions / f"{name.replace('_0000', '_000')}.Ionchamber"
+        _write_ionchamber(ion_path, intensity)
+        ion_files.append(str(ion_path))
+
+    bg_ion = ions / "wkf-G1-W-30-1-BG-waxs_001.Ionchamber"
+    _write_ionchamber(bg_ion, 1.0e-6)
+    bg_image = tmp_path / "bg.h5"
+    _write_h5_image(bg_image, 10.0)
+
+    return {
+        "samples_dir": samples,
+        "ions_dir": ions,
+        "out": out,
+        "data_files": data_files,
+        "ion_files": ion_files,
+        "bg_ion": str(bg_ion),
+        "bg_image": str(bg_image),
+    }
+
+
+class TestIonchamberEndToEndChain:
+    """Full chain through ``handle_bg_subtract`` with synthetic fixtures.
+
+    These are the regression tests for the 2026-10-29 report "ionchamber
+    matching lists files but the transmission column stays empty and the
+    subtraction step is unreachable". Each test fails when its corresponding
+    production guarantee is removed (mutation-checked).
+    """
+
+    def test_match_returns_transmission_for_every_row(self, tmp_path):
+        """Match action must compute transmission per row (the table values).
+
+        Mutation: dropping the bg-ionchamber load / calc makes every
+        ``transmission`` None → fails.
+        """
+        ds = _build_dataset(tmp_path)
+        result = _run_handler({
+            "action": "ionchamber_match",
+            "data_files": ds["data_files"],
+            "ionchamber_folder": str(ds["ions_dir"]),
+            "bg_ionchamber_path": ds["bg_ion"],
+            "ionchamber_channel": "Ionchamber0",
+            "ionchamber_method": "median",
+            "min_score": 0.4,
+        })
+
+        assert result["status"] == "ok", result
+        assert result["count"] == 2
+        assert result["computed_count"] == 2
+        assert result["bg_ionchamber_loaded"] is True
+
+        by_file = {m["data_file"]: m for m in result["matches"]}
+        assert set(by_file) == set(ds["data_files"])
+        # Table rows: every matched file carries a real transmission.
+        for path, expected_t in zip(ds["data_files"], (0.4, 0.8)):
+            row = by_file[path]
+            assert row["matched_ion"] is not None
+            assert row["transmission_computed"] is True
+            assert row["transmission"] == pytest.approx(expected_t, rel=1e-6)
+
+    def test_match_without_background_ionchamber_is_explicit_error(self, tmp_path):
+        """Missing background ionchamber must be an explicit error, not a
+        table full of '—' with a silent note.
+
+        Mutation: restoring the old "return matches with transmission=None"
+        behaviour turns this test red.
+        """
+        ds = _build_dataset(tmp_path)
+        result = _run_handler({
+            "action": "ionchamber_match",
+            "data_files": ds["data_files"],
+            "ionchamber_folder": str(ds["ions_dir"]),
+            "min_score": 0.4,
+        })
+
+        assert result["status"] == "error"
+        assert "bg_ionchamber_path" in result["message"]
+        assert "matches" not in result
+
+    def test_match_with_unparsable_background_is_explicit_error(self, tmp_path):
+        """A background file that cannot be parsed must be reported with the
+        file name instead of being swallowed.
+
+        Mutation: reverting to the silent ``print`` + continue makes this
+        test red.
+        """
+        ds = _build_dataset(tmp_path)
+        bad_bg = tmp_path / "broken.Ionchamber"
+        bad_bg.write_text(
+            "this is not an ionchamber file\nnor is this\n", encoding="utf-8"
+        )
+
+        result = _run_handler({
+            "action": "ionchamber_match",
+            "data_files": ds["data_files"],
+            "ionchamber_folder": str(ds["ions_dir"]),
+            "bg_ionchamber_path": str(bad_bg),
+        })
+
+        assert result["status"] == "error"
+        assert "broken.Ionchamber" in result["message"]
+        assert "parse" in result["message"].lower() or "解析" in result["message"]
+
+    def test_batch_applies_matched_per_file_transmissions(self, tmp_path):
+        """Execute step consumes the per-file map backfilled from matching
+        (mirrors the transmission-file import flow).
+
+        Mutation: dropping ``_merge_payload_transmissions`` makes the run
+        fall back to T=1.0 (90/90 instead of 240/115) → red.
+        """
+        ds = _build_dataset(tmp_path)
+        match = _run_handler({
+            "action": "ionchamber_match",
+            "data_files": ds["data_files"],
+            "ionchamber_folder": str(ds["ions_dir"]),
+            "bg_ionchamber_path": ds["bg_ion"],
+            "min_score": 0.4,
+        })
+        assert match["status"] == "ok"
+        per_file = {
+            m["data_file"]: m["transmission"] for m in match["matches"]
+        }
+
+        result = _run_handler({
+            "action": "batch",
+            "data_files": ds["data_files"],
+            "bg_path": ds["bg_image"],
+            # The frontend switches to per-file after a match, so only the
+            # map is sent — no ionchamber folder is rescanned here.
+            "transmissions": per_file,
+            "transmission": per_file[ds["data_files"][0]],
+            "output_dir": str(ds["out"]),
+            "output_format": "h5",
+        })
+
+        assert result["status"] == "ok", result
+        assert result["success_count"] == 2
+        # 100 / 0.4 - 10 = 240 ; 100 / 0.8 - 10 = 115
+        first = _read_h5_image(ds["out"] / (
+            Path(ds["data_files"][0]).stem + "_subtracted.h5"
+        ))
+        second = _read_h5_image(ds["out"] / (
+            Path(ds["data_files"][1]).stem + "_subtracted.h5"
+        ))
+        np.testing.assert_allclose(first, 240.0)
+        np.testing.assert_allclose(second, 115.0)
+
+    def test_batch_recomputes_from_ionchamber_folder(self, tmp_path):
+        """When the ionchamber folder is sent, per-file values are recomputed
+        at execute time (over-limit path / direct ionchamber run).
+
+        Mutation: removing the ionchamber block from the batch handler makes
+        both files use the scalar T=1.0 → red.
+        """
+        ds = _build_dataset(tmp_path)
+        result = _run_handler({
+            "action": "batch",
+            "data_files": ds["data_files"],
+            "bg_path": ds["bg_image"],
+            "ionchamber_folder": str(ds["ions_dir"]),
+            "bg_ionchamber_path": ds["bg_ion"],
+            "ionchamber_channel": "Ionchamber0",
+            "ionchamber_method": "median",
+            "transmission": 1.0,
+            "output_dir": str(ds["out"]),
+            "output_format": "h5",
+        })
+
+        assert result["status"] == "ok", result
+        assert result["success_count"] == 2
+        first = _read_h5_image(ds["out"] / (
+            Path(ds["data_files"][0]).stem + "_subtracted.h5"
+        ))
+        second = _read_h5_image(ds["out"] / (
+            Path(ds["data_files"][1]).stem + "_subtracted.h5"
+        ))
+        np.testing.assert_allclose(first, 240.0)
+        np.testing.assert_allclose(second, 115.0)
+
+    def test_batch_ionchamber_without_background_is_explicit_error(self, tmp_path):
+        """Batch ionchamber mode without a background file must abort before
+        producing any output (no silent T=1).
+
+        Mutation: restoring the old ``if ... isdir(...)`` silent skip makes
+        the run "succeed" with T=1.0 → red.
+        """
+        ds = _build_dataset(tmp_path)
+        result = _run_handler({
+            "action": "batch",
+            "data_files": ds["data_files"],
+            "bg_path": ds["bg_image"],
+            "ionchamber_folder": str(ds["ions_dir"]),
+            "output_dir": str(ds["out"]),
+            "output_format": "h5",
+        })
+
+        assert result["status"] == "error"
+        assert "bg_ionchamber_path" in result["message"]
+        assert not list(ds["out"].glob("*.h5"))
+
+    def test_batch_ionchamber_partial_failure_is_explicit_error(self, tmp_path):
+        """If one file's transmission cannot be computed, the whole run must
+        abort with the offending file listed (never mix T=1 silently).
+
+        Mutation: downgrading per-file failures to a ``print`` makes the run
+        succeed with a wrong value for the broken file → red.
+        """
+        ds = _build_dataset(tmp_path)
+        # Corrupt the second ionchamber file.
+        Path(ds["ion_files"][1]).write_text("garbage\n", encoding="utf-8")
+
+        result = _run_handler({
+            "action": "batch",
+            "data_files": ds["data_files"],
+            "bg_path": ds["bg_image"],
+            "ionchamber_folder": str(ds["ions_dir"]),
+            "bg_ionchamber_path": ds["bg_ion"],
+            "output_dir": str(ds["out"]),
+            "output_format": "h5",
+        })
+
+        assert result["status"] == "error"
+        assert result["transmission_errors"]
+        assert any(
+            Path(ds["data_files"][1]).name in e["data_file"]
+            for e in result["transmission_errors"]
+        )
+        assert not list(ds["out"].glob("*.h5"))

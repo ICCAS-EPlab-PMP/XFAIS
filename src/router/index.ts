@@ -153,6 +153,16 @@ const router = createRouter({
       },
     },
     {
+      path: '/workspace/transmission',
+      name: 'transmission',
+      component: () => import('@/views/workspace/TransmissionView.vue'),
+      meta: {
+        titleKey: 'transmission.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'transmission.subtitle',
+      },
+    },
+    {
       path: '/workspace/image-math',
       name: 'image-math',
       component: () => import('@/views/workspace/ImageMathView.vue'),

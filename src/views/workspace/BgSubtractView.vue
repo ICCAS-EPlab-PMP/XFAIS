@@ -161,6 +161,10 @@
               <input v-model="transmissionSource" type="radio" value="ionchamber" />
               <span>{{ t('bgSubtract.transIonchamber') }}</span>
             </label>
+            <label class="bgs-radio-label">
+              <input v-model="transmissionSource" type="radio" value="file" data-testid="bg-trans-file-radio" />
+              <span>{{ t('bgSubtract.transFile') }}</span>
+            </label>
           </div>
 
           <!-- Over-limit notice: shown whenever the per-file option is out of
@@ -185,7 +189,13 @@
           </div>
 
           <!-- Ionchamber folder + match + filters / 电离室文件夹 + 匹配 + 过滤 -->
-          <template v-if="transmissionSource === 'ionchamber'">
+          <!-- Keep visible after a successful match even though the source
+               auto-switches to per-file (the matched values take effect as
+               per-file transmissions) — otherwise the table the user just
+               earned would vanish with the card. / 匹配成功后来源自动切到
+               “分别设置”（匹配值作为逐文件透射率生效），卡片必须保留——否则
+               刚得到的匹配表会跟着卡片一起消失。 -->
+          <template v-if="transmissionSource === 'ionchamber' || ionchamberMatches.length > 0">
             <FileDialogButton
               v-model="ionchamberFolder"
               mode="openFolder"
@@ -264,6 +274,14 @@
               <div v-if="!bgIonchamberPath" class="bgs-match-warning">
                 ⚠ {{ t('bgSubtract.noBgIonchamberWarning') }}
               </div>
+              <!-- Matched values were applied as per-file transmissions. /
+                   匹配值已作为逐文件透射率生效。 -->
+              <div
+                v-if="transmissionSource !== 'ionchamber' && matchedTransmissionCount > 0"
+                class="bgs-file-summary bgs-file-summary--muted"
+              >
+                {{ t('bgSubtract.ionchamberAppliedHint') }}
+              </div>
               <table class="bgs-match-table">
                 <thead>
                   <tr>
@@ -281,6 +299,69 @@
                     <td>{{ typeof m.score === 'number' ? m.score.toFixed(3) : '—' }}</td>
                     <td>{{ typeof m.transmission === 'number' ? (m.transmission * 100).toFixed(2) + '%' : '—' }}</td>
                     <td :class="{ 'bgs-error-cell': m.error }">{{ m.note || m.error || '' }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </template>
+        </div>
+
+        <!-- Transmission file import / 透过率文件导入 -->
+        <div class="bgs-card">
+          <h3 class="bgs-card-title">{{ t('bgSubtract.transFile') }}</h3>
+          <!-- Stay visible after a successful match even though the source
+               auto-switched to per-file — otherwise the match table the user
+               just earned vanishes with the card. / 匹配成功后来源会自动切到
+               “分别设置”，卡片内容必须随之保留——否则刚得到的匹配表跟着卡片
+               一起消失。 -->
+          <p
+            v-if="transmissionSource !== 'file' && transmissionMatches.length === 0"
+            class="bgs-file-summary bgs-file-summary--muted"
+          >
+            {{ t('bgSubtract.transFileHint') }}
+          </p>
+          <template v-else>
+            <FileDialogButton
+              v-model="transmissionFile"
+              mode="openFile"
+              :label="t('bgSubtract.transFilePick')"
+              :filters="transmissionFileFilters"
+              data-ai-id="bg:trans-file-pick"
+            />
+            <button
+              type="button"
+              class="bgs-btn"
+              :disabled="!canMatchTransmissionFile"
+              data-ai-id="bg:trans-file-match"
+              data-testid="bg-trans-file-match"
+              @click="handleMatchTransmissionFile"
+            >
+              {{ matchingTransmissionFile ? t('bgSubtract.transFileMatching') : t('bgSubtract.transFileMatch') }}
+            </button>
+
+            <!-- Match results table / 匹配结果表 -->
+            <div v-if="transmissionMatches.length > 0" class="bgs-match-table-wrap" data-testid="bg-trans-match-table">
+              <div v-if="allTransmissionUnmatched" class="bgs-match-warning">
+                ⚠ {{ t('bgSubtract.transFileNoMatch') }}
+              </div>
+              <table class="bgs-match-table">
+                <thead>
+                  <tr>
+                    <th>{{ t('bgSubtract.transMatchColFile') }}</th>
+                    <th class="bgs-col-num">{{ t('bgSubtract.transMatchColTrans') }}</th>
+                    <th>{{ t('bgSubtract.transMatchColNote') }}</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="m in transmissionMatches" :key="m.data_file">
+                    <td :title="m.data_file">{{ extractFileName(m.data_file) }}</td>
+                    <td class="bgs-col-num">{{ typeof m.transmission === 'number' ? (m.transmission * 100).toFixed(2) + '%' : '—' }}</td>
+                    <td
+                      :class="{ 'bgs-error-cell': typeof m.transmission !== 'number' }"
+                      :title="m.note || (m.matched_file ? extractFileName(m.matched_file) : '')"
+                    >
+                      {{ m.note || (m.matched_file ? extractFileName(m.matched_file) : '') }}
+                    </td>
                   </tr>
                 </tbody>
               </table>
@@ -315,6 +396,14 @@
 
         <!-- Execute / 执行 -->
         <div class="bgs-card">
+          <!-- Say WHY the run button is disabled — a greyed-out button with no
+               explanation reads as "stuck at step 1" (user report 2026-10-29:
+               ionchamber matching done but the subtraction step unreachable).
+               / 明确告知执行按钮为何不可用——只变灰不解释会让用户以为卡在
+               第一步（2026-10-29 用户反馈：电离室匹配完成却进不了扣除）。 -->
+          <div v-if="missingPrerequisites.length > 0" class="bgs-match-warning">
+            ⚠ {{ t('bgSubtract.executeBlocked', { items: missingPrerequisites.join(' / ') }) }}
+          </div>
           <button
             type="button"
             class="bgs-btn bgs-btn-primary"
@@ -544,6 +633,15 @@ interface IonchamberMatch {
   transmission_computed?: boolean
 }
 
+/** One row of the transmission-file match table (basename match, case-insensitive).
+ *  透过率文件匹配表的一行（按文件名匹配，大小写不敏感）。 */
+interface TransmissionFileMatch {
+  data_file: string
+  matched_file: string | null
+  transmission: number | null
+  note?: string
+}
+
 interface BatchResult {
   success_count: number
   failed_count: number
@@ -563,7 +661,7 @@ interface PreviewStats {
 
 type PageState = 'idle' | 'running' | 'done' | 'error'
 type Mode = 'single' | 'batch'
-type TransmissionSource = 'manual' | 'per-file' | 'ionchamber'
+type TransmissionSource = 'manual' | 'per-file' | 'ionchamber' | 'file'
 type ImportMode = 'replace' | 'append'
 
 // === Composables / 组合函数 ===
@@ -607,6 +705,10 @@ const dataFileFilters = [
 const ionchamberFolder = ref<string | null>(null)
 const bgIonchamberPath = ref<string | null>(null)
 const ionchamberMatches = ref<IonchamberMatch[]>([])
+/** True once match results were backfilled into perFileTransmissions, so the
+ *  run can refuse files that are not covered. / 匹配结果是否已回填逐文件
+ *  透射率——用于拒绝未被覆盖的文件，避免静默按 100% 扣除。 */
+const ionchamberBackfilled = ref(false)
 const manualTransmission = ref(100)
 const perFileTransmissions = ref<Record<string, number>>({})
 const transmissionSource = ref<TransmissionSource>('manual')
@@ -615,6 +717,16 @@ const minScore = ref(0.4)
 const regexPattern = ref('')
 const ionchamberChannel = ref('Ionchamber0')
 const ionchamberMethod = ref<'median' | 'mean' | 'trimmed_mean'>('median')
+
+// === Transmission file (CSV/JSON from the transmission page) / 透过率文件 ===
+
+const transmissionFile = ref<string | null>(null)
+const transmissionMatches = ref<TransmissionFileMatch[]>([])
+const matchingTransmissionFile = ref(false)
+const transmissionFileFilters = [
+  { name: 'Transmission Files', extensions: ['csv', 'json'] },
+  { name: 'All Files', extensions: ['*'] },
+]
 
 // === Display settings / 显示设置 ===
 
@@ -667,6 +779,37 @@ const currentSamplePaths = computed(() => {
   return batchFolderFiles.value
 })
 
+/** Number of match rows with a usable transmission. / 有可用透射率的匹配行数。 */
+const matchedTransmissionCount = computed(() =>
+  ionchamberMatches.value.filter(
+    m => typeof m.transmission === 'number' && m.transmission > 0
+  ).length
+)
+
+/** Files in the current selection with no ionchamber transmission after a
+ *  backfill. They must not silently run at T=1.0. / 回填后仍无电离室透射率
+ *  的文件——不得静默按 T=1.0 扣除。 */
+const ionchamberUncoveredCount = computed(() => {
+  if (!ionchamberBackfilled.value) return 0
+  // Only the per-file/ionchamber paths consume the matched values; if the
+  // user deliberately switched to a manual global value that is an explicit
+  // choice, not a silent fallback. / 仅逐文件/电离室来源消费匹配值；用户
+  // 主动改为手动全局值属于明确选择，不算静默回退。
+  if (
+    transmissionSource.value !== 'ionchamber'
+    && transmissionSource.value !== 'per-file'
+  ) {
+    return 0
+  }
+  // Count against the actual per-file map so a value the user typed in the
+  // file list also clears the blocker. / 以逐文件映射为准，用户在文件列表
+  // 手填的值同样能解除阻塞。
+  return currentSamplePaths.value.filter(fp => {
+    const value = perFileTransmissions.value[fp]
+    return !(typeof value === 'number' && value > 0)
+  }).length
+})
+
 const canSubtract = computed(() => {
   if (state.value === 'running') return false
   // Desktop requires an explicit output dir in BOTH modes: single-file runs
@@ -680,8 +823,11 @@ const canSubtract = computed(() => {
   // web 模式没有目录选择器（浏览器无法浏览服务器目录），单文件模式不
   // 要求输出目录：结果保存到样品上传目录旁并经 /api/download 自动下载。
   const requireOutDir = transport.isDesktop() || mode.value === 'batch'
+  const ionchamberReady = transmissionSource.value !== 'ionchamber'
+    || matchedTransmissionCount.value > 0
   return currentSamplePaths.value.length > 0 && !!bgPath.value
-    && (!requireOutDir || !!outputDir.value)
+    && (!requireOutDir || !!outputDir.value) && ionchamberReady
+    && ionchamberUncoveredCount.value === 0
 })
 
 // Publish progress to the workspace-state bridge for the AI guided tour
@@ -709,8 +855,49 @@ const canMatchIonchamber = computed(() => {
   const hasFiles = mode.value === 'batch'
     ? batchFolderFiles.value.length > 0
     : samplePaths.value.length > 0
-  return hasFiles && !!ionchamberFolder.value && !matchingIonchamber.value
+  // The background ionchamber file is required — without it the backend
+  // cannot compute any transmission and now rejects the match explicitly.
+  // 背景电离室文件为必需项——没有它后端算不出任何透射率（现在会明确拒绝）。
+  return hasFiles && !!ionchamberFolder.value && !!bgIonchamberPath.value
+    && !matchingIonchamber.value
 })
+
+/** Human-readable list of what still blocks the run button. The button is
+ *  disabled without these; showing the list keeps users from being stuck at
+ *  an unexplained grey button. / 仍阻塞执行的条件清单，避免用户面对一个
+ *  没有任何解释的灰色按钮。 */
+const missingPrerequisites = computed<string[]>(() => {
+  const items: string[] = []
+  if (currentSamplePaths.value.length === 0) items.push(t('bgSubtract.reqSamples'))
+  if (!bgPath.value) items.push(t('bgSubtract.reqBackground'))
+  if ((transport.isDesktop() || mode.value === 'batch') && !outputDir.value) {
+    items.push(t('bgSubtract.reqOutput'))
+  }
+  if (transmissionSource.value === 'ionchamber' && matchedTransmissionCount.value === 0) {
+    items.push(t('bgSubtract.reqIonchamberMatch'))
+  }
+  if (ionchamberUncoveredCount.value > 0) {
+    items.push(t('bgSubtract.reqIonchamberCoverage', {
+      count: ionchamberUncoveredCount.value,
+    }))
+  }
+  return items
+})
+
+/** Transmission-file matching: files present + a transmission file chosen.
+ *  In batch mode a selected folder is enough — the backend scans it itself. */
+const canMatchTransmissionFile = computed(() => {
+  const hasFiles = mode.value === 'batch'
+    ? !!sampleFolder.value || batchFolderFiles.value.length > 0
+    : samplePaths.value.length > 0
+  return hasFiles && !!transmissionFile.value && !matchingTransmissionFile.value
+})
+
+/** True when a match attempt produced no usable transmission at all. */
+const allTransmissionUnmatched = computed(() =>
+  transmissionMatches.value.length > 0
+  && transmissionMatches.value.every(m => typeof m.transmission !== 'number')
+)
 
 // Per-file transmission cap (user request 2026-10-13: raised 10 → 100). The
 // UI keeps the per-file inputs for up to 100 sample images; beyond that the
@@ -812,12 +999,30 @@ function formatSci(value: number): string {
   return value.toExponential(3)
 }
 
+/** Scalar fallback: the first USABLE matched transmission (rows without a
+ *  computed value must not shadow one that has it). / 标量回退：第一个真正
+ *  算出的匹配透射率（无值行不得遮挡有值行）。 */
 function getMatchedTransmission(): number {
-  if (ionchamberMatches.value.length > 0) {
-    const first = ionchamberMatches.value[0]
-    if (first) return first.transmission ?? manualTransmission.value / 100
-  }
+  const computedMatch = ionchamberMatches.value.find(
+    m => typeof m.transmission === 'number' && m.transmission > 0
+  )
+  if (computedMatch?.transmission) return computedMatch.transmission
   return manualTransmission.value / 100
+}
+
+/** Per-file map (ratios) built from matched ionchamber transmissions — sent
+ *  with the run so the matched values take effect for every file, mirroring
+ *  the transmission-file import flow. / 由电离室匹配结果构建的逐文件映射
+ *  （小数比率），随执行一起发送，让匹配值对每个文件生效，与透过率文件导入
+ *  流程一致。 */
+function getMatchedTransmissions(): Record<string, number> {
+  const result: Record<string, number> = {}
+  for (const m of ionchamberMatches.value) {
+    if (typeof m.transmission === 'number' && m.transmission > 0) {
+      result[m.data_file] = m.transmission
+    }
+  }
+  return result
 }
 
 function getPerFileTransmissions(): Record<string, number> {
@@ -940,8 +1145,23 @@ async function scanFolder(folder: string): Promise<void> {
 async function handleMatchIonchamber(): Promise<void> {
   const files = currentSamplePaths.value
   if (files.length === 0 || !ionchamberFolder.value) return
+  if (!bgIonchamberPath.value) {
+    toast.push({
+      title: t('bgSubtract.errorTitle'),
+      message: t('bgSubtract.errorNoBgIonchamber'),
+      tone: 'error',
+    })
+    return
+  }
 
   matchingIonchamber.value = true
+  // Drop values from the previous match so a re-match cannot leave stale
+  // transmissions behind for files the new match does not cover.
+  // 清除上一次匹配回填的值，避免重新匹配后遗留过期透射率。
+  for (const m of ionchamberMatches.value) {
+    delete perFileTransmissions.value[m.data_file]
+  }
+  ionchamberBackfilled.value = false
   ionchamberMatches.value = []
 
   try {
@@ -958,9 +1178,56 @@ async function handleMatchIonchamber(): Promise<void> {
     })
 
     const unsubResult = transport.onTaskResult(response.taskId, (payload) => {
-      const data = payload.data as { matches: IonchamberMatch[] }
-      ionchamberMatches.value = data.matches ?? []
+      const data = payload.data as { matches?: IonchamberMatch[] }
+      const matches = Array.isArray(data.matches) ? data.matches : []
+      ionchamberMatches.value = matches
       matchingIonchamber.value = false
+
+      // Backfill the per-file transmission map exactly like the
+      // transmission-file import does: the matched values are what the run
+      // consumes, and switching to per-file makes them visible/editable.
+      // Rows without a value must not inherit a stale value from an earlier
+      // match. / 与透过率文件导入一致：把匹配值回填到逐文件映射并切源，
+      // 执行时按这些值扣除；未算出值的行清掉旧值，避免张冠李戴。
+      let matched = 0
+      let missing = 0
+      for (const m of matches) {
+        if (typeof m.transmission === 'number' && m.transmission > 0) {
+          // Round to 4 decimals of a percent (same rationale as the
+          // transmission-file flow: full-float ratios overflow the input).
+          // 百分比保留 4 位小数（与透过率文件流程一致）。
+          perFileTransmissions.value[m.data_file] =
+            Math.round(m.transmission * 100 * 1e4) / 1e4
+          matched += 1
+        } else {
+          delete perFileTransmissions.value[m.data_file]
+          missing += 1
+        }
+      }
+
+      if (matched > 0) {
+        ionchamberBackfilled.value = true
+        if (!tooManyFilesForPerFile.value) {
+          transmissionSource.value = 'per-file'
+        }
+        toast.push({
+          title: t('bgSubtract.ionchamber'),
+          message: t('bgSubtract.ionchamberMatchApplied', { matched, missing }),
+          tone: missing > 0 ? 'warning' : 'success',
+        })
+        if (resultPreviewUrl.value || state.value === 'done') {
+          loadResultPanel()
+        }
+      } else {
+        toast.push({
+          title: t('bgSubtract.errorTitle'),
+          message: matches.length > 0
+            ? t('bgSubtract.ionchamberNoTransmission')
+            : t('bgSubtract.ionchamberNoMatch'),
+          tone: 'error',
+        })
+      }
+
       unsubResult()
       unsubError()
     })
@@ -977,6 +1244,101 @@ async function handleMatchIonchamber(): Promise<void> {
     })
   } catch (err) {
     matchingIonchamber.value = false
+    toast.push({
+      title: t('bgSubtract.errorTitle'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
+// === Transmission file matching / 透过率文件匹配 ===
+
+/**
+ * Match the imported transmission CSV/JSON against the current data files by
+ * basename (backend does the normalization), fill the per-file map, and switch
+ * the source to per-file so the matched values take effect.
+ * 按文件名把导入的透过率表与当前数据文件匹配（归一化在后端），填充逐文件
+ * 透过率映射并切到“分别设置”来源，使匹配值生效。
+ */
+async function handleMatchTransmissionFile(): Promise<void> {
+  if (!canMatchTransmissionFile.value) return
+
+  matchingTransmissionFile.value = true
+  transmissionMatches.value = []
+
+  try {
+    const response = await transport.submitTask('bg_subtract', {
+      action: 'transmission_file_match',
+      data_files: mode.value === 'single' ? [...samplePaths.value] : undefined,
+      sample_folder: mode.value === 'batch' ? sampleFolder.value ?? undefined : undefined,
+      transmission_file: transmissionFile.value ?? undefined,
+    })
+
+    const unsubResult = transport.onTaskResult(response.taskId, (payload) => {
+      const data = payload.data as { matches?: TransmissionFileMatch[] }
+      const matches = Array.isArray(data.matches) ? data.matches : []
+      transmissionMatches.value = matches
+      matchingTransmissionFile.value = false
+
+      const matched = matches.filter(
+        (m): m is TransmissionFileMatch & { transmission: number } =>
+          typeof m.transmission === 'number'
+      )
+      const missing = matches.length - matched.length
+      if (matched.length > 0) {
+        for (const m of matched) {
+          // Round to 4 decimals of a percent — the raw ratio is a full float
+          // (e.g. 60.00000008788259) that overflows the narrow per-file input
+          // ("60.0E") and adds false precision the measurement never had.
+          // 百分比保留 4 位小数——原始比值是全长浮点（如 60.00000008788259），
+          // 会撑爆窄输入框（显示 "60.0E"）并带出测量根本没有的假精度。
+          perFileTransmissions.value[m.data_file] =
+            Math.round(m.transmission * 100 * 1e4) / 1e4
+        }
+        // Switch to per-file so the filled values are visible/editable — except
+        // over the per-file limit (the radio is disabled there); 'file' already
+        // resolves to the same per-file numbers downstream.
+        // 切到“分别设置”以显示/编辑已填值——超过逐文件上限时该单选被禁用，
+        // 保持 'file' 来源即可（下游同样按逐文件数值处理）。
+        if (!tooManyFilesForPerFile.value) {
+          transmissionSource.value = 'per-file'
+        }
+        toast.push({
+          title: t('bgSubtract.transFile'),
+          message: t('bgSubtract.transFileApplied', { matched: matched.length, missing }),
+          tone: missing > 0 ? 'warning' : 'success',
+        })
+        // The result preview depends on the transmission — refresh it so the
+        // screen never shows a result computed with the previous values.
+        // 结果预览依赖透射率——立即刷新，避免屏幕停留在旧值算出的结果上。
+        if (resultPreviewUrl.value || state.value === 'done') {
+          loadResultPanel()
+        }
+      } else {
+        toast.push({
+          title: t('bgSubtract.transFile'),
+          message: t('bgSubtract.transFileNoMatch'),
+          tone: 'error',
+        })
+      }
+
+      unsubResult()
+      unsubError()
+    })
+
+    const unsubError = transport.onTaskError(response.taskId, (payload) => {
+      matchingTransmissionFile.value = false
+      toast.push({
+        title: t('bgSubtract.errorTitle'),
+        message: payload.error,
+        tone: 'error',
+      })
+      unsubResult()
+      unsubError()
+    })
+  } catch (err) {
+    matchingTransmissionFile.value = false
     toast.push({
       title: t('bgSubtract.errorTitle'),
       message: err instanceof Error ? err.message : String(err),
@@ -1044,7 +1406,10 @@ function loadPanelPreview(
   }
 
   if (tab === 'result') {
-    if (transmissionSource.value === 'per-file') {
+    // 'file' (imported transmission file) behaves exactly like 'per-file':
+    // the match step has already populated the per-file map.
+    // 'file'（导入的透过率文件）与“分别设置”同义：匹配步骤已填好逐文件映射。
+    if (transmissionSource.value === 'per-file' || transmissionSource.value === 'file') {
       const currentFile = files[currentSampleIndex.value]
       params.transmission = (perFileTransmissions.value[currentFile] ?? manualTransmission.value) / 100
     } else if (transmissionSource.value === 'manual') {
@@ -1198,6 +1563,20 @@ function onThumbnailSelect(index: number): void {
 async function handleSubtract(): Promise<void> {
   if (state.value === 'running') return
 
+  // Programmatic callers can bypass the disabled button — refuse with the
+  // same explicit reason instead of silently running with a fallback T.
+  // 程序化调用可能绕过禁用状态——同样给出明确原因，绝不静默按回退透射率执行。
+  if (missingPrerequisites.value.length > 0) {
+    toast.push({
+      title: t('bgSubtract.errorTitle'),
+      message: t('bgSubtract.executeBlocked', {
+        items: missingPrerequisites.value.join(' / '),
+      }),
+      tone: 'error',
+    })
+    return
+  }
+
   state.value = 'running'
   progress.value = 0
   progressMessage.value = null
@@ -1264,7 +1643,10 @@ async function handleSubtract(): Promise<void> {
   // 注意：Python 批量端只读取标量 `transmission`（以及它自己根据电离室文件夹
   // 计算出的逐文件值）。旧代码仅在 single 模式下设置透射率，导致 batch 模式
   // 下被静默忽略（T=1.0）。现在两种模式都设置，以尊重用户选择。
-  if (transmissionSource.value === 'per-file') {
+  // 'file' (imported transmission file) is equivalent to 'per-file' — the match
+  // step has already filled perFileTransmissions.
+  // 'file'（导入的透过率文件）与“分别设置”等价——匹配步骤已填好逐文件映射。
+  if (transmissionSource.value === 'per-file' || transmissionSource.value === 'file') {
     if (mode.value === 'single' && samplePaths.value.length === 1) {
       params.transmission = (perFileTransmissions.value[samplePaths.value[0]] ?? manualTransmission.value) / 100
     } else if (mode.value === 'single' && samplePaths.value.length > 1) {
@@ -1276,16 +1658,26 @@ async function handleSubtract(): Promise<void> {
       const firstPath = samplePaths.value[0]
       params.transmission = (perFileTransmissions.value[firstPath] ?? manualTransmission.value) / 100
     } else {
-      // Batch (folder) mode has no meaningful per-file mapping; fall back to manual.
-      // 批量（文件夹）模式没有逐文件映射意义，回退到手动值。
-      params.transmission = manualTransmission.value / 100
+      // Batch (folder) mode: the backend consumes the per-file `transmissions`
+      // map (exact path first, basename fallback); keep the first file's value
+      // as the scalar fallback. / 批量（文件夹）模式：后端逐文件消费
+      // `transmissions` 映射（精确路径优先，文件名回退）；首文件值作标量回退。
+      params.transmissions = getPerFileTransmissions()
+      const firstPath = currentSamplePaths.value[0]
+      params.transmission = firstPath
+        ? (perFileTransmissions.value[firstPath] ?? manualTransmission.value) / 100
+        : manualTransmission.value / 100
     }
   } else if (transmissionSource.value === 'manual') {
     params.transmission = manualTransmission.value / 100
   } else {
-    // ionchamber: use matched value as scalar fallback; the backend will
-    // auto-compute per-file values from the ionchamber folder when provided.
-    // 电离室：使用匹配值作为标量回退；若提供电离室文件夹，后端会自动逐文件计算。
+    // ionchamber: send the matched per-file values so they take effect for
+    // every file even if the backend cannot rescan the folder; the scalar is
+    // only a fallback. The backend still recomputes from the folder when it
+    // can and rejects the run when transmission is missing.
+    // 电离室：把匹配到的逐文件值随请求发送，即使后端无法重新扫描文件夹也能
+    // 生效；标量仅作回退。后端能重算时仍会重算，缺值时明确报错。
+    params.transmissions = getMatchedTransmissions()
     params.transmission = getMatchedTransmission()
   }
 
@@ -1469,6 +1861,13 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 16px;
+  /* The transmission-source row grew to FOUR options (manual / per-file /
+   * ionchamber / file) and the 4th radio clipped against the card edge at
+   * 1440px (visual review 2026-10-25) — wrap instead of clip.
+   * 透射率来源一行增至四项（手动/逐文件/电离室/文件）后，1440px 下第 4 个
+   * 单选被卡片边缘裁掉（视觉审查 2026-10-25）——换行而非裁切。 */
+  flex-wrap: wrap;
+  row-gap: 6px;
 }
 
 .bgs-radio-label {
@@ -1572,6 +1971,11 @@ onUnmounted(() => {
 
 .bgs-drop-hint {
   font-size: 0.75rem;
+  /* --text-muted measured ~2.56:1 on white (visual review 2026-10-25);
+   * slate-500 clears 4.5:1. Same fix as TransmissionView.
+   * 继承的 --text-muted 白底实测约 2.56:1（视觉审查 2026-10-25）；
+   * slate-500 达标。与透过率页同步修。 */
+  color: #64748b;
 }
 
 .bgs-import-mode {
@@ -1725,7 +2129,9 @@ onUnmounted(() => {
   padding: 8px 12px;
   background: rgba(245, 158, 11, 0.1);
   border-bottom: 1px solid rgba(245, 158, 11, 0.3);
-  color: var(--warning, #d97706);
+  /* amber-700: amber-600 measured ~2.9:1 on the pale strip (visual review
+   * 2026-10-25). / amber-700：amber-600 在浅琥珀条上实测约 2.9:1。 */
+  color: #b45309;
   font-size: 0.75rem;
   font-weight: 500;
 }
@@ -1759,6 +2165,14 @@ onUnmounted(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 140px;
+}
+
+/* Numeric column: header and cells share ONE alignment (visual review
+ * 2026-10-25 caught header-left / value-right mismatch).
+ * 数值列：表头与单元格统一右对齐（视觉审查 2026-10-25 发现表头左对齐、
+ * 数值右对齐不一致）。 */
+.bgs-match-table .bgs-col-num {
+  text-align: right;
 }
 
 .bgs-error-cell {

@@ -88,28 +88,27 @@
           <CalibPeakPanel
             v-else-if="step === 'peaks'"
             :peaks="peaks"
-            :sensitivity="sensitivity"
             :band-tol="bandTolPx"
             :current-ring="currentRing"
-            :detecting="detecting"
             :guide-count="ringGuide.length"
             :ring-picking="ringPicking"
             :center-picking="centerPicking"
+            :erase-armed="eraseArmed"
+            :can-undo="peakUndoStack.length > 0"
             :beyond-mask="beyondMask"
-            :remove-existing="removeExisting"
             :refreshing="refreshingRings"
-            @auto="handleAutoPeaks"
-            @update:sensitivity="sensitivity = $event"
             @update:band-tol="bandTolPx = $event"
             @update:current-ring="currentRing = $event"
             @clear="handleClearPeaks"
             @finish-ring="finishRingPick"
             @clear-guides="ringGuide = []"
             @toggle-center-pick="toggleCenterPick"
+            @toggle-erase="eraseArmed = !eraseArmed"
+            @undo="undoPeakStep"
             @update:beyond-mask="beyondMask = $event"
-            @update:remove-existing="removeExisting = $event"
             @refresh-rings="handleRefreshRings"
             @update-ring="handleRenameRing"
+            @delete-ring="handleDeleteRing"
           />
 
           <!-- Internal-standard step 2: pick ONE known ring + enter its value
@@ -298,6 +297,24 @@
               />
             </label>
           </template>
+          <!-- Mask display style: shared three-tier preference (red/white/
+               violet), also offered in MaskMaker's display panel — both drive
+               the same module-level ref (src/lib/maskDisplay.ts).
+               掩膜显示风格：三档共享偏好（淡红/纯白/深紫），掩膜工具显示面板
+               同款——两处驱动同一模块级 ref（src/lib/maskDisplay.ts）。 -->
+          <label class="cv-rb-field">
+            <span class="cv-rb-label">{{ t('maskMaker.display.maskStyle') }}</span>
+            <select
+              :value="maskStyle"
+              class="cv-rb-select"
+              :title="t('maskMaker.display.maskStyleHint')"
+              @change="onMaskStyleChange(($event.target as HTMLSelectElement).value)"
+            >
+              <option v-for="s in MASK_DISPLAY_STYLES" :key="s" :value="s">
+                {{ t(MASK_STYLE_I18N[s]) }}
+              </option>
+            </select>
+          </label>
           <button
             type="button"
             class="cv-rb-apply"
@@ -327,10 +344,14 @@
                 : t('calibration.com.canvasIdle'))
             : (step === 'ring'
                 ? t('calibration.ring.canvasHint')
-                : (step === 'peaks' && centerPicking ? centerPickHint : undefined))"
+                : (step === 'peaks' && eraseArmed ? eraseHint
+                  : (step === 'peaks' && centerPicking ? centerPickHint : undefined)))"
           :mask-overlay="maskOverlay"
+          :mask-style="maskStyle"
           :beam-center="refinedBeamCenter"
-          :region-mode="step === 'com' ? comPickMode : null"
+          :region-mode="step === 'com'
+            ? comPickMode
+            : (step === 'peaks' && eraseArmed ? 'rect' : null)"
           :com-region="comRegion"
           :com-center="comCenter"
           @canvas-click="onCanvasClick"
@@ -470,6 +491,7 @@ import { useRouter } from 'vue-router'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
+import { MASK_DISPLAY_STYLES, getMaskDisplayStyle, setMaskDisplayStyle, type MaskDisplayStyle } from '@/lib/maskDisplay'
 import { clearWorkspace, reportWorkspace } from '@/lib/workspace-state'
 
 import CalibCanvas from '@/components/calibration/CalibCanvas.vue'
@@ -687,6 +709,13 @@ function clearComCenter(): void {
  * 结构化克隆（BUG C 惯用法）。
  */
 async function onRegionSelected(region: CalibRegion): Promise<void> {
+  // Peaks-step box-erase (2026-10-25): the rect is a pure frontend filter —
+  // remove existing peaks inside, then sync via update_peaks.
+  // 峰拾取步的框选擦除：矩形纯前端过滤，删除框内已有峰后经 update_peaks 同步。
+  if (step.value === 'peaks' && eraseArmed.value) {
+    erasePeaksInRegion(region)
+    return
+  }
   const sid = comSessionId.value
   if (!sid) {
     toast.push({ title: t('calibration.com.title'), message: t('calibration.errors.noSession'), tone: 'error' })
@@ -851,16 +880,12 @@ const colormapOptions = [
 
 // Peak state / 峰状态
 const peaks = ref<CalibPeak[]>([])
-// 2026-10-22 用户反馈：默认 0.5 时 massif 峰识别容易过宽（cutoff 偏低、keep
-// 偏多），默认降为 0.2，高级区（CalibPeakPanel 的 <details>）也已默认展开，
-// 便于直接调灵敏度。
-const sensitivity = ref(0.2)
-// Ring-band half-width ±dr for ring_pick (2026-10-23 user feedback: it was a
-// hidden 15 px backend constant; now user-settable in the peak panel).
-// ring_pick 的环带半宽 ±dr（2026-10-23 用户反馈：原为后端隐藏常量 15px，
-// 现在峰拾取面板里可调）。
-const bandTolPx = ref(15)
-const detecting = ref(false)
+// Ring-band half-width ±dr for ring_pick (2026-10-23: user-settable, default
+// 5 px per user request — the original hidden constant was 15 px and too wide).
+// ring_pick 的环带半宽 ±dr（默认 5px——原后端隐藏常量 15px 偏宽）。
+// (2026-10-25: the sensitivity knob is GONE — the full-image auto-detect
+// 高级 section was removed at user request; ring picking is manual-only.)
+const bandTolPx = ref(5)
 const rings = ref<CalibRing[]>([])
 
 // REQ 2: ring-by-ring picking — the CURRENT ring number (calib2-style 1-based
@@ -871,15 +896,132 @@ const rings = ref<CalibRing[]>([])
 // 画布点击始终为该环收集引导点；完成本环收环后自动跳到 max+1。
 const currentRing = ref(1)
 
-// calib2-parity extraction options (STEP 0 study of pyFAI PeakPickingTask.py).
+// calib2-parity extraction option (STEP 0 study of pyFAI PeakPickingTask.py).
 // calib2 对标的提取选项（对 PeakPickingTask.py 的源码调研）。
 /** "Extract peaks, beyond masked values" — calib2 Ring tool (line 1247). */
 const beyondMask = ref(false)
-/** "Remove a set of already identified peaks" — calib2 Rubber tool (line 1281),
- *  applied to the extraction region before merging harvested peaks. */
-const removeExisting = ref(false)
 /** 刷新环号/自检 in flight. */
 const refreshingRings = ref(false)
+
+/**
+ * Box-erase of existing points (2026-10-25): replaces the never-working
+ * "移除拾取区已有点" checkbox. Arming switches the canvas to rect-region mode
+ * (crosshair cursor); the dragged box removes every existing peak inside —
+ * zoom/pan stay available, coordinates are zoom-aware via the canvas's region
+ * machinery. Single-shot: disarms after the box lands.
+ * 框选移除已有点（2026-10-25）：取代从未生效的旧勾选。激活后画布切矩形框选
+ * （十字光标），拖框删除框内全部已有峰；缩放平移仍可用（区域坐标随缩放换算）。
+ * 一次性：落框后自动退出。
+ */
+const eraseArmed = ref(false)
+const eraseHint = computed(() =>
+  isZh.value
+    ? '拖出一个矩形删除框内全部已有峰（可先放大）；落框后自动退出，Esc 取消草稿'
+    : 'Drag a rectangle to delete every existing peak inside (zoom in first if needed); disarms after the box lands, Esc cancels',
+)
+
+/**
+ * Peak-operation undo (回退, 2026-10-25): snapshot of the peak list + current
+ * ring + guide points taken BEFORE each user mutation (harvest / box-erase /
+ * delete-ring / renumber / refresh / single-point remove / set-centre refresh).
+ * Undo restores the snapshot and re-pushes it in keep mode. Geometry side
+ * effects (first-harvest centre seed, set-centre) are NOT reverted.
+ * 峰操作撤销（回退）：每次用户改动前快照峰表+当前环号+引导点；回退即恢复并
+ * 以 keep 模式重推。几何类副作用（首环中心种子、点选中心）不在回退范围。
+ */
+interface PeakUndoSnapshot {
+  peaks: CalibPeak[]
+  currentRing: number
+  ringGuide: Array<{ y: number; x: number }>
+}
+const peakUndoStack = ref<PeakUndoSnapshot[]>([])
+const PEAK_UNDO_MAX = 30
+
+/** Snapshot the current peak state for 回退 — call BEFORE a user mutation. */
+function pushPeakUndo(): void {
+  peakUndoStack.value.push({
+    peaks: peaks.value.map(p => ({ ...p })),
+    currentRing: currentRing.value,
+    ringGuide: ringGuide.value.map(p => ({ ...p })),
+  })
+  if (peakUndoStack.value.length > PEAK_UNDO_MAX) peakUndoStack.value.shift()
+}
+
+/** 回退 button: restore the last snapshot and re-push it (keep mode). */
+function undoPeakStep(): void {
+  const snap = peakUndoStack.value.pop()
+  if (!snap) return
+  peaks.value = snap.peaks
+  currentRing.value = snap.currentRing
+  ringGuide.value = snap.ringGuide
+  pushPeaksUpdate({ allowEmpty: peaks.value.length === 0 })
+  toast.push({
+    title: t('calibration.peaks.title'),
+    message: isZh.value
+      ? `已回退上一步峰操作（现 ${peaks.value.length} 个峰）`
+      : `Last peak operation undone (${peaks.value.length} peaks now)`,
+    tone: 'info',
+  })
+}
+
+/** Delete EVERY peak of one ring (null = the unassigned row), undoable. */
+function handleDeleteRing(ring: number | null): void {
+  const doomed = peaks.value.filter(p => p.ring === ring)
+  if (doomed.length === 0) return
+  pushPeakUndo()
+  peaks.value = peaks.value.filter(p => p.ring !== ring)
+  pushPeaksUpdate({ allowEmpty: peaks.value.length === 0 })
+  const label = ring == null
+    ? (isZh.value ? '未分配环号' : 'unassigned')
+    : (isZh.value ? `第 ${ring + 1} 环` : `ring ${ring + 1}`)
+  toast.push({
+    title: t('calibration.peaks.title'),
+    message: isZh.value
+      ? `已删除${label}的 ${doomed.length} 个峰`
+      : `Deleted ${doomed.length} peak(s) of ${label}`,
+    tone: 'info',
+  })
+}
+
+/**
+ * Box-erase handler (region-selected while the erase mode is armed): remove
+ * every peak inside the rect, one undo step, then disarm.
+ * 框选擦除：删除矩形内全部峰（可回退），随后退出武装。
+ */
+function erasePeaksInRegion(region: CalibRegion): void {
+  eraseArmed.value = false
+  if (region.kind !== 'rect') return
+  const y0 = Math.min(region.y0, region.y1)
+  const y1 = Math.max(region.y0, region.y1)
+  const x0 = Math.min(region.x0, region.x1)
+  const x1 = Math.max(region.x0, region.x1)
+  const kept = peaks.value.filter(p => !(p.y >= y0 && p.y <= y1 && p.x >= x0 && p.x <= x1))
+  const removed = peaks.value.length - kept.length
+  if (removed === 0) {
+    toast.push({
+      title: t('calibration.peaks.title'),
+      message: isZh.value ? '框内没有已有点' : 'No existing points inside the box',
+      tone: 'info',
+    })
+    return
+  }
+  pushPeakUndo()
+  peaks.value = kept
+  pushPeaksUpdate({ allowEmpty: kept.length === 0 })
+  toast.push({
+    title: t('calibration.peaks.title'),
+    message: isZh.value
+      ? `已移除框内 ${removed} 个峰（可回退）`
+      : `Removed ${removed} peak(s) inside the box (undoable)`,
+    tone: 'info',
+  })
+}
+
+// Leaving the peaks step disarms the erase mode; a stale armed cursor on the
+// refine/preview canvas would be confusing.
+watch(step, s => {
+  if (s !== 'peaks') eraseArmed.value = false
+})
 
 // Ring-guide points (owned here; drawn by CalibCanvas) / 环引导点
 const ringGuide = ref<Array<{ y: number; x: number }>>([])
@@ -928,7 +1070,12 @@ async function setCenterAt(row: number, col: number): Promise<void> {
     }))
     if (seq !== centerSeq) return // superseded / 已被取代
     geometry.value = normalizeGeometry(data.geometry)
-    if (Array.isArray(data.peaks) && data.peaks.length > 0) applyPeaksResponse(data)
+    if (Array.isArray(data.peaks) && data.peaks.length > 0) {
+      // set_center re-derives AUTO ring numbers — a peak-list mutation the
+      // user may want to undo (the centre seed itself is NOT reverted).
+      pushPeakUndo()
+      applyPeaksResponse(data)
+    }
     void refreshRingOverlay()
     const refreshed = numberOrNull(data.rings_refreshed) ?? 0
     const pos = `(${row.toFixed(0)}, ${col.toFixed(0)}) px`
@@ -986,6 +1133,11 @@ watch(
         ringsCount: rings.value.length,
         refined: geometry.value !== null,
         exported: exportResult.value !== null,
+        // 2026-10-25: mode + wizard step — lets the AI guided tour pick the
+        // right step table for the active branch (calibrant / internal / com).
+        // 模式与向导步骤——供 AI 教学按当前支路选择正确的步骤表。
+        mode: setupForm.value.mode,
+        step: step.value,
       },
     })
   },
@@ -1081,7 +1233,7 @@ function normalizePeaks(raw: unknown): CalibPeak[] {
   return out
 }
 
-/** Rings: [{ring, points: [y,x][]}] or bare polyline arrays. */
+/** Rings: [{ring, points: [y,x][], segments: [[y,x][]]}] or bare polyline arrays. */
 function normalizeRings(raw: unknown): CalibRing[] {
   if (!Array.isArray(raw)) return []
   const out: CalibRing[] = []
@@ -1091,7 +1243,20 @@ function normalizeRings(raw: unknown): CalibRing[] {
     } else if (item && typeof item === 'object') {
       const o = item as Record<string, unknown>
       const pts = Array.isArray(o.points) ? (o.points.filter(Array.isArray) as number[][]) : []
-      out.push({ ring: numberOrNull(o.ring) ?? idx, points: pts })
+      // Backend v0.3.5 per-arc segments: a ring clipped by the frame must not
+      // be stroked as one polyline. / 后端 v0.3.5 分段：被画布裁切的环不能按
+      // 一条折线描。
+      const segs = Array.isArray(o.segments)
+        ? o.segments
+            .filter(Array.isArray)
+            .map(seg => seg.filter(Array.isArray) as number[][])
+            .filter(seg => seg.length > 1)
+        : []
+      out.push({
+        ring: numberOrNull(o.ring) ?? idx,
+        points: pts,
+        segments: segs.length ? segs : undefined,
+      })
     }
   })
   return out.filter(r => r.points.length > 1)
@@ -1613,6 +1778,10 @@ function resetSessionResults(): void {
   rings.value = []
   currentRing.value = 1
   ringGuide.value = []
+  // A fresh session invalidates every undo snapshot (they belong to the old
+  // peak list). / 新会话使全部回退快照失效（属于旧峰表）。
+  peakUndoStack.value = []
+  eraseArmed.value = false
   maskOverlay.value = null
   maskStats.value = null
   chi2.value = null
@@ -1857,33 +2026,35 @@ function reloadDisplay(): void {
 // 暂无现成 i18n 键 —— 内联双语（见最终报告的缺失键清单）。
 const applyLabel = computed(() => (locale.value.startsWith('zh') ? '应用' : 'Apply'))
 
-// === Peaks / 峰拾取 ===
+// === Mask display style / 掩膜显示风格 ===
 
-async function handleAutoPeaks(): Promise<void> {
-  if (!sessionActive.value) {
-    toast.push({ title: t('calibration.title'), message: t('calibration.errors.noSession'), tone: 'error' })
-    return
-  }
-  detecting.value = true
-  try {
-    const data = await submitAndWait('calibration', sessionPayload('detect_peaks', {
-      sensitivity: sensitivity.value,
-      beyondMask: beyondMask.value,
-    }))
-    // 高级：全图自动拾取 REPLACES the list, assigns theoretical rings via the
-    // keep-mode push (all rings null → backend assigns), then re-groups the
-    // table by ring. / 全图自动拾取整表替换，经 keep 推送分配理论环号后按环
-    // 重新分组。
-    peaks.value = normalizePeaks(data.peaks)
-    pushPeaksUpdate()
-  } catch (err) {
-    toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
-  } finally {
-    detecting.value = false
+// Shared three-tier preference: the computed reads the module-level ref in
+// src/lib/maskDisplay.ts, so a switch made in MaskMaker's panel updates this
+// select and the canvas instantly (and vice versa) — no event bus needed.
+// 三档共享偏好：computed 读 src/lib/maskDisplay.ts 的模块级 ref，在掩膜工具
+// 面板里切换会即时更新本下拉与画布（反之亦然）——无需事件总线。
+const maskStyle = computed(() => getMaskDisplayStyle())
+
+/** i18n keys per tier — an explicit map keeps the zh/en key contract visible.
+ *  各档 i18n 键——显式映射让 zh/en 键契约一目了然。 */
+const MASK_STYLE_I18N: Record<MaskDisplayStyle, string> = {
+  red: 'maskMaker.display.maskStyleRed',
+  white: 'maskMaker.display.maskStyleWhite',
+  violet: 'maskMaker.display.maskStyleViolet',
+}
+
+function onMaskStyleChange(value: string): void {
+  // The select only offers valid tiers; this guard is belt-and-braces against
+  // programmatic dispatch. / 下拉只含合法档位；此守卫防程序化派发越界。
+  if ((MASK_DISPLAY_STYLES as string[]).includes(value)) {
+    setMaskDisplayStyle(value as MaskDisplayStyle)
   }
 }
 
+// === Peaks / 峰拾取 ===
+
 function handleClearPeaks(): void {
+  pushPeakUndo()
   peaks.value = []
   // Explicit clear — tell the backend too. The backend now treats an EMPTY
   // peak list as a no-op clear (STEP 1 fix), so this can no longer produce
@@ -1932,12 +2103,17 @@ function sortPeaksByRing(list: CalibPeak[]): CalibPeak[] {
  *  mode: 'keep' (default) honors the table's ring numbers (calib2 peak-table
  *  semantics — user edits survive); 'assign' re-derives every ring from the
  *  current geometry (刷新环号/自检 path). */
-function pushPeaksUpdate(opts: { mode?: 'assign' | 'keep'; allowEmpty?: boolean } = {}): void {
-  if (!sessionActive.value) return
+function pushPeaksUpdate(opts: { mode?: 'assign' | 'keep'; allowEmpty?: boolean } = {}): Promise<void> {
+  if (!sessionActive.value) return Promise.resolve()
   const mode = opts.mode ?? 'keep'
-  if (peaks.value.length === 0 && !opts.allowEmpty) return
+  if (peaks.value.length === 0 && !opts.allowEmpty) return Promise.resolve()
   const seq = ++peaksUpdateSeq
-  void submitAndWait('calibration', sessionPayload('update_peaks', {
+  // Returns the round-trip promise so callers can chain post-update refreshes
+  // (e.g. the auto-seeded centre's ring overlay — it needs the refinement the
+  // update creates). Bare callers keep working unchanged.
+  // 返回往返 Promise 供调用方在更新后接力刷新（如中心自动种子后的理论环
+  // 叠加——它依赖 update_peaks 建立的精修器）；原有裸调用不受影响。
+  return submitAndWait('calibration', sessionPayload('update_peaks', {
     mode,
     // ringUser travels BOTH ways: user-owned rings (完成本环 / 整环改号)
     // survive refine's automatic refresh on the backend.
@@ -1951,50 +2127,13 @@ function pushPeaksUpdate(opts: { mode?: 'assign' | 'keep'; allowEmpty?: boolean 
   })
 }
 
-// === Extraction-region + duplicate-handling helpers (calib2 parity) ===
-
-/** Harvest region returned by ring_pick: the band (and contiguous arc) the
- *  backend actually harvested. / ring_pick 返回的实际收峰区域（环带/弧段）。 */
-interface CalibHarvestRegion {
-  cy: number
-  cx: number
-  radiusPx: number
-  tolPx: number
-  arc: { a0: number; a1: number } | null
-}
-
-function parseHarvestRegion(raw: unknown): CalibHarvestRegion | null {
-  if (!raw || typeof raw !== 'object') return null
-  const o = raw as Record<string, unknown>
-  const cy = numberOrNull(o.cy)
-  const cx = numberOrNull(o.cx)
-  const radiusPx = numberOrNull(o.radiusPx)
-  if (cy == null || cx == null || radiusPx == null) return null
-  let arc: { a0: number; a1: number } | null = null
-  if (o.arc && typeof o.arc === 'object') {
-    const a = o.arc as Record<string, unknown>
-    const a0 = numberOrNull(a.a0)
-    const a1 = numberOrNull(a.a1)
-    if (a0 != null && a1 != null && a1 > a0) arc = { a0, a1 }
-  }
-  return {
-    cy, cx, radiusPx,
-    tolPx: numberOrNull(o.tolPx) ?? 15,
-    arc,
-  }
-}
-
-/** Is a point inside the harvested ring band (and arc, when contiguous)? */
-function inHarvestRegion(p: { y: number; x: number }, region: CalibHarvestRegion): boolean {
-  const dr = Math.abs(Math.hypot(p.y - region.cy, p.x - region.cx) - region.radiusPx)
-  if (dr > region.tolPx + 6) return false
-  if (region.arc) {
-    const TWO_PI = 2 * Math.PI
-    const delta = (((Math.atan2(p.y - region.cy, p.x - region.cx) - region.arc.a0) % TWO_PI) + TWO_PI) % TWO_PI
-    return delta <= region.arc.a1 - region.arc.a0
-  }
-  return true
-}
+// === Extraction-region helpers (calib2 parity) ===
+// (2026-10-25: the Rubber "remove existing points in the harvest band" option
+// and its harvest-region parsing are GONE — replaced by the explicit
+// box-erase mode (erasePeaksInRegion above), which works on already-collected
+// points at any time instead of silently filtering during a harvest.)
+// （2026-10-25：Rubber“收峰前去重”选项与收峰区域解析已移除——由显式框选
+// 擦除取代，随时可用，而非仅在收峰瞬间过滤。）
 
 /** calib2 "+" semantics with DISPLAY ring numbers (1-based): the next ring
  *  number is max(existing display ring)+1; 1 when the table is empty.
@@ -2018,6 +2157,7 @@ function handleRenameRing(oldRing: number, newRing: number): void {
   if (oldRing === newRing || newRing < 0) return
   const touched = peaks.value.some(p => p.ring === oldRing)
   if (!touched) return
+  pushPeakUndo()
   peaks.value = sortPeaksByRing(
     peaks.value.map(p => (p.ring === oldRing ? { ...p, ring: newRing, ringUser: true } : p)),
   )
@@ -2031,6 +2171,7 @@ function handleRenameRing(oldRing: number, newRing: number): void {
  *  按当前几何重新分配环号，并对偏离理论环的峰逐个告警。 */
 async function handleRefreshRings(): Promise<void> {
   if (!sessionActive.value || peaks.value.length === 0) return
+  pushPeakUndo()
   refreshingRings.value = true
   const seq = ++peaksUpdateSeq
   try {
@@ -2143,10 +2284,11 @@ const needRingPointsMessage = computed(() =>
  * REQ 2 ring-by-ring finish: ≥3 guide points → backend ring_pick (circle fit +
  * calib2 extraction) with ``assignRing`` = the CURRENT ring number (converted
  * from the 1-based spinner to the 0-based backend index) → harvested peaks are
- * stamped with exactly that ring (NOT theoretical nearest) → apply the Rubber
- * duplicate option → merge + dedupe → re-group the table by ring → clear
- * guides → spinner auto-advances to max+1 → update_peaks (keep mode honors the
- * stamped rings).
+ * stamped with exactly that ring (NOT theoretical nearest) → merge + dedupe →
+ * re-group the table by ring → clear guides → spinner auto-advances to max+1
+ * → update_peaks (keep mode honors the stamped rings). The whole merge is one
+ * undoable operation (回退). (2026-10-25: the Rubber in-band dedup option is
+ * gone — use 框选移除已有点 to clean up afterwards.)
  *
  * Extraction variants (STEP 0, PeakPickingTask.py:1243-1265): default
  * extractMode="contiguous" is calib2's "Arc" tool ("Extract contiguous
@@ -2154,9 +2296,9 @@ const needRingPointsMessage = computed(() =>
  * beyondMask option ("Ring" tool, "Extract peaks, beyond masked values") the
  * FULL ring is harvested and masked positions never block it.
  * 逐一环选完成：引导点 → ring_pick（携带 assignRing=当前环号，界面 1 起换算为
- * 0 起后端环号）→ 收到的峰直接打上该环号（而非理论最近环）→ Rubber 去重选项
- * → 并入去重 → 按环重新分组 → 清引导点 → 数字框自动跳到 max+1 → keep 模式
- * 推送（尊重已打环号）。默认连续提取（Arc 语义）；勾选越过掩码则整环提取。
+ * 0 起后端环号）→ 收到的峰直接打上该环号（而非理论最近环）→ 并入去重 → 按环
+ * 重新分组 → 清引导点 → 数字框自动跳到 max+1 → keep 模式推送（尊重已打环号）。
+ * 整个并入是一次可回退操作。默认连续提取（Arc 语义）；勾选越过掩码则整环提取。
  */
 async function finishRingPick(): Promise<void> {
   if (ringPicking.value) return
@@ -2196,21 +2338,15 @@ async function finishRingPick(): Promise<void> {
       points: pts,
       extractMode: beyondMask.value ? 'beyond_mask' : 'contiguous',
       assignRing,
-      // 2026-10-23: the band half-width and the sensitivity slider now BOTH
-      // reach the band harvest (they were invisible to ring_pick before).
-      // 环带半宽与灵敏度现在都传入环带收峰（此前 ring_pick 看不到它们）。
+      // 2026-10-23: only the band half-width rides along — the sensitivity
+      // knob is scoped to the full-image auto-detect (same-day user feedback).
+      // 只传环带半宽；灵敏度只作用于全图自动拾取（同日用户反馈）。
       tolPx: bandTolPx.value,
-      sensitivity: sensitivity.value,
     }))
+    // Undoable from here on: the merge/clear below is one user operation.
+    // 自此可回退：下方的并入/清引导点算一次用户操作。
+    pushPeakUndo()
     const harvested = normalizePeaks(data.peaks)
-    const region = parseHarvestRegion(data.region)
-
-    // Rubber option: remove the old points inside the harvested band/arc
-    // before merging the fresh harvest. / Rubber 选项：并入新收峰前，移除
-    // 环带（弧段）内的已有点。
-    if (removeExisting.value && region) {
-      peaks.value = peaks.value.filter(p => !inHarvestRegion(p, region))
-    }
 
     let added = false
     for (const p of harvested) {
@@ -2238,11 +2374,37 @@ async function finishRingPick(): Promise<void> {
       toast.push({ title: t('calibration.peaks.title'), message: msg, tone: 'warning' })
       return
     }
+    // 2026-10-23: the FIRST harvest auto-seeds the centre from the guide
+    // point circle fit (everything used to stay anchored at the IMAGE centre
+    // — user report: ring numbers ran absurdly high and the refine could not
+    // recover). Refresh geometry/overlay and tell the user; user-picked ring
+    // numbers are unaffected (pushPeaksUpdate below re-derives only auto
+    // ones under the new centre). / 首个收环按引导点圆拟合自动落中心种子
+    // （此前一直锚在图像中心——环号冲高、精修修不回来）。刷新几何/叠加并
+    // 提示；用户环号不受影响。
+    const seeded = data.centerSeeded as { y: number; x: number } | undefined
+    if (seeded) {
+      if (data.geometry) geometry.value = normalizeGeometry(data.geometry)
+      const pos = `(${seeded.y.toFixed(0)}, ${seeded.x.toFixed(0)}) px`
+      toast.push({
+        title: isZh.value ? '初猜中心' : 'Initial centre',
+        message: isZh.value
+          ? `已按本环圆拟合自动设定初猜中心 ${pos}；环号分配与精修初值随新中心（您指定的环号保留）`
+          : `Initial centre auto-seeded from this ring's circle fit at ${pos}; ring assignment and the refine start follow it (your picked rings kept)`,
+        tone: 'success',
+      })
+    }
     // Ring-by-ring: re-group by ring, then advance the spinner to max+1
     // (calib2 "+" semantics). / 按环重新分组，数字框跳到 max+1。
     peaks.value = sortPeaksByRing(peaks.value)
     if (added) currentRing.value = nextDisplayRing()
-    pushPeaksUpdate()
+    const pushed = pushPeaksUpdate()
+    // The auto-seeded centre's ring overlay needs the refinement the update
+    // just built — refresh AFTER the round-trip (firing earlier hits a
+    // session without gr and the backend politely refuses).
+    // 中心自动种子后的理论环叠加依赖 update_peaks 建立的精修器——在往返
+    // 之后再刷新（过早调用时后端还没有 gr，会被拒绝）。
+    if (seeded) void pushed.then(() => refreshRingOverlay())
   } catch (err) {
     toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
   } finally {
@@ -2563,6 +2725,7 @@ function onCanvasRemove(pixel: { row: number; col: number }): void {
     }
   })
   if (bestIdx < 0) return
+  pushPeakUndo()
   peaks.value = peaks.value.filter((_, i) => i !== bestIdx)
   pushPeaksUpdate()
 }
@@ -2836,32 +2999,67 @@ const integ2dLayout = computed<Partial<PlotLayout>>(() => {
 
 // === Export / 导出 ===
 
-async function handleExportPoni(savePath: string): Promise<void> {
+/** Basename for the web download filename (server paths use / or \). */
+function baseName(filePath: string): string {
+  const parts = filePath.split(/[\\/]/)
+  return parts[parts.length - 1] || filePath
+}
+
+async function handleExportPoni(savePath: string | null): Promise<void> {
   if (!sessionActive.value) {
     toast.push({ title: t('calibration.export.title'), message: t('calibration.errors.noSession'), tone: 'error' })
     return
   }
   exporting.value = true
   try {
-    const data = await submitAndWait('calibration', sessionPayload('export_poni', { savePath }))
+    // Web mode: the browser cannot write server paths — autoSave to the
+    // server's temp dir, then pull the file back as a browser download (the
+    // BgSubtract / Transmission pattern). Desktop keeps the user's savePath.
+    // Web 模式：浏览器写不了服务器路径——先 autoSave 到服务器临时目录，
+    // 再把文件拉回成浏览器下载（同 BgSubtract / Transmission 的做法）；
+    // 桌面端仍按用户输入的路径保存。
+    const data = await submitAndWait(
+      'calibration',
+      sessionPayload('export_poni', savePath ? { savePath } : { autoSave: true }),
+    )
+    // savePath first: the backend appends a missing .poni extension, so the
+    // echoed path is where the file ACTUALLY landed, not the raw input.
+    // savePath 优先：后端会补全缺失的 .poni 后缀，回显路径是文件真实落盘
+    // 位置，而非原始输入。
+    const echoed = stringOrNull(data.savePath) ?? stringOrNull(data.path) ?? stringOrNull(data.saved_path) ?? savePath ?? ''
     exportResult.value = {
-      // savePath first: the backend appends a missing .poni extension, so the
-      // echoed path is where the file ACTUALLY landed, not the raw input.
-      // savePath 优先：后端会补全缺失的 .poni 后缀，回显路径是文件真实落盘
-      // 位置，而非原始输入。
-      path: stringOrNull(data.savePath) ?? stringOrNull(data.path) ?? stringOrNull(data.saved_path) ?? savePath,
+      path: echoed,
       citation: normalizeCitation(data.citation),
     }
-    toast.push({
-      title: t('calibration.export.title'),
-      // Default-distance geometry (internal standard, no ring value) → the
-      // success toast must repeat the annotation note (user request).
-      // 默认距离几何（内标、无环数值）→ 成功 toast 须重复标注提示（用户要求）。
-      message: ringDistDefaulted.value
-        ? `${t('calibration.export.saved')} ${t('calibration.ring.exportToastNote', { mm: ringDefaultDistText.value })}`
-        : t('calibration.export.saved'),
-      tone: 'success',
-    })
+    if (!transport.isDesktop() && echoed) {
+      try {
+        await transport.downloadFile(echoed, baseName(echoed))
+        toast.push({
+          title: t('calibration.export.title'),
+          message: ringDistDefaulted.value
+            ? `${t('calibration.export.downloaded')} ${t('calibration.ring.exportToastNote', { mm: ringDefaultDistText.value })}`
+            : t('calibration.export.downloaded'),
+          tone: 'success',
+        })
+      } catch {
+        toast.push({
+          title: t('calibration.export.title'),
+          message: t('calibration.export.downloadFailed', { file: baseName(echoed) }),
+          tone: 'error',
+        })
+      }
+    } else {
+      toast.push({
+        title: t('calibration.export.title'),
+        // Default-distance geometry (internal standard, no ring value) → the
+        // success toast must repeat the annotation note (user request).
+        // 默认距离几何（内标、无环数值）→ 成功 toast 须重复标注提示（用户要求）。
+        message: ringDistDefaulted.value
+          ? `${t('calibration.export.saved')} ${t('calibration.ring.exportToastNote', { mm: ringDefaultDistText.value })}`
+          : t('calibration.export.saved'),
+        tone: 'success',
+      })
+    }
   } catch (err) {
     toastError(t('calibration.export.title'), err, t('calibration.title'))
   } finally {

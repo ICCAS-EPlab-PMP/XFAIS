@@ -963,14 +963,27 @@ def _assign_rings_detailed(
     order = np.argsort(diff, axis=1)
     assigned = order[:, 0].astype(int).copy()
     if honor_kept and kept_rings is not None:
-        kept = np.asarray(
-            [
-                int(r) if (r is not None and np.isfinite(r) and 0 <= int(r) < n_rings
-                           and np.isfinite(tth_rings[int(r)])) else -1
-                for r in kept_rings
-            ],
-            dtype=int,
-        )
+        finite_rings = np.where(np.isfinite(tth_rings))[0]
+
+        def _kept_or_clamp(r) -> int:
+            """User ring → kept as-is. Out-of-list indices clamp to the list;
+            unreachable indices (sin(θ)>1) clamp IN INDEX SPACE to the nearest
+            reachable ring — NEVER re-derived from the current geometry, which
+            with a rough centre used to relabel user rings to absurdly high
+            numbers (2026-10-23 user report). −1 = fall back to auto.
+            用户环号原样保留；越界按标样列表收敛；不可达环按索引距离收敛到
+            最近可达环——绝不再按当前几何重排（粗中心下曾把用户环号改成
+            超高环号）。−1 = 回退自动分配。"""
+            if r is None or not np.isfinite(r) or int(r) < 0:
+                return -1
+            ri = min(int(r), n_rings - 1)
+            if np.isfinite(tth_rings[ri]):
+                return ri
+            if finite_rings.size == 0:
+                return -1
+            return int(finite_rings[np.argmin(np.abs(finite_rings - ri))])
+
+        kept = np.asarray([_kept_or_clamp(r) for r in kept_rings], dtype=int)
         use = kept >= 0
         assigned[use] = kept[use]
 
@@ -1592,24 +1605,62 @@ def _extract_ring_overlay(session: Dict[str, Any], gr: Any, calibrant: Any,
         polygons = find_contours(tth_map, level=level)
         if not polygons:
             continue
-        pts = np.concatenate([np.asarray(p, dtype=np.float64) for p in polygons], axis=0)
-        # Downsample to <= _MAX_RING_POINTS per ring, then clip to the frame.
-        # 每环降采样至 ≤600 点，并裁剪到图像范围内。
-        if len(pts) > _MAX_RING_POINTS:
-            idx = np.unique(np.linspace(0, len(pts) - 1, _MAX_RING_POINTS).round().astype(int))
-            pts = pts[idx]
-        pts = pts[
-            (pts[:, 0] >= 0) & (pts[:, 0] <= h - 1)
-            & (pts[:, 1] >= 0) & (pts[:, 1] <= w - 1)
-        ]
-        if not len(pts):
+        # One contour level can come back as SEVERAL disconnected polygons — a
+        # ring extending beyond the frame is clipped into separate arcs (and
+        # border-hugging loops). The old code concatenated them into one flat
+        # list, so the canvas bridged the gap between arcs with a straight
+        # line across the image (画布错乱). Keep every polygon as its own
+        # polyline under ``segments``; the flat ``points`` (concatenation)
+        # stays for older consumers.
+        # 一个等值层可能返回多段不相连的等值线——超出画布的环被裁成若干弧段
+        # （以及贴边环线）。旧实现拼成一列扁平点，前端把段间空隙画成横穿图像
+        # 的直线（画布错乱）。现改为每段独立折线（segments）；扁平 points
+        # （拼接结果）保留以兼容旧消费方。
+        clipped = []
+        for poly in polygons:
+            p = np.asarray(poly, dtype=np.float64)
+            if len(p) < 2:
+                continue
+            p = p[
+                (p[:, 0] >= 0) & (p[:, 0] <= h - 1)
+                & (p[:, 1] >= 0) & (p[:, 1] <= w - 1)
+            ]
+            if len(p) >= 2:
+                clipped.append(p)
+        total = sum(len(p) for p in clipped)
+        if total < 2:
             continue
+        # Downsample to <= _MAX_RING_POINTS per ring, allocated PROPORTIONALLY
+        # per polygon (the old flat linspace over the concatenation could skip
+        # a small arc entirely).
+        # 每环降采样至 ≤600 点，按段长度比例分配（旧的扁平 linspace 可能整段
+        # 跳过小弧段）。
+        budgets = [max(2, int(_MAX_RING_POINTS * len(p) / total)) for p in clipped]
+        overflow = sum(budgets) - _MAX_RING_POINTS
+        while overflow > 0:
+            shaved = False
+            for i in sorted(range(len(budgets)), key=lambda k: -budgets[k]):
+                if overflow == 0:
+                    break
+                if budgets[i] > 2:
+                    budgets[i] -= 1
+                    overflow -= 1
+                    shaved = True
+            if not shaved:
+                break  # every segment already at the 2-point floor / 全部已到 2 点下限
+        segments = []
+        for p, budget in zip(clipped, budgets):
+            if len(p) > budget:
+                idx = np.unique(np.linspace(0, len(p) - 1, budget).round().astype(int))
+                p = p[idx]
+            segments.append([[float(r), float(c)] for r, c in p])
         d_val = d_spacings[ring_idx] if ring_idx < len(d_spacings) else None
         rings_out.append(
             {
                 "ring": int(ring_idx),
                 "d_spacing_A": float(d_val) if d_val is not None else None,
-                "points": [[float(r), float(c)] for r, c in pts],
+                "segments": segments,
+                "points": [pt for seg in segments for pt in seg],
             },
         )
     return rings_out
@@ -2140,18 +2191,25 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
         positions never block extraction. 收整环且禁用掩码（越过掩码值提取，
         Ring 工具）。
     Threshold is calib2's adaptive rule (RingExtractor._extract): band
-    mean+std, relaxed toward the band mean when fewer than
-    ``_RING_PICK_MIN_PIXELS`` candidates survive — replacing the old global
-    ``0.2·max`` cutoff that silently starved faint rings (harvest zero → the
-    STEP 1 empty-push bug). Since 2026-10-23 the **sensitivity slider drives
-    this rule too** (it previously only affected the full-image auto-detect,
-    so tuning it during ring picking did nothing — user feedback): the std
-    term is scaled by k = 1.6·(1 − sensitivity), relaxed in two steps
-    (k → k/2 → 0) when candidates starve.
-    阈值采用 calib2 的自适应规则（环带 mean+std，候选不足时分级放宽到
-    mean）。2026-10-23 起**灵敏度滑杆同样作用于环带收峰**（此前它只影响
-    全图自动拾取，环选时调灵敏度毫无效果——用户反馈）：std 项按
-    k = 1.6·(1 − 灵敏度) 缩放，候选不足时两级放宽（k → k/2 → 0）。
+    mean+std, relaxed toward the band mean in two steps when fewer than
+    ``_RING_PICK_MIN_PIXELS`` candidates survive. The 2026-10-23 sensitivity
+    wiring was REMOVED (same-day user feedback: effect invisible — the knob
+    stays scoped to the full-image auto-detect only).
+    阈值采用 calib2 的自适应规则（环带 mean+std，候选不足时两级放宽到
+    mean）。2026-10-23 曾把灵敏度接入环带阈值，同日按用户反馈撤除（效果
+    不可感知——灵敏度只作用于全图自动拾取）。
+
+    Centre auto-seed (2026-10-23 user report: 「选完环中心还锚在图片中央，
+    不点预估中心偏差很大、环号全乱」): the Kåsa circle fit through the
+    user's OWN guide points already determines the beam centre — the FIRST
+    successful harvest on a session with NO explicit centre seed (and no
+    refinement yet) writes it via ``_apply_center_seed``, so the 2θ coordinate
+    system, ring assignment and the refine's starting geometry all follow the
+    picked ring instead of the image centre (calib2-like behaviour).
+    中心自动落种子（2026-10-23 用户反馈）：对引导点做的圆拟合本身就给出光束
+    中心——首个成功收环在会话尚无中心种子（且未精修）时，经
+    ``_apply_center_seed`` 写入，使 2θ 坐标系、环号分配与精修初值都跟随所
+    选环，而非图像中心（对齐 calib2 行为）。
 
     Internal-standard sessions are deliberately NOT refused here: the harvest
     needs no calibrant, the internal-standard wizard uses ring_standard instead
@@ -2169,15 +2227,11 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
             pts.append((py_, px_))
     if len(pts) < 3:
         return _err("Ring picking needs at least 3 points on the ring", "环选需要环上至少 3 个点")
-    tol = _as_float(payload.get("tolPx"), 15.0) or 15.0
+    # 2026-10-23 user request: default band half-width 15 → 5 px. The
+    # sensitivity knob is intentionally NOT read here any more (see docstring).
+    # 默认环带半宽 15→5px（2026-10-23 用户要求）；不再读取灵敏度。
+    tol = _as_float(payload.get("tolPx"), 5.0) or 5.0
     keep = int(_as_float(payload.get("keep"), float(_RING_PICK_KEEP)) or _RING_PICK_KEEP)
-    # The sensitivity slider now drives the band threshold (2026-10-23 user
-    # feedback: "环带收峰不受灵敏度影响/效果差"). / 灵敏度接入环带阈值。
-    sensitivity = _as_float(payload.get("sensitivity"), 0.2)
-    if sensitivity is None:
-        sensitivity = 0.2
-    sensitivity = min(max(sensitivity, 0.0), 1.0)
-    k_thr = 1.6 * (1.0 - sensitivity)
     mode = str(payload.get("extractMode") or "")
     if not mode:
         mode = "beyond_mask" if payload.get("beyondMask") else "contiguous"
@@ -2209,17 +2263,16 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
         pick_mask = None if beyond else _massif_mask(session, False)
         valid_band = band if pick_mask is None else (band & ~pick_mask)
 
-        # calib2-style adaptive cutoff from the band's own statistics, with the
-        # sensitivity-scaled std term and a TWO-step relaxation (k → k/2 → 0)
-        # when candidates starve. / 基于环带统计的自适应阈值；std 项按灵敏度
-        # 缩放，候选不足时两级放宽。
+        # calib2-style adaptive cutoff from the band's own statistics, with a
+        # TWO-step relaxation (std → std/2 → mean) when candidates starve.
+        # 基于环带统计的自适应阈值；候选不足时两级放宽。
         sub = data[valid_band]
         mean = float(np.nanmean(sub))
         std = float(np.nanstd(sub))
-        upper = mean + k_thr * std
+        upper = mean + std
         area = valid_band & (data > upper)
         if int(area.sum()) < _RING_PICK_MIN_PIXELS:
-            upper = mean + 0.5 * k_thr * std
+            upper = mean + 0.5 * std
             area = valid_band & (data > upper)
         if int(area.sum()) < _RING_PICK_MIN_PIXELS:
             upper = mean
@@ -2276,6 +2329,32 @@ async def _action_ring_pick(payload: dict, session: dict) -> dict:
             "radiusPx": float(radius), "tolPx": float(tol), "arc": arc,
         }
         result["cutoff"] = float(upper) if math.isfinite(upper) else None
+
+        # Centre auto-seed (2026-10-23 user report — see docstring): only on
+        # the FIRST useful harvest of a session that has neither an explicit
+        # centre seed nor a refinement yet, and only when the Kåsa fit is
+        # sane (centre roughly inside the frame, radius plausible). The
+        # circle through the user's OWN guide points beats the image centre
+        # as the 2θ origin every time. / 中心自动落种子：仅在尚无中心种子且
+        # 未精修的会话、且圆拟合合理（中心大致在画面内、半径可置信）时，
+        # 以用户引导点的圆拟合中心取代图像中心作为 2θ 原点。
+        if peaks and session.get("center0") is None and session.get("gr") is None:
+            r_max = 1.2 * math.hypot(h, w) / 2.0
+            center_plausible = (
+                math.isfinite(cy)
+                and math.isfinite(cx)
+                and math.isfinite(radius)
+                and 5.0 <= radius <= r_max
+                and -0.25 * w <= cx <= 1.25 * w
+                and -0.25 * h <= cy <= 1.25 * h
+            )
+            if center_plausible:
+                seed = await _apply_center_seed(session, float(cy), float(cx))
+                if seed.get("status") == "ok":
+                    result["centerSeeded"] = seed["center"]
+                    result["geometry"] = seed.get("geometry")
+                    result["rings_refreshed"] = seed.get("rings_refreshed", 0)
+
         if not peaks:
             result["message"] = (
                 "No peaks found in the ring band; check the guide points or "

@@ -86,6 +86,7 @@ export function calibPeakRingColor(ring: number): string {
  */
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
+import type { MaskDisplayStyle } from '@/lib/maskDisplay'
 
 /** A picked calibration peak. y = row, x = col (image pixel coordinates).
  *  ring is null until the backend assigns one (detect/pick return unassigned).
@@ -111,6 +112,15 @@ export interface CalibPeak {
 export interface CalibRing {
   ring: number
   points: number[][]
+  /**
+   * Ring contour as SEPARATE polylines (backend `segments`, v0.3.5): a ring
+   * extending beyond the frame comes back as several arcs — stroking them as
+   * one polyline bridges the gaps with straight lines across the canvas.
+   * Absent → fall back to the flat `points`.
+   * 环等值线的分段折线（后端 segments，v0.3.5）：超出画布的环会返回多段弧，
+   * 按一条折线画会在段间连出横穿画布的直线；缺失时回退扁平 points。
+   */
+  segments?: number[][][]
 }
 
 /** A ring-pick guide point (ring mode): y = row, x = col. */
@@ -134,10 +144,12 @@ export interface CalibRingFit {
 /**
  * Coarse session-mask overlay (REQ 1): the setup action downsamples the
  * combined mask (file + intensity bounds + dead pixels) to ≤256×256 tiles;
- * grid[i * cols + j] === 1 marks a masked tile. Drawn as translucent red
- * squares in image pixel space, visible at every wizard step.
+ * grid[i * cols + j] === 1 marks a masked tile. Drawn in image pixel space
+ * with the shared three-tier display style (see src/lib/maskDisplay.ts),
+ * visible at every wizard step.
  * 会话掩膜粗网格叠加（REQ 1）：setup 把合并掩膜降采样为 ≤256×256 网格，
- * 1 = 该格含被屏蔽像素；按图像像素坐标画半透明红色方块，每一步都可见。
+ * 1 = 该格含被屏蔽像素；按图像像素坐标、以共享的三档显示风格（见
+ * src/lib/maskDisplay.ts）绘制，每一步都可见。
  */
 export interface CalibMaskOverlay {
   rows: number
@@ -209,10 +221,20 @@ const props = withDefaults(defineProps<{
    * 引导点、不平移——只画区域；完成后经 `region-selected` 发出。
    */
   regionMode?: 'rect' | 'poly' | null
-  /** Confirmed direct-beam region outline — dashed cyan echo. */
+  /** Confirmed direct-beam region outline — dashed white echo. */
   comRegion?: CalibRegion | null
   /** Direct-beam centroid marker (cyan crosshair) — sub-pixel coordinates. */
   comCenter?: { x: number; y: number } | null
+  /**
+   * Mask-overlay display style (shared preference, see src/lib/maskDisplay.ts):
+   * 'red' translucent red tiles (default) / 'white' opaque white /
+   * 'violet' 5%-opacity deep violet. Only affects the coarse grid — the
+   * com-centre crosshair is a RESULT marker and stays cyan.
+   * 掩膜叠加显示风格（共享偏好，见 src/lib/maskDisplay.ts）：'red' 半透明
+   * 淡红方块（默认）/ 'white' 不透明纯白 / 'violet' 5% 透明度深紫。仅作用于
+   * 粗网格——质心十字是结果标记，保持青色。
+   */
+  maskStyle?: MaskDisplayStyle
 }>(), {
   interactive: false,
   hint: '',
@@ -223,6 +245,7 @@ const props = withDefaults(defineProps<{
   regionMode: null,
   comRegion: null,
   comCenter: null,
+  maskStyle: 'red',
 })
 
 const emit = defineEmits<{
@@ -617,18 +640,30 @@ function drawOverlay(): void {
   const lineW = Math.max(1.5 / zoom.value, 0.5)
   const arm = Math.max(5 / zoom.value, 1.5)
 
-  // Session-mask overlay (REQ 1): translucent red tiles over masked regions,
-  // drawn FIRST so rings/peaks/guides stay on top. Tiles live in image pixel
-  // space (each tile spans imageWidth/cols × imageHeight/rows px) and ride the
-  // same CSS transform as the image — visible at every step, zoom-compensated.
-  // 会话掩膜叠加（REQ 1）：屏蔽区画半透明红色方块，最先绘制以保证环/峰/引导
-  // 点在其上。方块位于图像像素坐标系（每格 imageWidth/cols × imageHeight/rows
-  // 像素），与图像共用同一 CSS transform——每一步可见，线宽随缩放补偿。
+  // Session-mask overlay (REQ 1): tiles over masked regions, drawn FIRST so
+  // rings/peaks/guides stay on top. Tiles live in image pixel space (each tile
+  // spans imageWidth/cols × imageHeight/rows px) and ride the same CSS
+  // transform as the image — visible at every step, zoom-compensated.
+  // Three-tier color follows the SHARED display preference (see
+  // src/lib/maskDisplay.ts): 'red' translucent red keeps image detail visible
+  // (default), 'white' opaque white fully hides the data beneath (effective
+  // detector area at a glance), 'violet' 5%-opacity deep violet barely
+  // disturbs the underlying image while hinting at the masked extent.
+  // 会话掩膜叠加（REQ 1）：屏蔽区画方块，最先绘制以保证环/峰/引导点在其上。
+  // 方块位于图像像素坐标系（每格 imageWidth/cols × imageHeight/rows 像素），
+  // 与图像共用同一 CSS transform——每一步可见，线宽随缩放补偿。三档配色跟随
+  // 共享显示偏好（见 src/lib/maskDisplay.ts）：'red' 半透明淡红保留图像细节
+  // （默认）；'white' 不透明纯白完全遮挡下方数据，直观呈现有效探测范围；
+  // 'violet' 5% 透明度深紫几乎不干扰原图，仅提示掩膜大致范围。
   const mo = props.maskOverlay
   if (mo && mo.rows > 0 && mo.cols > 0 && mo.grid.length === mo.rows * mo.cols) {
     const tileH = h / mo.rows
     const tileW = w / mo.cols
-    ctx.fillStyle = 'rgba(248, 113, 113, 0.28)'
+    ctx.fillStyle = props.maskStyle === 'white'
+      ? 'rgba(255, 255, 255, 1)'
+      : props.maskStyle === 'violet'
+        ? 'rgba(76, 29, 149, 0.05)'
+        : 'rgba(248, 113, 113, 0.28)'
     for (let r = 0; r < mo.rows; r++) {
       const ty = r * tileH
       if (ty > y1 + margin || ty + tileH < y0 - margin) continue
@@ -642,11 +677,16 @@ function drawOverlay(): void {
   }
 
   // Region selection + direct-beam echo (2026-10-21): drafts (rubber-band
-  // rect / polygon vertices + follow line), the CONFIRMED region outline
-  // (dashed cyan) and its centroid marker — drawn above the mask, below the
+  // rect / polygon vertices + follow line) and the CONFIRMED region outline
+  // (dashed white since 2026-10-26 — pure white reads on any image content,
+  // the old cyan vanished on bluish frames) — drawn above the mask, below the
   // rings/peaks. / 区域框选与直通光回显：草稿（橡皮筋矩形 / 多折框顶点 +
-  // 跟随线）、已确认区域轮廓（青色虚线）与质心标记——画在掩膜之上、环/峰之下。
-  const regionStyle = '#22d3ee'
+  // 跟随线）与已确认区域轮廓（2026-10-26 起纯白虚线——白色在任何图像内容上
+  // 都可读，原青色在偏蓝图像上看不清）——画在掩膜之上、环/峰之下。
+  // NOTE: the com-centre crosshair below is deliberately NOT this constant —
+  // it is a RESULT marker and keeps its cyan identity.
+  // 注意：下方质心十字刻意不用此常量——它是结果标记，保持青色。
+  const regionStyle = '#FFFFFF'
   const drawRegionPath = (pts: Array<{ y: number; x: number }>, close: boolean): void => {
     if (pts.length === 0) return
     ctx.beginPath()
@@ -675,7 +715,11 @@ function drawOverlay(): void {
   if (draftRect.value) {
     const d = draftRect.value
     ctx.save()
-    ctx.fillStyle = 'rgba(34, 211, 238, 0.15)'
+    // Faint white wash inside the rubber-band rect — a hint of the area, not
+    // a solid fill (12% vs the old 15% cyan: white needs less opacity to read
+    // as "draft"). / 橡皮筋矩形内的淡白填充——只提示面积而非实心（12%，旧青
+    // 色 15%：白色更低不透明度即可读出"草稿"感）。
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
     ctx.strokeStyle = regionStyle
     ctx.lineWidth = lineW * 1.4
     const rx = Math.min(d.x0, d.x1), ry = Math.min(d.y0, d.y1)
@@ -702,14 +746,18 @@ function drawOverlay(): void {
     ctx.restore()
   }
   // Confirmed centroid (sub-pixel): cyan crosshair — the PRE-fit counterpart
-  // of the magenta refined-centre marker. / 已确认质心（亚像素）：青色十字
-  // ——洋红精修中心标记的拟合前对应物。
+  // of the magenta refined-centre marker. Deliberately NOT tied to
+  // regionStyle: it is a RESULT marker, not a sketch outline, so it keeps its
+  // cyan identity even though the region outlines turned white (2026-10-26).
+  // 已确认质心（亚像素）：青色十字——洋红精修中心标记的拟合前对应物。刻意
+  // 不跟随 regionStyle：它是结果标记而非勾勒线条，区域轮廓改白（2026-10-26）
+  // 后仍保持青色以示区分。
   const cc = props.comCenter
   if (cc && Number.isFinite(cc.x) && Number.isFinite(cc.y)) {
     const ccArm = Math.max(10 / zoom.value, 3)
     ctx.lineCap = 'round'
     for (const pass of [0, 1]) {
-      ctx.strokeStyle = pass === 0 ? 'rgba(255, 255, 255, 0.9)' : regionStyle
+      ctx.strokeStyle = pass === 0 ? 'rgba(255, 255, 255, 0.9)' : '#22d3ee'
       ctx.lineWidth = pass === 0 ? lineW * 2.6 : lineW * 1.6
       ctx.beginPath()
       ctx.moveTo(cc.x - ccArm, cc.y)
@@ -723,31 +771,42 @@ function drawOverlay(): void {
   // Ring polylines: one hue per ring index. points are [y, x] (row, col).
   // 环折线：每个环一种颜色。点为 [y, x]（行, 列）。
   props.rings.forEach((ring, idx) => {
-    if (!ring.points || ring.points.length < 2) return
+    // One STROKE per contour segment: a ring clipped by the frame is several
+    // arcs (backend `segments`); a single path would bridge the arcs with
+    // straight lines across the canvas (v0.3.5 fix).
+    // 每段等值线单独描一次：被画布裁切的环是多段弧（后端 segments），
+    // 单一路径会把弧段间空隙连成横穿画布的直线（v0.3.5 修复）。
+    const segs: number[][][] = ring.segments && ring.segments.length
+      ? ring.segments
+      : (ring.points ? [ring.points] : [])
+    if (!segs.length) return
     ctx.strokeStyle = ringColor(idx)
     ctx.lineWidth = lineW
-    ctx.beginPath()
-    let started = false
-    for (const pt of ring.points) {
-      const y = pt[0]
-      const x = pt[1]
-      if (
-        !Number.isFinite(x) || !Number.isFinite(y) ||
-        x < x0 - margin || x > x1 + margin || y < y0 - margin || y > y1 + margin
-      ) {
-        // Outside the visible region (or a gap marker): break the polyline.
-        // 屏外（或断点标记）：断开折线。
-        started = false
-        continue
+    for (const seg of segs) {
+      if (!seg || seg.length < 2) continue
+      ctx.beginPath()
+      let started = false
+      for (const pt of seg) {
+        const y = pt[0]
+        const x = pt[1]
+        if (
+          !Number.isFinite(x) || !Number.isFinite(y) ||
+          x < x0 - margin || x > x1 + margin || y < y0 - margin || y > y1 + margin
+        ) {
+          // Outside the visible region (or a gap marker): break the polyline.
+          // 屏外（或断点标记）：断开折线。
+          started = false
+          continue
+        }
+        if (!started) {
+          ctx.moveTo(x, y)
+          started = true
+        } else {
+          ctx.lineTo(x, y)
+        }
       }
-      if (!started) {
-        ctx.moveTo(x, y)
-        started = true
-      } else {
-        ctx.lineTo(x, y)
-      }
+      ctx.stroke()
     }
-    ctx.stroke()
   })
 
   // Ring-pick guide: dashed preview circle fitted through the guide points,
@@ -858,6 +917,16 @@ watch(
     nextTick(() => drawOverlay())
   },
   { deep: true }
+)
+
+// Display-style switch (shared preference, see src/lib/maskDisplay.ts) only
+// changes the mask tiles' color — a dedicated lightweight watch avoids adding
+// churn to the big redraw watch above.
+// 显示风格切换（共享偏好，见 src/lib/maskDisplay.ts）只改掩膜方块配色——
+// 独立轻量 watch，避免给上面的大重绘 watch 增加无关触发。
+watch(
+  () => props.maskStyle,
+  () => drawOverlay()
 )
 
 // ── Lifecycle ─────────────────────────────────────────────────────────────────
