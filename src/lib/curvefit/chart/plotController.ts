@@ -45,10 +45,13 @@ import {
 import { fmtTick } from '../utils/format'
 
 const MAX_SAMPLES = 3200
-// Grab radius in CSS px. Generous on purpose: the visible marks are small, and
-// missing one used to fall through to box-zoom, which feels like "drag failed".
-const ANCHOR_R = 14
-const ANCHOR_R_SMALL = 12
+// Grab radius in CSS px, sized to the DRAWN marks (main dot r≈5.5–7, handles
+// 4.4–7) plus a small margin. The old 14 px radius reached far past the visible
+// anchor and stole blank-area clicks on the placement step.
+// 抓取半径按可见标记尺寸（主锚 r≈5.5–7、手柄 4.4–7）加小余量：原来的 14 px
+// 伸到标记之外，在放峰步抢走了空白点击（用户以为“放峰没成功”）。
+const ANCHOR_R = 10
+const ANCHOR_R_SMALL = 9
 const POINT_R = 5
 /** Baseline point-selection hit radius (generous, original manual allows ±7 px). */
 const BASELINE_POINT_R = 7
@@ -496,21 +499,28 @@ export class PlotController {
     const view = this.view
     const n = view.xs.length
 
-    // baseline (live params → always current, incl. preview edits)
+    // TWO baseline roles (2026-11-14 fix): modelBase = the baseline the ENGINE
+    // fits (parametric joint baseline) — the blue 拟合 envelope must use exactly
+    // this one; baseV = the 基线 series / subtract preview, where an uncommitted
+    // 自动扫描 curve is shown as PREVIEW only (preprocessing, never fitted).
+    // Mixing them double-counted the background the peaks had already absorbed:
+    // the blue line sat a whole baseline above the black data.
+    // 基线的两种角色（2026-11-14 修复）：modelBase = 引擎真正拟合的参数化基线，
+    // 蓝色「拟合」包络只能用它；baseV = 「基线」序列与扣除预览，未扣除的自动扫描
+    // 基线仅在此预览（属预处理，绝不进引擎）。二者混用会把峰已吸收的背景再加
+    // 一次——蓝线整段高出黑线一个基线。
     const bl = pk.baseline
+    const hasBase = bl.enabled && bl.fn !== 'none' && BASELINE_FN_MAP.has(bl.fn)
+    const modelBase = hasBase ? evalBaseline(bl.fn, bl.p, view.xs) : null
     const scan = pk.scanBase.value
-    if (scan && scan.length === yv.length) {
-      // 自动扫描 preview: sample the full-range vector into the current view
-      this.baseV = sampleCurve(scan, view)
-    } else {
-      const hasBase = bl.enabled && bl.fn !== 'none' && BASELINE_FN_MAP.has(bl.fn)
-      this.baseV = hasBase ? evalBaseline(bl.fn, bl.p, view.xs) : null
-    }
+    const scanV = scan && scan.length === yv.length ? sampleCurve(scan, view) : null
+    this.baseV = scanV ?? modelBase
 
     // data series (optionally baseline-subtracted preview)
+    const previewBase = ui.subtractPreview.value ? this.baseV : null
     const dataY = Float64Array.from(view.ys)
-    if (ui.subtractPreview.value && this.baseV) {
-      for (let i = 0; i < n; i++) dataY[i] = view.ys[i] - this.baseV[i]
+    if (previewBase) {
+      for (let i = 0; i < n; i++) dataY[i] = view.ys[i] - previewBase[i]
     }
     this.dataYV = dataY
 
@@ -524,11 +534,13 @@ export class PlotController {
     }
 
     // Model envelope (the "拟合" line): ALWAYS the live composite of the
-    // CURRENT parameters — enabled component curves + baseline. It follows
-    // anchor drags and streamed iterations in real time (the reference application Y2 behavior);
-    // the engine's own yFit/residual arrays remain authoritative for the
-    // report and exports.
-    const bv = this.baseV
+    // CURRENT parameters — enabled component curves + the ENGINE's baseline
+    // (modelBase, never the scan preview). It follows anchor drags and streamed
+    // iterations in real time (the reference application Y2 behavior); the
+    // engine's own yFit/residual arrays remain authoritative for the report
+    // and exports.
+    // 模型包络（「拟合」线）= 实时峰分量 + 引擎基线（modelBase，绝不用扫描预览）。
+    const bv = modelBase
     let any = bv !== null
     const sum = bv ? Float64Array.from(bv) : new Float64Array(n)
     for (const p of pk.list.value) {
@@ -538,16 +550,28 @@ export class PlotController {
       any = true
       for (let i = 0; i < n; i++) sum[i] += c[i]
     }
-    this.fitV = any ? sum : null
 
-    // Residual: live y − model envelope over the current view.
-    if (this.fitV) {
+    // Residual: RAW y − model envelope over the current view (the preview
+    // shift below must never leak into it).
+    // 残差 = 原始 y − 模型包络（下面的预览平移不得混入）。
+    if (any) {
       const r = new Float64Array(n)
       for (let i = 0; i < n; i++) r[i] = view.ys[i] - sum[i]
       this.residV = r
     } else {
       this.residV = null
     }
+
+    // Subtract preview: shift data AND envelope by the SAME baseline, so the
+    // two curves stay directly comparable (blue − black is the model error
+    // either way) and the components line up with the subtracted data. The
+    // fit itself always uses the raw data. / 扣除预览：数据与包络同减一条基线，
+    // 二者仍可直接比较（蓝−黑恒为模型误差），分量也与扣除后的数据对齐；拟合本身
+    // 始终用原始数据。
+    if (previewBase) {
+      for (let i = 0; i < n; i++) sum[i] -= previewBase[i]
+    }
+    this.fitV = any ? sum : null
 
     this.pushData(fullRange)
   }
@@ -562,6 +586,11 @@ export class PlotController {
 
     const empty = new Float64Array(0)
     // Column order mirrors series order: x, data, baseline, comps..., fit.
+    // The BASELINE column is the displayed baseline: the engine's parametric
+    // baseline, or the uncommitted 自动扫描 curve while it is being previewed
+    // (that one is preprocessing and is NOT part of the fit column).
+    // 基线列 = 图上显示的基线：引擎的参数化基线，或未扣除时的自动扫描预览曲线
+    // （后者属预处理，不参与「拟合」列）。
     // The DATA column is nullable: excluded raw points become `null`, so the
     // curve shows real gaps on every step (the values stay in view.ys /
     // dataYV for residuals, fit input and exports).
@@ -747,6 +776,12 @@ export class PlotController {
     if (!u) return null
     const pk = usePeaks()
     let best: AnchorHit | null = null
+    // Effective distance = true distance + bias (selected peak wins ties).
+    // The old code compared `d + boost` against the UNbiased stored `best.dist`,
+    // so the bias did not survive a cross-peak comparison.
+    // 生效距离 = 真实距离 + 偏置（选中峰优先）。旧代码把加了偏置的距离与未加
+    // 偏置的已存距离比较，跨峰时偏置失真；这里单独记录生效距离。
+    let bestEff = Number.POSITIVE_INFINITY
     const sel = pk.selectedId.value
     for (const p of pk.list.value) {
       const a = this.anchorsOf(p)
@@ -756,12 +791,22 @@ export class PlotController {
         const dx = px - u.valToPos(pt[0], 'x')
         const dy = py - u.valToPos(pt[1], 'y')
         const d = Math.hypot(dx, dy)
-        if (d <= r && (!best || d + boost < best.dist)) best = { kind, peakId: p.id, dist: d }
+        if (!(d <= r)) return
+        const eff = d + boost
+        if (!best || eff < bestEff) {
+          best = { kind, peakId: p.id, dist: d }
+          bestEff = eff
+        }
       }
       consider('main', a.main, ANCHOR_R)
-      consider('leftHalf', a.leftHalf, ANCHOR_R_SMALL)
-      consider('rightHalf', a.rightHalf, ANCHOR_R_SMALL)
-      consider('quarter', a.quarter, ANCHOR_R_SMALL)
+      // Half/quarter handles are only DRAWN for enabled peaks (a disabled peak
+      // keeps its hollow main dot). Never expose invisible grab targets.
+      // 半高/形状手柄只为启用峰绘制（停用峰只留空心主锚），不得留下不可见抓取点。
+      if (p.enabled) {
+        consider('leftHalf', a.leftHalf, ANCHOR_R_SMALL)
+        consider('rightHalf', a.rightHalf, ANCHOR_R_SMALL)
+        consider('quarter', a.quarter, ANCHOR_R_SMALL)
+      }
     }
     return best
   }
@@ -816,7 +861,6 @@ export class PlotController {
     const ov = this.overlay
     if (!u || !ov) return
     const ui = useUi()
-    ui.popover.value = null
 
     const p = this.eventToPlot(e)
     if (!this.insidePlot(p)) return
@@ -832,6 +876,15 @@ export class PlotController {
     const bl = useBaselineWork()
     const baselineActive = step === 'baseline' && bl.active.value
     const anchor = this.anchorsEnabled() ? this.hitTestAnchors(p.x, p.y) : null
+    // A press anywhere in the plot closes the 峰调整 popover — EXCEPT on the
+    // popover's own main anchor: a plain click there re-opens it on pointerup,
+    // and unmounting in between flickers and resets its "重置" baseline.
+    // 图区内按下即关闭峰调整浮层，但按在本浮层所属峰的主锚上时保持打开：单击
+    // 该锚点本就会重新打开它，中途卸载会闪烁并重置「重置」基线。
+    const pop = ui.popover.value
+    if (!(pop && anchor && anchor.kind === 'main' && anchor.peakId === pop.peakId)) {
+      ui.popover.value = null
+    }
     let target: DownTarget
     if (anchor) {
       // 拟合进行中拖锚点 → 自动 停止并保留(红线 #9)
@@ -1004,18 +1057,33 @@ export class PlotController {
       const hit = pd.target.hit
       const pk = usePeaks()
       const peak = pk.list.value.find((q) => q.id === hit.peakId)
-      if (!peak) return
-      if (hit.kind === 'main') {
-        // 单击主锚 = 开关该峰
-        const before = peak.enabled
-        setPeakEnabled(peak.id, !before)
-        pushCommand({
-          label: '峰 开/关',
-          undo: () => setPeakEnabled(peak.id, before),
-          redo: () => setPeakEnabled(peak.id, !before),
-        })
-      } else {
-        selectPeak(peak.id)
+      if (peak) {
+        if (hit.kind !== 'main') {
+          // 手柄单击 = 仅选中（不改拟合内容）。
+          selectPeak(peak.id)
+        } else if (e.altKey) {
+          // Alt+单击主锚 = 显式停用/启用，是图上唯一会改变拟合内容的手势。
+          // 单击绝不能静默开关峰：以前单击主锚会翻 enabled，蓝线（拟合包络）
+          // 上的该峰分量随之消失，而峰仍留在列表里——用户读作“点一下锚点峰就
+          // 丢了”，且没有任何提示。
+          // Alt+click is the ONLY chart gesture that flips "参与拟合". A plain
+          // click never mutates the model: that silently removed the peak from
+          // the blue fitted envelope while it stayed in the peak list.
+          const before = peak.enabled
+          const idx = pk.list.value.findIndex((q) => q.id === peak.id) + 1
+          setPeakEnabled(peak.id, !before)
+          pushCommand({
+            label: '峰 开/关',
+            undo: () => setPeakEnabled(peak.id, before),
+            redo: () => setPeakEnabled(peak.id, !before),
+          })
+          pushToast('info', before ? `已停用 P${idx}（不参与拟合）` : `已启用 P${idx}`)
+        } else {
+          // 单击主锚 = 选中 + 打开峰调整，非破坏性（与右键同一动作）。
+          // Plain click on the main anchor selects the peak and opens the
+          // 峰调整 popover — it never changes the fit.
+          this.openPeakPopover(peak.id)
+        }
       }
     } else if (pd.target.t === 'baseline-point') {
       const bl = useBaselineWork()
@@ -1055,26 +1123,43 @@ export class PlotController {
     const p = this.eventToPlot(e)
     const anchor = this.insidePlot(p) && this.anchorsEnabled() ? this.hitTestAnchors(p.x, p.y) : null
     const ui = useUi()
-    const pk = usePeaks()
     if (anchor && anchor.kind === 'main') {
-      // 右键主锚 = 峰调整
-      selectPeak(anchor.peakId)
-      const peak = pk.list.value.find((q) => q.id === anchor.peakId)
-      const rect = this.overlay?.getBoundingClientRect()
-      if (peak && rect) {
-        const a = this.anchorsOf(peak)
-        const mx = u.valToPos(a.main[0], 'x')
-        const my = u.valToPos(a.main[1], 'y')
-        ui.popover.value = {
-          peakId: anchor.peakId,
-          cx: rect.left + mx,
-          cy: rect.top + my,
-        }
-      }
+      // 右键主锚 = 峰调整（与单击同一非破坏性动作）
+      this.openPeakPopover(anchor.peakId)
     } else {
       ui.popover.value = null
       this.resetView()
     }
+  }
+
+  /**
+   * Open / re-anchor the 峰调整 popover on a peak's main anchor. Shared by the
+   * plain left click on the main anchor and the right-click gesture; both are
+   * NON-destructive (select + open the editor, never change the model).
+   * 在主锚位置打开/刷新「峰调整」浮层，供单击与右键共用；两者都不改模型。
+   */
+  private openPeakPopover(peakId: string): void {
+    const u = this.u1
+    const pk = usePeaks()
+    const ui = useUi()
+    const peak = pk.list.value.find((q) => q.id === peakId)
+    const rect = this.overlay?.getBoundingClientRect()
+    if (!u || !peak || !rect) return
+    selectPeak(peakId)
+    const a = this.anchorsOf(peak)
+    const mx = u.valToPos(a.main[0], 'x')
+    const my = u.valToPos(a.main[1], 'y')
+    const cx = rect.left + mx
+    const cy = rect.top + my
+    // Already open on this very anchor: keep the live popover (its "重置"
+    // baseline belongs to the moment it was opened) instead of remounting it.
+    // 已在该锚点打开时保持原浮层（「重置」基线属于打开时刻），不要重挂。
+    const cur = ui.popover.value
+    if (cur && cur.peakId === peakId && Math.abs(cur.cx - cx) < 1 && Math.abs(cur.cy - cy) < 1) {
+      this.drawOverlay()
+      return
+    }
+    ui.popover.value = { peakId, cx, cy }
   }
 
   private onDblClick = (e: MouseEvent): void => {
@@ -1286,6 +1371,10 @@ export class PlotController {
     }
     this.mode = 'drag'
     selectPeak(peak.id)
+    // Dragging moves the anchor away from the fixed-position popover: close it
+    // instead of leaving it pinned in space.
+    // 拖拽会让锚点离开固定定位的浮层，直接关闭，避免浮层悬在旧位置。
+    useUi().popover.value = null
   }
 
   private dragLatest: { x: number; y: number } | null = null
@@ -1873,14 +1962,17 @@ export class PlotController {
         if (pt) {
           const label =
             ha.kind === 'main'
-              ? '拖动：峰位 / 幅值'
+              ? '拖动：峰位 / 幅值 · 单击：峰调整'
               : ha.kind === 'quarter'
                 ? '拖动：形状 (FW25)'
                 : '拖动：峰宽 / 不对称'
-          const tx = px(pt[0]) + 12
+          const tx0 = px(pt[0]) + 12
           const ty = py(pt[1]) - 12
           ctx.font = '11px system-ui, sans-serif'
           const w = ctx.measureText(label).width + 12
+          // Keep the (now longer) hint inside the plot area.
+          // 提示文变长后夹在绘图区内，避免右缘被裁掉。
+          const tx = Math.max(4, Math.min(tx0, u.bbox.width / uPlot.pxRatio - w - 4))
           ctx.fillStyle = this.pal.plotBg
           ctx.globalAlpha = 0.92
           ctx.beginPath()

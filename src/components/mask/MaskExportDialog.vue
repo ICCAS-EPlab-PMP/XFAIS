@@ -20,8 +20,8 @@
           </div>
         </div>
 
-        <!-- Save path -->
-        <div class="form-group">
+        <!-- Save path (desktop only: web exports go to the session tmp) -->
+        <div v-if="isDesktop" class="form-group">
           <label class="form-label">{{ t('maskMaker.export.savePath') }}</label>
           <div class="path-row">
             <input
@@ -36,6 +36,7 @@
             </button>
           </div>
         </div>
+        <p v-else class="web-note">{{ t('maskMaker.export.webDownloadNote') }}</p>
       </div>
 
       <div class="dialog-footer">
@@ -44,7 +45,7 @@
         </button>
         <button
           class="export-btn"
-          :disabled="!savePath || exporting"
+          :disabled="(isDesktop && !savePath) || exporting"
           @click="doExport"
         >
           {{ exporting ? t('maskMaker.export.exporting') : t('maskMaker.export.export') }}
@@ -57,7 +58,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useTransport } from '@/lib/transport'
 import { MASK_EXPORT_FORMATS, type MaskExportFormat } from '@/types/mask'
@@ -65,7 +66,7 @@ import { MASK_EXPORT_FORMATS, type MaskExportFormat } from '@/types/mask'
 const { t } = useI18n()
 const transport = useTransport()
 
-defineProps<{
+const props = defineProps<{
   visible: boolean
 }>()
 
@@ -78,6 +79,40 @@ const selectedFormat = ref<MaskExportFormat>('edf')
 const savePath = ref('')
 const exporting = ref(false)
 const error = ref('')
+
+// The 'export' event is fire-and-forget: this dialog never learns when the
+// backend task settles. Without a reset, `exporting` stays true forever —
+// after a successful export the dialog is merely hidden (visible=false, the
+// component stays mounted), so REOPENING it showed a permanently disabled
+// "Exporting..." button; on failure the dialog stayed open with the button
+// stuck too. Two resets cover both paths:
+//  1. finishExport() — called by the parent (MaskMakerView) when the export
+//     task settles (success or error), so an open dialog can retry;
+//  2. watch(visible) — belt-and-braces: any close also clears the flag, so
+//     the next open always starts fresh.
+// export 事件是“发后不管”的：对话框无从得知后端任务何时结算。若不复位，
+// `exporting` 将永远停在 true——成功导出后对话框只是被隐藏（visible=false，
+// 组件仍挂载），再次打开会看到永久禁用的“导出中…”按钮；失败路径上对话框
+// 不关闭、按钮同样卡死。两重复位覆盖两条路径：
+//  1. finishExport() —— 父级（MaskMakerView）在导出任务结算（成功或失败）
+//     时调用，使仍打开的对话框可以重试；
+//  2. watch(visible) —— 兜底：任何关闭动作都清除标志，下次打开必然干净。
+function finishExport(): void {
+  exporting.value = false
+}
+defineExpose({ finishExport })
+
+watch(
+  () => props.visible,
+  (on) => {
+    if (!on) {
+      exporting.value = false
+      error.value = ''
+    }
+  }
+)
+
+const isDesktop = transport.isDesktop()
 
 async function browseSavePath(): Promise<void> {
   const fmt = MASK_EXPORT_FORMATS.find((f) => f.value === selectedFormat.value)
@@ -99,7 +134,7 @@ async function browseSavePath(): Promise<void> {
 }
 
 function doExport(): void {
-  if (!savePath.value) return
+  if (isDesktop && !savePath.value) return
   error.value = ''
   exporting.value = true
   emit('export', {
@@ -223,6 +258,12 @@ function doExport(): void {
 .browse-btn:hover {
   background: var(--primary-bg);
   border-color: var(--primary);
+}
+
+.web-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-secondary);
 }
 
 .dialog-footer {

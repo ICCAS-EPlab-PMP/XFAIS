@@ -227,11 +227,11 @@ const props = withDefaults(defineProps<{
   comCenter?: { x: number; y: number } | null
   /**
    * Mask-overlay display style (shared preference, see src/lib/maskDisplay.ts):
-   * 'red' translucent red tiles (default) / 'white' opaque white /
+   * 'white' opaque white (default) / 'red' translucent red tiles /
    * 'violet' 5%-opacity deep violet. Only affects the coarse grid — the
    * com-centre crosshair is a RESULT marker and stays cyan.
-   * 掩膜叠加显示风格（共享偏好，见 src/lib/maskDisplay.ts）：'red' 半透明
-   * 淡红方块（默认）/ 'white' 不透明纯白 / 'violet' 5% 透明度深紫。仅作用于
+   * 掩膜叠加显示风格（共享偏好，见 src/lib/maskDisplay.ts）：'white' 不透明
+   * 纯白（默认）/ 'red' 半透明淡红方块 / 'violet' 5% 透明度深紫。仅作用于
    * 粗网格——质心十字是结果标记，保持青色。
    */
   maskStyle?: MaskDisplayStyle
@@ -245,7 +245,7 @@ const props = withDefaults(defineProps<{
   regionMode: null,
   comRegion: null,
   comCenter: null,
-  maskStyle: 'red',
+  maskStyle: 'white',
 })
 
 const emit = defineEmits<{

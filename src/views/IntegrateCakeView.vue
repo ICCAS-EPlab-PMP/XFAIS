@@ -360,6 +360,7 @@ import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
+import { downloadServerPaths } from '@/lib/download'
 import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } from '@/lib/chart-utils'
 import type { ColormapName } from '@/lib/chart-utils'
 
@@ -472,6 +473,7 @@ const advancedOptions = ref<AdvancedOptions>({
   unit: 'q_A',
   correctSolidAngle: true,
   dropEmptyBins: true,
+  normalizeMax: false,
 })
 
 const polarizationFactor = ref<number | null>(null)
@@ -1196,6 +1198,7 @@ async function handleRun(): Promise<void> {
         const data = payload.data as {
           traces?: Array<{ x: number[]; y: number[]; name?: string }>
           failed?: Array<{ file: string; reason: string }>
+          normalizeWarnings?: string[]
         } | null
         const traces = Array.isArray(data?.traces)
           ? data.traces.filter((tr) => Array.isArray(tr.x) && tr.x.length > 0 && Array.isArray(tr.y) && tr.y.length > 0)
@@ -1206,6 +1209,21 @@ async function handleRun(): Promise<void> {
           toast.push({
             title: `${failedList.length} file(s) failed`,
             message: failedList.map(f => `${f.file}: ${f.reason}`).join('; '),
+            tone: 'warning',
+          })
+        }
+
+        // Max-intensity normalization: report groups skipped (non-positive max).
+        // 最大强度归一化：提示被跳过的组（最大强度非正）。
+        const normalizeSkipped = Array.isArray(data?.normalizeWarnings)
+          ? data.normalizeWarnings
+          : []
+        if (advancedOptions.value.normalizeMax === true && normalizeSkipped.length > 0) {
+          toast.push({
+            title: t('business.normalizeMaxSkippedTitle'),
+            message: t('business.normalizeMaxSkipped', {
+              names: normalizeSkipped.slice(0, 5).join(', '),
+            }),
             tone: 'warning',
           })
         }
@@ -1291,13 +1309,34 @@ async function handleExport(payload: { format: ExportFormat; path: string; mode:
     })
 
     const removeOk = transport.onTaskResult(response.taskId, (r) => {
-      const d = r.data as { success?: boolean; error?: string; path?: string }
+      const d = r.data as {
+        success?: boolean
+        error?: string
+        path?: string
+        output_files?: string[]
+      }
       if (d?.success) {
+        // Web mode: fetch the session-temp files back through /api/download.
+        // web 模式：经 /api/download 取回会话临时目录中的文件。
+        const webFiles = transport.isDesktop() ? [] : d.output_files ?? []
         toast.push({
           title: t('integrateCake.title'),
-          message: `${payload.format.toUpperCase()} → ${d.path ?? payload.path}`,
+          message: webFiles.length
+            ? t('business.downloads.exportedFiles', { count: webFiles.length })
+            : `${payload.format.toUpperCase()} → ${d.path ?? payload.path}`,
           tone: 'success',
         })
+        downloadServerPaths(
+          webFiles,
+          (serverPath, name) => transport.downloadFile(serverPath, name),
+          (_serverPath, name) => {
+            toast.push({
+              title: t('integrateCake.title'),
+              message: t('business.downloads.failed', { name }),
+              tone: 'error',
+            })
+          },
+        )
       } else {
         toast.push({ title: t('integrateCake.title'), message: d?.error ?? 'Export failed', tone: 'error' })
       }

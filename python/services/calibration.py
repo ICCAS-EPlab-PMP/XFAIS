@@ -223,6 +223,23 @@ def _internal_mode_error() -> Dict[str, str]:
     return _err(_INTERNAL_MODE_ERR_EN, _INTERNAL_MODE_ERR_ZH)
 
 
+#: Bilingual refusal for ``set_center`` on a FIXED-CENTRE session (com mode):
+#: the direct-beam centroid owns the centre, so a canvas click must not
+#: silently overwrite it. / 固定中心会话（直通光模式）上 ``set_center`` 的
+#: 双语拒绝理由——中心归直通光质心所有，画布点击不得静默覆盖。
+_FIXED_CENTER_ERR_EN = (
+    "Beam centre is fixed to the direct-beam centroid in this session; "
+    "re-pick the centre in the direct-beam step"
+)
+_FIXED_CENTER_ERR_ZH = "本会话光束中心已固定为直通光质心；请回到直通光步骤重新定心"
+
+
+def _fixed_center_error() -> Dict[str, str]:
+    """Bilingual refusal payload for the fixed-centre guard.
+    固定中心守卫的双语拒绝返回。"""
+    return _err(_FIXED_CENTER_ERR_EN, _FIXED_CENTER_ERR_ZH)
+
+
 def _check_cancel(cancel_event: Optional[asyncio.Event]) -> None:
     """Raise asyncio.CancelledError if the caller requested cancellation.
     若调用方请求取消则抛出 asyncio.CancelledError。"""
@@ -1152,6 +1169,10 @@ async def _action_update_peaks(
         return {
             "status": "ok",
             "peaks": [],
+            # No refinement was built for an empty list, so the renderer must
+            # not ask for a theoretical-ring overlay it cannot get.
+            # 空列表不建立精修器，前端不应再请求理论环叠加。
+            "hasGeometry": session.get("gr") is not None,
             "message": "Peak list cleared (no-op) / 峰列表已清空",
         }
 
@@ -1231,7 +1252,16 @@ async def _action_update_peaks(
     session["peaks"] = peaks_out
 
     await _progress(send_progress, 1.0, "Peaks updated / 峰列表已更新")
-    return {"status": "ok", "peaks": peaks_out}
+    # ``hasGeometry``: this call just built (or refreshed) the refinement, so
+    # the renderer may fetch the theoretical-ring overlay right away — that is
+    # the FIRST moment the backend can produce it (2026-11-04, P1-3).
+    # hasGeometry：本次调用已建立/刷新精修器，前端可立即取理论环叠加——
+    # 这是后端首次具备该能力的时刻（2026-11-04，P1-3）。
+    return {
+        "status": "ok",
+        "peaks": peaks_out,
+        "hasGeometry": session.get("gr") is not None,
+    }
 
 
 def _run_refine(gr: Any, passes: int, fix: List[str]) -> None:
@@ -1387,6 +1417,15 @@ async def _action_set_center(session: Dict[str, Any], payload: dict) -> dict:
     """
     if session.get("internal_standard"):
         return _internal_mode_error()
+    # FIXED-CENTRE session (com mode, 2026-11-04): the direct-beam centroid
+    # owns the centre. Allowing a canvas click to overwrite it used to silently
+    # undo the whole point of the mode (centre fixed, distance only) — reject
+    # it explicitly instead, in both languages.
+    # 固定中心会话（直通光模式，2026-11-04）：中心归直通光质心所有。此前画布
+    # 点击会静默覆盖它，等于抹掉「中心固定、只优化距离」的全部意义——现显式
+    # 双语拒绝。
+    if session.get("fixed_center"):
+        return _fixed_center_error()
 
     y = _as_float(payload.get("y"))
     x = _as_float(payload.get("x"))
@@ -1633,21 +1672,31 @@ def _extract_ring_overlay(session: Dict[str, Any], gr: Any, calibrant: Any,
         # Downsample to <= _MAX_RING_POINTS per ring, allocated PROPORTIONALLY
         # per polygon (the old flat linspace over the concatenation could skip
         # a small arc entirely).
+        # Short arcs (< 8 raw points) are kept verbatim: shaving them down to
+        # 2–3 points rounds a tiny corner arc into a chord and makes the
+        # overlay visibly miss the image edge; the per-segment floor for the
+        # proportional budget is 4 points for the same reason.
         # 每环降采样至 ≤600 点，按段长度比例分配（旧的扁平 linspace 可能整段
-        # 跳过小弧段）。
-        budgets = [max(2, int(_MAX_RING_POINTS * len(p) / total)) for p in clipped]
+        # 跳过小弧段）。短弧（原始点数 < 8）原样保留——削到 2~3 点会把小弧段
+        # 拉成弦、叠加明显偏离图像边缘；比例分配的每段下限同样抬到 4 点。
+        budgets: List[int] = []
+        protected: List[bool] = []
+        for p in clipped:
+            short = len(p) < 8
+            protected.append(short)
+            budgets.append(len(p) if short else max(4, int(_MAX_RING_POINTS * len(p) / total)))
         overflow = sum(budgets) - _MAX_RING_POINTS
         while overflow > 0:
             shaved = False
             for i in sorted(range(len(budgets)), key=lambda k: -budgets[k]):
                 if overflow == 0:
                     break
-                if budgets[i] > 2:
+                if not protected[i] and budgets[i] > 4:
                     budgets[i] -= 1
                     overflow -= 1
                     shaved = True
             if not shaved:
-                break  # every segment already at the 2-point floor / 全部已到 2 点下限
+                break  # every shaveable segment at the 4-point floor / 可削段均已到 4 点下限
         segments = []
         for p, budget in zip(clipped, budgets):
             if len(p) > budget:

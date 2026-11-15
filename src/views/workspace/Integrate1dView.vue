@@ -328,6 +328,7 @@ import { useTransport } from '@/lib/transport'
 import { useSettings } from '@/lib/settings'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
+import { downloadServerPaths } from '@/lib/download'
 import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } from '@/lib/chart-utils'
 import type { ColormapName } from '@/lib/chart-utils'
 
@@ -500,6 +501,7 @@ const advancedOptions = reactive<AdvancedOptions>({
   unit: 'q_A',
   correctSolidAngle: true,
   dropEmptyBins: true,
+  normalizeMax: false,
   algorithm: 'splitpixel',
   integrator: 'ng',
 })
@@ -1166,6 +1168,7 @@ async function handleRun(): Promise<void> {
       unit: advancedOptions.unit,
       correctSolidAngle: advancedOptions.correctSolidAngle,
       dropEmptyBins: advancedOptions.dropEmptyBins,
+      normalizeMax: advancedOptions.normalizeMax ?? false,
       algorithm: advancedOptions.algorithm ?? 'splitpixel',
       integrator: advancedOptions.integrator ?? 'ng',
     },
@@ -1185,7 +1188,7 @@ async function handleRun(): Promise<void> {
     // 后端返回 { status, results: [{ radial, intensity, filename }] }
     // 需要映射 filename → label 供 LineChart 使用
     cleanupResult = transport.onTaskResult(response.taskId, (payload) => {
-      const rawResults = payload.data as { results?: IntegrationResultItem[] }
+      const rawResults = payload.data as { results?: IntegrationResultItem[]; normalizeWarnings?: string[] }
       const results = rawResults?.results ?? (Array.isArray(payload.data) ? payload.data as IntegrationResultItem[] : [])
       const validResults = results.filter(isValidCurve)
 
@@ -1199,6 +1202,21 @@ async function handleRun(): Promise<void> {
           tone: 'error',
         })
         return
+      }
+
+      // Max-intensity normalization: report groups skipped (non-positive max).
+      // 最大强度归一化：提示被跳过的组（最大强度非正）。
+      const normalizeSkipped = Array.isArray(rawResults?.normalizeWarnings)
+        ? rawResults.normalizeWarnings
+        : []
+      if (advancedOptions.normalizeMax === true && normalizeSkipped.length > 0) {
+        toast.push({
+          title: t('business.normalizeMaxSkippedTitle'),
+          message: t('business.normalizeMaxSkipped', {
+            names: normalizeSkipped.slice(0, 5).join(', '),
+          }),
+          tone: 'warning',
+        })
       }
 
       resultCurves.value = validResults.map((r) => ({
@@ -1276,14 +1294,37 @@ async function handleExport(payload: { format: ExportFormat; path: string; mode:
     })
 
     const removeOk = transport.onTaskResult(response.taskId, (r) => {
-      const data = r.data as { success?: boolean; error?: string; path?: string }
+      const data = r.data as {
+        success?: boolean
+        error?: string
+        path?: string
+        output_files?: string[]
+      }
       if (data?.success) {
         exportedOnce.value = true
+        // Web mode: the backend wrote into the session temp tree; fetch each
+        // file back through /api/download (desktop users open the saved path).
+        // web 模式：后端写进会话临时目录，逐个经 /api/download 取回；
+        // 桌面模式用户直接去保存路径拿。
+        const webFiles = transport.isDesktop() ? [] : data.output_files ?? []
         toast.push({
           title: t('integrate1d.exportTitle'),
-          message: `${payload.format.toUpperCase()} → ${data.path ?? payload.path}`,
+          message: webFiles.length
+            ? t('business.downloads.exportedFiles', { count: webFiles.length })
+            : `${payload.format.toUpperCase()} → ${data.path ?? payload.path}`,
           tone: 'success',
         })
+        downloadServerPaths(
+          webFiles,
+          (serverPath, name) => transport.downloadFile(serverPath, name),
+          (_serverPath, name) => {
+            toast.push({
+              title: t('integrate1d.errorTitle'),
+              message: t('business.downloads.failed', { name }),
+              tone: 'error',
+            })
+          },
+        )
       } else {
         toast.push({
           title: t('integrate1d.errorTitle'),

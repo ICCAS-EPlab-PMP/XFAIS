@@ -2225,3 +2225,39 @@ def test_fixed_center_session_refine_is_distance_only(synthetic_edf: str):
     geom = out["geometry"]
     assert geom["center_x_px"] == pytest.approx(_FIXED_CENTER[1], abs=1e-6)
     assert geom["center_y_px"] == pytest.approx(_FIXED_CENTER[0], abs=1e-6)
+
+
+def test_fixed_center_session_rejects_set_center(synthetic_edf: str):
+    """``set_center`` must be REFUSED on a fixed-centre session (2026-11-04):
+    a canvas click used to silently overwrite the direct-beam centroid, which
+    defeats the whole mode. The seeded centre must survive the rejected call.
+    / 固定中心会话必须拒绝 ``set_center``（2026-11-04）：画布点击此前会静默
+    覆盖直通光质心，等于抹掉整个模式的意义；被拒后种子中心必须原样保留。"""
+    sid = _ok(_run({
+        "action": "setup", "filePath": synthetic_edf,
+        "calibrantName": CALIBRANT_NAME, "pixelSizeUm": PIXEL_UM,
+        "wavelengthA": WAVELENGTH_A, "distGuessMm": DIST_MM,
+        "centerX": _FIXED_CENTER[1], "centerY": _FIXED_CENTER[0],
+        "fixedCenter": True,
+    }))["sessionId"]
+    refused = _run({
+        "action": "set_center", "sessionId": sid, "y": 12.0, "x": 34.0,
+    })
+    assert refused.get("status") == "error", refused
+    assert "fixed" in refused["message"].lower()
+    assert "固定" in refused["message"]
+    # The rejected click left the session untouched: ring_standard still
+    # reports the seeded centroid as the centre source.
+    # 被拒的点击没有改动会话：ring_standard 仍以种子质心为中心来源。
+    cy, cx = _FIXED_CENTER
+    pts = [
+        {"y": cy + 80.0 * math.sin(a), "x": cx + 80.0 * math.cos(a)}
+        for a in (0.5, 3.4)
+    ]
+    out = _ok(_run({
+        "action": "ring_standard", "sessionId": sid, "points": pts,
+        "value": 20.0, "unit": "tth_deg",
+    }))
+    assert out["centerSource"] == "com"
+    assert out["centerYPx"] == pytest.approx(cy, abs=1e-9)
+    assert out["centerXPx"] == pytest.approx(cx, abs=1e-9)

@@ -290,6 +290,60 @@ class TestBgSubtractHandlerIntegration:
         # 100 / 0.5 - 10 = 190
         np.testing.assert_allclose(saved, 190.0)
 
+    def test_batch_data_files_without_output_dir_writes_next_to_source(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Regression (2026-11-04): web mode cannot send an ``output_dir``
+        (the browser has no server-side folder picker). ``data_files`` alone
+        must default to the source files' own directory and still return
+        ``output_files`` so the renderer can download the results through
+        /api/download. / 回归（2026-11-04）：web 模式无法提供 output_dir
+        （浏览器没有服务器端目录选择器）。仅给 data_files 时必须默认写到
+        源文件所在目录，并照常回带 output_files 供前端下载。"""
+        sample_a = tmp_path / "sample_00001.edf"
+        sample_a.write_bytes(b"fake-edf")
+        sample_b = tmp_path / "sample_00002.edf"
+        sample_b.write_bytes(b"fake-edf")
+        bg_file = tmp_path / "bg.edf"
+        bg_file.write_bytes(b"fake-bg")
+
+        sample_data = np.full((20, 20), 100.0, dtype=np.float32)
+        bg_data = np.full((20, 20), 10.0, dtype=np.float32)
+
+        def _fake_load(path: str):
+            if os.path.basename(path) == "bg.edf":
+                return bg_data, None, {"filename": os.path.basename(path)}
+            return sample_data, None, {"filename": os.path.basename(path)}
+
+        monkeypatch.setattr("python.service_launcher.ImageLoader.load", _fake_load)
+
+        from python.service_launcher import handle_bg_subtract
+
+        result = asyncio.run(
+            handle_bg_subtract(
+                {
+                    "action": "batch",
+                    "data_files": [str(sample_a), str(sample_b)],
+                    "bg_path": str(bg_file),
+                    "output_format": "h5",
+                    "transmission": 1.0,
+                },
+                _noop_progress,
+                asyncio.Event(),
+            )
+        )
+
+        assert result["status"] == "ok"
+        assert result["success_count"] == 2
+        assert result["output_dir"] == str(tmp_path)
+        expected = [
+            str(tmp_path / "sample_00001_subtracted.h5"),
+            str(tmp_path / "sample_00002_subtracted.h5"),
+        ]
+        assert result["output_files"] == expected
+        for path in expected:
+            assert Path(path).is_file(), f"expected exported file missing: {path}"
+
     def test_preview_result_renders_subtracted_image(
         self, tmp_path, monkeypatch
     ) -> None:

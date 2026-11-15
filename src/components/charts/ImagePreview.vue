@@ -2,8 +2,11 @@
   <div class="image-preview" ref="containerRef" :data-testid="testIds.imagePreview">
     <div
       class="ip-viewport"
+      :class="{ 'ip-viewport--crosshair': crosshairMode }"
       ref="viewportRef"
       @mousedown="onMouseDown"
+      @mousemove="onViewportMouseMove"
+      @mouseleave="onViewportMouseLeave"
     >
       <img
         v-if="imageB64"
@@ -47,6 +50,16 @@
           <span class="ip-colorbar__label ip-colorbar__label--bottom">{{ colorbarMinLabel }}</span>
         </div>
       </div>
+
+      <!-- Fine pointer crosshair guide (pixel-info mode): a thin horizontal +
+           vertical line crossing exactly at the cursor, so the pixel position
+           is easy to pin down. Hidden when the pointer leaves the viewport.
+           / 随指针的细十字准线（像素信息模式）：横竖各一条细线在光标处精确相交，
+           便于确定像素位置；指针离开视口时隐藏。 -->
+      <template v-if="crosshairMode && hasImage && crosshairPos">
+        <div class="ip-crosshair ip-crosshair--h" :style="{ top: crosshairPos.y + 'px' }"></div>
+        <div class="ip-crosshair ip-crosshair--v" :style="{ left: crosshairPos.x + 'px' }"></div>
+      </template>
     </div>
 
     <!-- Zoom controls / 缩放控件 -->
@@ -163,6 +176,10 @@ const props = withDefaults(defineProps<{
    *  mapping as image:click. / 为 true 时，左键拖拽绘制线段而非平移。结果端点通过
    *  `line:drawn` 事件以数据空间像素坐标（col=x, row=y）发出，映射方式与 image:click 相同。 */
   lineDrawMode?: boolean
+  /** When true (pixel-info mode), use a crosshair cursor over the viewport and
+   *  draw a thin crosshair guide that follows the pointer. / 为 true 时（像素信息
+   *  模式），视口使用十字光标并绘制随指针移动的细十字准线。 */
+  crosshairMode?: boolean
 }>(), {
   imageB64: null,
   imageData: undefined,
@@ -180,6 +197,7 @@ const props = withDefaults(defineProps<{
   dataWidth: undefined,
   dataHeight: undefined,
   lineDrawMode: false,
+  crosshairMode: false,
 })
 
 // --- Emits ---
@@ -242,6 +260,10 @@ const overlayCanvasWidth = computed(() => naturalWidth.value || imageDataWidth.v
 const overlayCanvasHeight = computed(() => naturalHeight.value || imageDataHeight.value)
 // Whether we have a valid image to display / 是否有有效图像显示
 const hasImage = computed(() => !!(props.imageB64 || props.imageData))
+
+// Pointer-following crosshair guide (crosshairMode), in viewport pixel coords.
+// / 随指针的十字准线（crosshairMode），以视口像素坐标表示。
+const crosshairPos = ref<{ x: number; y: number } | null>(null)
 
 // --- Zoom helpers ---
 
@@ -331,7 +353,10 @@ function onMouseDown(e: MouseEvent) {
   panStartY = panY.value
 
   const vp = viewportRef.value
-  if (vp) vp.style.cursor = 'grabbing'
+  // In crosshair mode keep the crosshair cursor during drags (no 'grabbing'),
+  // so the pointer still reads as a precise centre marker.
+  // 十字光标模式下拖拽期间保持十字光标（不切换为 grabbing），使指针仍可作精确中心标记。
+  if (vp && !props.crosshairMode) vp.style.cursor = 'grabbing'
 
   window.addEventListener('mousemove', onMouseMove)
   window.addEventListener('mouseup', onMouseUp)
@@ -350,6 +375,34 @@ function onMouseUp() {
   window.removeEventListener('mousemove', onMouseMove)
   window.removeEventListener('mouseup', onMouseUp)
 }
+
+// --- Pointer crosshair guide (crosshairMode) / 指针十字准线（crosshairMode） ---
+
+function onViewportMouseMove(e: MouseEvent): void {
+  if (!props.crosshairMode) return
+  const vp = viewportRef.value
+  if (!vp) return
+  const rect = vp.getBoundingClientRect()
+  const x = e.clientX - rect.left
+  const y = e.clientY - rect.top
+  // Outside the viewport → hide (also covers drags that leave the canvas).
+  // 超出视口则隐藏（也覆盖拖拽离开画布的情况）。
+  if (x < 0 || y < 0 || x > rect.width || y > rect.height) {
+    crosshairPos.value = null
+    return
+  }
+  crosshairPos.value = { x, y }
+}
+
+function onViewportMouseLeave(): void {
+  crosshairPos.value = null
+}
+
+// Clear any stale guide when crosshair mode is turned off.
+// 关闭十字光标模式时清除残留准线。
+watch(() => props.crosshairMode, (on) => {
+  if (!on) crosshairPos.value = null
+})
 
 // --- Line drawing (lineDrawMode) / 画线（lineDrawMode） ---
 
@@ -941,6 +994,12 @@ onBeforeUnmount(() => {
   cursor: grab;
 }
 
+/* Precise centre-finding cursor in pixel-info mode.
+   / 像素信息模式下便于确定中心的十字光标。 */
+.ip-viewport--crosshair {
+  cursor: crosshair;
+}
+
 .ip-image {
   display: block;
   max-width: none;
@@ -955,6 +1014,29 @@ onBeforeUnmount(() => {
   top: 0;
   left: 0;
   pointer-events: none;
+}
+
+/* Thin pointer crosshair guide: one horizontal + one vertical line crossing at
+   the cursor. pointer-events:none so it never blocks image:click.
+   / 细十字准线：横竖各一条在光标处相交；pointer-events:none 保证不拦截 image:click。 */
+.ip-crosshair {
+  position: absolute;
+  pointer-events: none;
+  z-index: 5;
+  background: rgba(14, 165, 233, 0.7);
+  box-shadow: 0 0 0 0.5px rgba(255, 255, 255, 0.55);
+}
+
+.ip-crosshair--h {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+.ip-crosshair--v {
+  top: 0;
+  bottom: 0;
+  width: 1px;
 }
 
 .ip-colorbar {

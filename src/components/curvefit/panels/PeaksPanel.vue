@@ -113,12 +113,17 @@ function onToggleEnabled(id: string): void {
   const peak = pk.list.value.find((p) => p.id === id)
   if (!peak) return
   const before = peak.enabled
+  const idx = pk.list.value.findIndex((p) => p.id === id) + 1
   setPeakEnabled(id, !before)
   pushCommand({
     label: '峰 开/关',
     undo: () => setPeakEnabled(id, before),
     redo: () => setPeakEnabled(id, !before),
   })
+  // 停用会让该峰从蓝色拟合包络上消失（峰仍在列表里）——明确告知，避免误解为
+  // “峰丢了”。/ Disabling removes the component from the blue model envelope
+  // while the peak stays in the list: say so instead of leaving a mystery.
+  pushToast('info', before ? `已停用 P${idx}（不参与拟合）` : `已启用 P${idx}`)
 }
 
 function onLock(peakId: string, key: string, locked: boolean): void {
@@ -189,7 +194,7 @@ function onParam(key: string, v: number): void {
       <span class="pt-help">
         <HelpTip
           :size="17"
-          text="手动：图上左键单击任意位置放峰（数据峰正上方也可以）。每个峰 3–4 个锚点：主锚（峰位/幅值）、左右半高锚（宽度；不对称峰左右独立）、25% 形状锚（4 参数峰）。单击主锚开/关；右键主锚打开峰调整；Alt+左键点数据点 = 排除该点。"
+          text="手动：图上左键单击任意位置放峰（数据峰正上方也可以）。每个峰 3–4 个锚点：主锚（峰位/幅值）、左右半高锚（宽度；不对称峰左右独立）、25% 形状锚（4 参数峰）。单击主锚 = 选中并打开峰调整（不改变拟合）；右键主锚 = 峰调整；Alt+单击主锚 = 停用/启用该峰（Ctrl+Z 可撤销）；Alt+左键点数据点 = 排除该点。"
         />
       </span>
     </div>

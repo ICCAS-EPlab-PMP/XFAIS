@@ -4,7 +4,7 @@ export const messages = {
   zh: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.5'
+      version: 'v0.3.7'
     },
     shell: {
       sections: {
@@ -38,7 +38,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: '桌面集成版 v0.3.5',
+      kicker: '桌面集成版 v0.3.7',
       description: '集成 pyFAI 积分引擎，提供 1D 径向积分、方位角积分、CAKE 选区积分、GIWAXS 纤维衍射 2D 积分、图像查看与批量导出等功能。',
       highlights: {
         secure: 'pyFAI 积分引擎',
@@ -303,6 +303,8 @@ export const messages = {
         nptOop: 'npt_oop（面外）',
         method: '积分算法',
         correctSolidAngle: '立体角校正',
+        normalizeMax: '最大强度归一化',
+        normalizeMaxHint: '开启后，每组结果按自身最大强度缩放到 0–100（最大值变为 100）；2D 图与 ROI 1D 曲线同等生效，导出文件一致；最大强度非正的组跳过并提示',
         runIntegration: '执行积分',
         running: '积分中…',
         result2dTitle: '积分结果',
@@ -491,7 +493,8 @@ export const messages = {
         browse: '浏览...',
         cancel: '取消',
         export: '导出',
-        exporting: '导出中...'
+        exporting: '导出中...',
+        webDownloadNote: 'Web 模式下导出文件将直接下载到本地浏览器。'
       },
       messages: {
         maskLoaded: 'Mask 已加载',
@@ -570,10 +573,13 @@ export const messages = {
       pixelInfo2theta: '2θ',
       pixelInfoChi: 'χ',
       pixelInfoError: '读取像素信息失败。',
+      pixelInfoDefaultGeomHint: '当前几何相关量（q / 2θ / χ）按当前几何参数设置计算。若您修改过设置但已收起面板，请以最新设置为准；未上传 PONI 时请核实几何设置是否合适。',
       lineProfile: '沿线强度剖面',
       lineProfileHint: '在图像上拖动绘制一条线段，沿线提取平均强度（可选带宽）。配置几何后可按 q / 2θ / χ 显示横坐标。',
       lineProfileWidth: '带宽 (px)',
       lineProfileXAxis: '横坐标',
+      lineProfileNormalize: '最大强度归一化',
+      lineProfileNormalizeHint: '开启后剖面按自身最大强度缩放到 0–100（最大值变为 100）；最大强度非正时保持原值并提示',
       lineProfileXDistance: '像素距离',
       lineProfileIntensity: '平均强度',
       lineProfileDrawHint: '在图像上按住左键拖动绘制线段',
@@ -623,7 +629,14 @@ export const messages = {
         appendTooltip: '将新选择的文件追加到现有文件列表中',
         dropZoneHint: '或将文件 / 文件夹拖拽到此区域',
         dropFolderImported: '已导入文件夹：{name}',
-        dropIgnoredFolders: '已忽略 {count} 个文件夹（仅导入第一个）'
+        dropIgnoredFolders: '已忽略 {count} 个文件夹（仅导入第一个）',
+        folderNotAvailableInWeb: '网页模式不支持选择文件夹，请改用「选择文件」',
+        exportFolderNotAvailableInWeb: '网页模式无法选择导出文件夹，请在桌面版使用该功能'
+      },
+      downloads: {
+        exportedFiles: '已导出 {count} 个文件，浏览器下载已开始',
+        exportedFile: '已导出并下载：{name}',
+        failed: '下载失败：{name}'
       },
       h5: {
         title: 'HDF5 选择',
@@ -696,9 +709,13 @@ export const messages = {
         correctSolidAngle: '立体角校正',
         dropEmptyBins: '剔除空 bin',
         dropEmptyBinsHint: '开启后，完全被遮蔽、无有效像素的 bin 将从曲线与导出中去除，避免把 0 误读为真实零信号',
+        normalizeMax: '最大强度归一化',
+        normalizeMaxHint: '开启后，每组数据按自身最大强度缩放到 0–100（最大值变为 100）；最大强度非正的组跳过并提示',
         algorithm: '积分算法',
         integrator: '积分器引擎'
       },
+      normalizeMaxSkippedTitle: '归一化跳过',
+      normalizeMaxSkipped: '以下数据组最大强度非正，已保持原值：{names}',
       taskProgress: {
         processing: '处理中...',
         cancel: '取消'
@@ -995,6 +1012,19 @@ export const messages = {
       matchColFile: '数据文件',
       matchColIon: '匹配电离室',
       matchColScore: '分数',
+      ionMode: '计算模式',
+      ionModeSingle: '单通道（样品/背景）',
+      ionModeDual: '前后通道（样品后/样品前 × 背景前/背景后）',
+      ionDualFormula: '公式：T = (样品后/样品前) × (背景前/背景后)',
+      ionFormulaHint: '透过率一般小于 100%；若结果大于 100%，请检查前后通道是否选反',
+      ionSampleBefore: '样品·前',
+      ionSampleAfter: '样品·后',
+      ionBgBefore: '背景·前',
+      ionBgAfter: '背景·后',
+      ionDualInvalid: '前后通道必须各自不同，否则公式恒为 100%',
+      ionMethodTimeWindow: '时间窗匹配',
+      ionMethodNearest: '就近编号匹配',
+      ionTransOverHint: '透射率超过 100%，请核对前后通道选择或束流稳定性',
       matchColTrans: '透射率',
       export: '导出',
       outputDir: '输出目录',
@@ -1011,7 +1041,7 @@ export const messages = {
       batchComplete: '批处理完成',
       subtractComplete: '扣除完成',
       exportedDownload: '已导出 {count} 个文件，已开始下载',
-      webExportNote: '浏览器模式：无需选择输出目录，扣除结果将自动下载到本机。',
+      webExportNote: '浏览器模式：无需选择输出目录；单文件与批量扣除的结果都会自动下载到本机（批量请改用「选择文件」）。',
       matchThreshold: '匹配阈值',
       matchRegex: '正则表达式',
       matchRegexHint: '可选：用于过滤文件名',
@@ -1054,6 +1084,25 @@ export const messages = {
       transMatchColNote: '备注',
       transFileApplied: '已填充 {matched} 个文件的透过率，{missing} 个未匹配',
       transFileNoMatch: '没有任何文件匹配成功，请检查文件名是否与透过率表一致',
+      // Acquisition log ("计算文件") import / 采集日志（计算文件）导入
+      transLog: '计算文件（日志）',
+      transLogHint: '导入线站输出的固定格式采集日志（txt），读取各 Position 的 Pil Ct0 计数，与数据文件配对后按 T = Ct0(样品) / Ct0(blank) 计算透过率。',
+      transLogPick: '选择计算文件（日志 txt）',
+      logParseBtn: '解析并自动匹配',
+      logFormula: '公式：T = Ct0(样品) / Ct0(blank)',
+      logFormulaHint: 'blank 为开放光路（空载）读数；透过率一般小于 100%，若大于 100% 请核对配对或 blank 参考。',
+      logBlankRef: 'blank 参考读数（开放光路）',
+      logBlankRequired: '请先选择 blank 参考读数',
+      logBlankMissing: '日志中未找到 blank 读数，请手动指定 blank 参考读数',
+      logColEntry: '配对读数',
+      logColCt0: 'Ct0 值',
+      logApplyBtn: '应用透过率',
+      logParsed: '解析到 {count} 条 Ct0 读数，自动匹配 {matched} 个文件；可在配对表中调整',
+      logApplied: '已应用 {matched} 个文件的透过率',
+      logAppliedOver: '已应用 {matched} 个文件的透过率，{over} 个超过 100% 请核对',
+      logMatchByFilename: '按文件名匹配',
+      logMatchByOrder: '按日志顺序匹配（请核对）',
+      logNoMatch: '未匹配到读数',
       // Ionchamber match → per-file backfill / 电离室匹配 → 逐文件回填
       errorNoBgIonchamber: '请先选择背景电离室文件（匹配后用于计算透射率）',
       ionchamberAppliedHint: '匹配结果已填入逐文件透射率（可在文件列表修改），执行时按逐文件数值扣除。',
@@ -1735,7 +1784,7 @@ export const messages = {
   en: {
     app: {
       name: 'X-FAIS',
-      version: 'v0.3.5'
+      version: 'v0.3.7'
     },
     shell: {
       sections: {
@@ -1769,7 +1818,7 @@ export const messages = {
     home: {
       title: 'X-FAIS',
       subtitle: 'X-ray FAI (pyFAI) Scattering & Diffraction Suite',
-      kicker: 'Desktop Edition v0.3.5',
+      kicker: 'Desktop Edition v0.3.7',
       description: 'Integrated pyFAI engine for 1D radial integration, azimuthal integration, CAKE sector integration, GIWAXS fiber 2D integration, image viewing, and batch export.',
       highlights: {
         secure: 'pyFAI Integration Engine',
@@ -2034,6 +2083,8 @@ export const messages = {
       nptOop: 'npt_oop (out-of-plane)',
       method: 'Integration Method',
       correctSolidAngle: 'Solid Angle Correction',
+      normalizeMax: 'Max-Intensity Normalization',
+      normalizeMaxHint: 'When enabled, each result is scaled by its own maximum to 0–100 (max becomes 100); applies to both the 2D map and ROI 1D curves, and to exported files; groups with a non-positive maximum are skipped and reported',
       runIntegration: 'Run Integration',
       running: 'Integrating...',
       result2dTitle: 'Integration Result',
@@ -2222,7 +2273,8 @@ export const messages = {
         browse: 'Browse...',
         cancel: 'Cancel',
         export: 'Export',
-        exporting: 'Exporting...'
+        exporting: 'Exporting...',
+        webDownloadNote: 'In web mode the exported file is downloaded directly in your browser.'
       },
       messages: {
         maskLoaded: 'Mask loaded',
@@ -2301,10 +2353,13 @@ export const messages = {
       pixelInfo2theta: '2θ',
       pixelInfoChi: 'χ',
       pixelInfoError: 'Failed to read pixel info.',
+      pixelInfoDefaultGeomHint: 'Geometry-related quantities (q / 2θ / χ) are computed from the current geometry settings. If you have changed the settings but collapsed the panel, the latest settings apply; when no PONI is uploaded, please verify that the geometry settings are appropriate.',
       lineProfile: 'Line Intensity Profile',
       lineProfileHint: 'Drag on the image to draw a line segment and extract the mean intensity along it (with optional band width). With geometry configured, the x-axis can be shown as q / 2θ / χ.',
       lineProfileWidth: 'Band width (px)',
       lineProfileXAxis: 'X-axis',
+      lineProfileNormalize: 'Max-Intensity Normalization',
+      lineProfileNormalizeHint: 'When enabled, the profile is scaled by its own maximum to 0–100 (max becomes 100); profiles with a non-positive maximum are kept as-is and reported',
       lineProfileXDistance: 'Pixel distance',
       lineProfileIntensity: 'Mean intensity',
       lineProfileDrawHint: 'Click and drag on the image to draw a line segment',
@@ -2354,7 +2409,14 @@ export const messages = {
         appendTooltip: 'Append newly selected files to the existing file list',
         dropZoneHint: 'Or drag & drop files / folders here',
         dropFolderImported: 'Folder imported: {name}',
-        dropIgnoredFolders: 'Ignored {count} folder(s) (only the first is imported)'
+        dropIgnoredFolders: 'Ignored {count} folder(s) (only the first is imported)',
+        folderNotAvailableInWeb: 'Folder selection is not available in web mode — use "Select Files" instead',
+        exportFolderNotAvailableInWeb: 'Choosing an export folder is not available in web mode — use the desktop app for this action'
+      },
+      downloads: {
+        exportedFiles: 'Exported {count} file(s); download started',
+        exportedFile: 'Exported and downloaded: {name}',
+        failed: 'Download failed: {name}'
       },
       h5: {
         title: 'HDF5 Selection',
@@ -2427,9 +2489,13 @@ export const messages = {
         correctSolidAngle: 'Solid Angle Correction',
         dropEmptyBins: 'Drop empty bins',
         dropEmptyBinsHint: 'Remove fully-masked bins (no valid pixels) from the curve and export, so their 0 is not misread as real zero signal',
+        normalizeMax: 'Max-Intensity Normalization',
+        normalizeMaxHint: 'When enabled, each group is scaled by its own maximum to 0–100 (max becomes 100); groups with a non-positive maximum are skipped and reported',
         algorithm: 'Integration Algorithm',
         integrator: 'Integrator Engine'
       },
+      normalizeMaxSkippedTitle: 'Normalization skipped',
+      normalizeMaxSkipped: 'Groups with a non-positive maximum intensity were kept as-is: {names}',
       taskProgress: {
         processing: 'Processing...',
         cancel: 'Cancel'
@@ -2726,6 +2792,19 @@ export const messages = {
       matchColFile: 'Data File',
       matchColIon: 'Matched Ion',
       matchColScore: 'Score',
+      ionMode: 'Calculation Mode',
+      ionModeSingle: 'Single channel (sample/background)',
+      ionModeDual: 'Before/after (sample_after/sample_before × bg_before/bg_after)',
+      ionDualFormula: 'Formula: T = (sample_after / sample_before) × (bg_before / bg_after)',
+      ionFormulaHint: 'Transmission is generally below 100%; if a result exceeds 100%, the before/after channels were probably swapped',
+      ionSampleBefore: 'Sample · Before',
+      ionSampleAfter: 'Sample · After',
+      ionBgBefore: 'Background · Before',
+      ionBgAfter: 'Background · After',
+      ionDualInvalid: 'Before/after channels must differ for each run, otherwise T is always 100%',
+      ionMethodTimeWindow: 'time-window match',
+      ionMethodNearest: 'nearest-number match',
+      ionTransOverHint: 'Transmission exceeds 100% — check the before/after assignment or beam stability',
       matchColTrans: 'Transmission',
       export: 'Export',
       outputDir: 'Output Directory',
@@ -2742,7 +2821,7 @@ export const messages = {
       batchComplete: 'Batch Complete',
       subtractComplete: 'Subtraction Complete',
       exportedDownload: 'Exported {count} file(s); download started',
-      webExportNote: 'Browser mode: no output directory needed — subtracted results download automatically.',
+      webExportNote: 'Browser mode: no output directory needed — single and batch subtraction results download automatically (pick files instead of a folder for batch).',
       matchThreshold: 'Match Threshold',
       matchRegex: 'Regex Pattern',
       matchRegexHint: 'Optional: filter file names',
@@ -2785,6 +2864,25 @@ export const messages = {
       transMatchColNote: 'Note',
       transFileApplied: 'Filled transmission for {matched} file(s); {missing} unmatched',
       transFileNoMatch: 'No file matched — check that file names agree with the transmission table',
+      // Acquisition log ("计算文件") import / 采集日志（计算文件）导入
+      transLog: 'Log File (Pil Ct0)',
+      transLogHint: 'Import the beamline\'s fixed-format acquisition log (txt); the ordered "Pil Ct0" readings are paired with data files and transmission is computed as T = Ct0(sample) / Ct0(blank).',
+      transLogPick: 'Select acquisition log (txt)',
+      logParseBtn: 'Parse & Auto-Match',
+      logFormula: 'Formula: T = Ct0(sample) / Ct0(blank)',
+      logFormulaHint: 'The blank is the open-beam reading; transmission is generally below 100% — if a result exceeds 100%, check the pairing or the blank reference.',
+      logBlankRef: 'Blank reference (open beam)',
+      logBlankRequired: 'Select a blank reference reading first',
+      logBlankMissing: 'No blank reading found in the log — pick the blank reference manually',
+      logColEntry: 'Paired Reading',
+      logColCt0: 'Ct0 Value',
+      logApplyBtn: 'Apply Transmissions',
+      logParsed: 'Parsed {count} Ct0 reading(s); auto-matched {matched} file(s) — adjust in the pairing table if needed',
+      logApplied: 'Applied transmission for {matched} file(s)',
+      logAppliedOver: 'Applied transmission for {matched} file(s); {over} above 100% — verify',
+      logMatchByFilename: 'matched by filename',
+      logMatchByOrder: 'matched by log order (verify)',
+      logNoMatch: 'no reading matched',
       // Ionchamber match → per-file backfill / 电离室匹配 → 逐文件回填
       errorNoBgIonchamber: 'Select a background ionchamber file first (it is used to compute transmission)',
       ionchamberAppliedHint: 'Matched transmissions were filled per file (editable in the file list) and will be used for the run.',

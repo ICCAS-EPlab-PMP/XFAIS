@@ -336,6 +336,7 @@ import { ref, reactive, computed, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { testIds } from '@/lib/testIds'
+import { downloadText } from '@/lib/download'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
 import NumberField from '@/components/common/NumberField.vue'
@@ -767,13 +768,27 @@ const jsonDrop = useDropZone({
 
 /** Save JSON config to file / 将 JSON 配置保存到文件 */
 async function handleSaveJson(): Promise<void> {
+  const content = JSON.stringify(buildExportTemplate(), null, 2)
+  // Web mode has no save dialog: hand the JSON straight to the browser
+  // (2026-11-04) instead of failing on a null path.
+  // web 模式没有保存对话框：直接把 JSON 交给浏览器下载（2026-11-04），
+  // 而不是在路径为 null 时失败。
+  if (!transport.isDesktop()) {
+    const name = 'png_generate_config.json'
+    downloadText(content, name, 'application/json;charset=utf-8')
+    toast.push({
+      title: t('pngGenerate.jsonConfig.saveSuccessTitle'),
+      message: t('business.downloads.exportedFile', { name }),
+      tone: 'success',
+    })
+    return
+  }
   try {
     const path = await transport.selectSavePath({
       filters: [{ name: 'JSON', extensions: ['json'] }],
     })
     if (!path) return
 
-    const content = JSON.stringify(buildExportTemplate(), null, 2)
     // Submit a write task to the Python backend / 提交写文件任务到 Python 后端
     await transport.submitTask('png_generate', {
       writeJson: true,

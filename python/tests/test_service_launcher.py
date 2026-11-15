@@ -515,3 +515,87 @@ def test_handle_lamellar_curves_mode_q_filter_follows_input_unit() -> None:
     assert result["status"] == "ok"
     assert result["quality"]["q_min_nm"] >= 0.5
     assert result["quality"]["q_min_nm"] < 0.55
+
+
+def test_export_integration_empty_path_writes_session_exports(tmp_path: Path) -> None:
+    """WEB MODE (2026-11-04): an empty ``outputPath`` must land in
+    ``<session_tmp>/exports/`` — the ONLY tree /api/download serves — and be
+    echoed back through ``output_files``. / web 模式（2026-11-04）：空
+    outputPath 必须落到 <session_tmp>/exports/（/api/download 唯一可服务的
+    目录树），并经 output_files 回带。"""
+    import os
+
+    from python.service_launcher import handle_export_integration
+
+    session_tmp = tmp_path / "session_tmp"
+    session_tmp.mkdir()
+    exports_dir = Path(os.path.realpath(session_tmp / "exports"))
+    results = [{
+        "radial": [0.1, 0.2, 0.3],
+        "intensity": [1.0, 2.0, 3.0],
+        "label": "curve_a",
+        "unit": "q_nm^-1",
+    }]
+
+    single = asyncio.run(
+        handle_export_integration(
+            {
+                "format": "txt",
+                "outputPath": "",
+                "dataType": "1d",
+                "mode": "single",
+                "results": results,
+                "_session_tmp_dir": str(session_tmp),
+            },
+            _noop_progress,
+            asyncio.Event(),
+        )
+    )
+    assert single["success"] is True, single
+    assert len(single["output_files"]) == 1
+    single_file = Path(single["output_files"][0])
+    assert single_file.is_file()
+    assert single_file.parent == exports_dir
+    assert single_file.suffix == ".txt"
+
+    # ``separate`` writes one file per curve into its own sub-directory.
+    # separate 模式每条曲线一个文件，写入独立子目录。
+    separate = asyncio.run(
+        handle_export_integration(
+            {
+                "format": "csv",
+                "outputPath": "",
+                "dataType": "1d",
+                "mode": "separate",
+                "results": results + [{**results[0], "label": "curve_b"}],
+                "_session_tmp_dir": str(session_tmp),
+            },
+            _noop_progress,
+            asyncio.Event(),
+        )
+    )
+    assert separate["success"] is True, separate
+    assert len(separate["output_files"]) == 2
+    for path in separate["output_files"]:
+        f = Path(path)
+        assert f.is_file()
+        assert f.parent.parent == exports_dir
+        assert f.suffix == ".csv"
+
+    # Without a session tmp there is nowhere safe to write → explicit error.
+    # 没有会话 tmp 时无处安全落盘 → 显式报错。
+    refused = asyncio.run(
+        handle_export_integration(
+            {
+                "format": "txt",
+                "outputPath": "",
+                "dataType": "1d",
+                "mode": "single",
+                "results": results,
+            },
+            _noop_progress,
+            asyncio.Event(),
+        )
+    )
+    assert refused["success"] is False
+

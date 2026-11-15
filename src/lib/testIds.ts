@@ -54,6 +54,7 @@ export const testIds = {
   advancedUnit: 'advanced-unit',
   advancedSolidAngle: 'advanced-solid-angle',
   advancedDropEmptyBins: 'advanced-drop-empty-bins',
+  advancedNormalizeMax: 'advanced-normalize-max',
   advancedAlgorithm: 'advanced-algorithm',
   advancedIntegrator: 'advanced-integrator',
 

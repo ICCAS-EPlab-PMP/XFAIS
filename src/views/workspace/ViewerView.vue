@@ -31,9 +31,16 @@
 
             <div class="vw-or-divider">— or —</div>
 
+            <!-- Web mode has no server-side folder picker (2026-11-04): keep
+                 the button visible but disabled with the reason in a tooltip
+                 instead of a click that silently does nothing.
+                 / web 模式没有服务器端目录选择器（2026-11-04）：按钮保留但
+                 禁用，并以 tooltip 说明原因，避免点击后毫无反应。 -->
             <button
               type="button"
               class="vw-export-btn vw-export-btn--secondary"
+              :disabled="!transport.isDesktop()"
+              :title="!transport.isDesktop() ? t('business.fileSelection.folderNotAvailableInWeb') : ''"
               @click="handleImportFolder"
             >
               {{ t('viewer.selectFolder') }}
@@ -310,8 +317,21 @@
           <p v-if="pngExporting" class="vw-hint">{{ t('viewer.pixelInfoDisabledByExport') }}</p>
 
           <template v-if="pixelInfoMode">
-            <!-- Geometry (PONI file / manual) / 几何参数（PONI 文件 / 手动） -->
-            <GeometryForm v-model="geometry" />
+            <!-- Geometry settings (PONI / manual) — collapsed by default so the
+                 panel stays compact until the geometry is confirmed. Opening it
+                 manually, or supplying a PONI, auto-expands it and enables the
+                 q-range ring. / 几何参数设置默认折叠；手动展开或提供 PONI 后自动展开
+                 并打开 q 范围圆环。 -->
+            <details
+              class="vw-geom-details"
+              :open="geometryExpanded"
+              @toggle="onGeometryToggle"
+            >
+              <summary class="vw-geom-summary">{{ t('business.geometry.title') }}</summary>
+              <div class="vw-geom-body">
+                <GeometryForm v-model="geometry" />
+              </div>
+            </details>
 
             <!-- Resolved beam center (so the user can verify PONI was applied) / 解析的光束中心（便于确认 PONI 已生效） -->
             <div v-if="resolvedBeamCenter" class="vw-field">
@@ -373,6 +393,16 @@
                   </select>
                 </label>
               </div>
+              <!-- Max-intensity normalization (default OFF) / 最大强度归一化（默认关） -->
+              <label class="vw-toggle" :title="t('viewer.lineProfileNormalizeHint')">
+                <input
+                  v-model="lineProfileNormalize"
+                  type="checkbox"
+                  :disabled="pngExporting"
+                  @change="scheduleLineProfileRecompute()"
+                />
+                <span>{{ t('viewer.lineProfileNormalize') }}</span>
+              </label>
               <p v-if="!lineProfileHasGeometry" class="vw-hint">{{ t('viewer.lineProfileNoGeometry') }}</p>
               <p class="vw-hint">{{ t('viewer.lineProfileDrawHint') }}</p>
             </template>
@@ -422,6 +452,7 @@
                 :data-width="imageSize?.width"
                 :data-height="imageSize?.height"
                 :line-draw-mode="pixelInfoMode && lineProfileMode"
+                :crosshair-mode="pixelInfoMode"
                 @image:click="onImageClick"
                 @line:drawn="onLineDrawn"
               />
@@ -490,6 +521,13 @@
                 </div>
               </dl>
               <p v-else class="vw-hint">{{ t('viewer.pixelInfoClickHint') }}</p>
+              <!-- Geometry reminder: shown whenever no PONI is uploaded; the
+                   geometry-related quantities (q / 2θ / χ) follow the current
+                   geometry settings. / 几何提醒：未上传 PONI 时常显；几何相关量
+                   （q / 2θ / χ）按当前几何参数设置计算。 -->
+              <p v-if="usingDefaultGeometry" class="vw-hint vw-hint--warn">
+                {{ t('viewer.pixelInfoDefaultGeomHint') }}
+              </p>
             </div>
 
           </div>
@@ -585,6 +623,7 @@ import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
+import { downloadBase64, fileNameFromPath } from '@/lib/download'
 import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
@@ -1300,10 +1339,28 @@ watch(
   { immediate: true, deep: true }
 )
 onUnmounted(() => clearWorkspace('viewer'))
-/** q-range ring bounds (Å⁻¹). / q 范围圆环边界（Å⁻¹）。 */
-const ringMin = ref(0)
-const ringMax = ref(1.5)
-const ringEnabled = ref(true)
+/** q-range ring bounds (Å⁻¹). Default to a narrow 0.98–1.02 window.
+ *  / q 范围圆环边界（Å⁻¹），默认 0.98–1.02 的窄 q 窗口。 */
+const ringMin = ref(0.98)
+const ringMax = ref(1.02)
+/** Off by default: the ring only becomes meaningful once the geometry is
+ *  confirmed (geometry panel expanded / PONI supplied). / 默认关闭：几何确认后
+ *  （展开几何面板 / 提供 PONI）圆环才有意义。 */
+const ringEnabled = ref(false)
+/** Geometry settings collapse state (default collapsed → default geometry).
+ *  / 几何设置折叠状态（默认折叠 → 默认几何）。 */
+const geometryExpanded = ref(false)
+/** True whenever no PONI file is uploaded — the geometry reminder stays visible
+ *  until a PONI is supplied, independent of whether the panel is expanded or
+ *  the user has edited the settings. / 未上传 PONI 文件时为 true：几何提醒一直
+ *  显示到提供 PONI 为止，与面板是否展开、用户是否改过设置无关。 */
+const usingDefaultGeometry = computed(
+  () => !geometry.value.poniPath,
+)
+/** Sync the native <details> toggle back into state. / 把原生 <details> 的 toggle 同步回状态。 */
+function onGeometryToggle(event: Event): void {
+  geometryExpanded.value = (event.target as HTMLDetailsElement).open
+}
 /** Show the yellow beam-center crosshair (default on). / 显示黄色光斑中心十字（默认开）。 */
 const beamCenterVisible = ref(true)
 const azimuthMaskSrc = ref<string | null>(null)
@@ -1331,6 +1388,9 @@ const lineSegment = ref<{ x0: number; y0: number; x1: number; y1: number } | nul
 /** X-axis selector for the profile plot. */
 /** 剖面图的横坐标选择器。 */
 const lineProfileXAxis = ref<'distance_px' | 'q' | 'two_theta' | 'chi'>('distance_px')
+/** Max-intensity normalization to 0–100 for the profile (default off). */
+/** 剖面按自身最大强度归一化到 0–100（默认关）。 */
+const lineProfileNormalize = ref(false)
 interface LineProfileResult {
   distance_px: number[]
   intensity: number[]
@@ -1342,6 +1402,8 @@ interface LineProfileResult {
   width: number
   aggregate: string
   has_geometry: boolean
+  normalized?: boolean
+  normalize_applied?: boolean
 }
 const lineProfileResult = ref<LineProfileResult | null>(null)
 const lineProfileLoading = ref(false)
@@ -1517,12 +1579,23 @@ async function onLineDrawn(seg: {
       pixelX0: seg.pixelX0, pixelY0: seg.pixelY0,
       pixelX1: seg.pixelX1, pixelY1: seg.pixelY1,
       width: lineProfileWidth.value,
+      normalizeMax: lineProfileNormalize.value,
       frame: currentFrame.value,
       dataset: selectedDataset.value || undefined,
       channel: channelCount.value > 1 ? selectedChannel.value : undefined,
     }) as LineProfileResult | { status?: string; message?: string }
     if (result && Array.isArray((result as LineProfileResult).intensity)) {
       lineProfileResult.value = result as LineProfileResult
+      // Max-intensity normalization: report a profile skipped (non-positive max).
+      // 最大强度归一化：提示被跳过的剖面（最大强度非正）。
+      const lp = result as LineProfileResult
+      if (lineProfileNormalize.value && lp.normalized === true && lp.normalize_applied === false) {
+        toast.push({
+          title: t('business.normalizeMaxSkippedTitle'),
+          message: t('business.normalizeMaxSkipped', { names: filePath.value ?? '' }),
+          tone: 'warning',
+        })
+      }
       // If the backend had no geometry, force the x-axis back to pixel distance
       // and clear any stale q/2θ/chi selection so the plot stays valid.
       // 若后端无几何信息，将横坐标强制切回像素距离，并清除陈旧的 q/2θ/chi 选择，
@@ -1979,18 +2052,42 @@ watch(
   () => { scheduleRingMask() },
 )
 watch(pixelInfoMode, (on) => {
-  if (on && !resolvedBeamCenter.value) void resolveBeamCenter()
+  if (!on) return
+  if (!resolvedBeamCenter.value) void resolveBeamCenter()
+  // On enabling pixel-info mode, switch the preview quality to 100% once.
+  // Only fires on the mode transition, so the user can freely adjust it later.
+  // 开启像素信息模式时把预览画质切到 100%（仅切换时触发一次，之后用户可自行调整）。
+  previewMode.value = 'full'
+})
+// Expanding the geometry panel (manually or via PONI) opens the q-range ring.
+// 展开几何面板（手动或 PONI）时打开 q 范围圆环。
+watch(geometryExpanded, (open) => {
+  if (open) ringEnabled.value = true
+})
+// Supplying a PONI auto-expands the geometry panel (and therefore opens the ring).
+// 提供 PONI 后自动展开几何面板（并因此打开圆环）。
+watch(() => geometry.value.poniPath, (path) => {
+  if (path) geometryExpanded.value = true
 })
 
 async function handleExportSinglePng(): Promise<void> {
   if (!filePath.value || pngExporting.value) return
   viewerExportedOnce.value = true
 
+  // Desktop picks a path and the backend writes it. Web has no save dialog:
+  // ask the backend for the raw PNG (``pngB64``) and download it in the
+  // browser instead of failing on the null save path (2026-11-04).
+  // 桌面版选路径由后端写盘；web 没有保存对话框——改让后端回带 PNG 字节
+  // （pngB64）由浏览器下载，而不是在保存路径为 null 时直接失败（2026-11-04）。
+  const desktop = transport.isDesktop()
+  let savePath = ''
   try {
-    const savePath = await transport.selectSavePath({
-      filters: [{ name: 'PNG', extensions: ['png'] }],
-    })
-    if (!savePath) return
+    if (desktop) {
+      savePath = await transport.selectSavePath({
+        filters: [{ name: 'PNG', extensions: ['png'] }],
+      }) ?? ''
+      if (!savePath) return
+    }
 
     pngExporting.value = true
     const params: Record<string, unknown> = {
@@ -2010,20 +2107,31 @@ async function handleExportSinglePng(): Promise<void> {
         show_colorbar: showColorbar.value,
         dpi: dpi.value,
       },
-      output_path: savePath,
     }
+    if (desktop && savePath) params.output_path = savePath
 
     await new Promise<void>((resolve, reject) => {
       transport.submitTask('viewer_config', params).then(response => {
         taskId.value = response.taskId
 
-        cleanupResult = transport.onTaskResult(response.taskId, () => {
+        cleanupResult = transport.onTaskResult(response.taskId, (payload) => {
           pngExporting.value = false
-          toast.push({
-            title: t('viewer.pngExport'),
-            message: savePath,
-            tone: 'success',
-          })
+          const data = payload.data as { savedPath?: string; pngB64?: string }
+          if (!desktop && data?.pngB64) {
+            const name = fileNameFromPath(filePath.value!).replace(/\.[^.]+$/, '') + '.png'
+            downloadBase64(data.pngB64, name, 'image/png')
+            toast.push({
+              title: t('viewer.pngExport'),
+              message: t('business.downloads.exportedFile', { name }),
+              tone: 'success',
+            })
+          } else {
+            toast.push({
+              title: t('viewer.pngExport'),
+              message: data?.savedPath ?? savePath,
+              tone: 'success',
+            })
+          }
           resolve()
         })
 
@@ -2497,6 +2605,33 @@ onUnmounted(() => {
   color: var(--text-muted);
   margin: 0;
   line-height: 1.5;
+}
+
+/* Geometry reminder hint / 几何设置提醒 */
+.vw-hint--warn {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.1);
+  border-left: 3px solid #f59e0b;
+  padding: 6px 10px;
+  border-radius: 4px;
+}
+
+/* Collapsible geometry settings / 可折叠的几何参数设置区 */
+.vw-geom-details {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+.vw-geom-summary {
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.vw-geom-body {
+  margin-top: 12px;
 }
 
 .vw-export-btn {

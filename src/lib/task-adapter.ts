@@ -162,6 +162,10 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           radial_max: asOptionalNumber(advanced.radialMax),
           correct_solid_angle: asBoolean(advanced.correctSolidAngle, true),
           drop_empty_bins: asBoolean(advanced.dropEmptyBins, true),
+          // v0.3.6: max-intensity normalization (default OFF → backend skips it
+          // and results are identical to the previous behavior).
+          // v0.3.6：最大强度归一化（默认关 → 后端跳过，结果与旧行为一致）。
+          normalize_max: asBoolean(advanced.normalizeMax, false),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -196,6 +200,8 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           method: asString(params.method),
           correct_solid_angle: true,
           drop_empty_bins: asBoolean(params.dropEmptyBins, true),
+          // v0.3.6: max-intensity normalization (default OFF) / v0.3.6：最大强度归一化（默认关）
+          normalize_max: asBoolean(params.normalizeMax, false),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -228,6 +234,8 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           method: asString(advanced.algorithm ?? advanced.method) ?? 'splitpixel',
           correct_solid_angle: asBoolean(advanced.correctSolidAngle, true),
           drop_empty_bins: asBoolean(advanced.dropEmptyBins, true),
+          // v0.3.6: max-intensity normalization (default OFF) / v0.3.6：最大强度归一化（默认关）
+          normalize_max: asBoolean(advanced.normalizeMax, false),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -270,6 +278,8 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
           valid_min: asNumber(activeMask.valueRangeMin, 0),
           valid_max: asNumber(activeMask.valueRangeMax, 1e10),
           correct_solid_angle: asBoolean(params.correctSolidAngle, true),
+          // v0.3.6: max-intensity normalization (default OFF) / v0.3.6：最大强度归一化（默认关）
+          normalize_max: asBoolean(params.normalizeMax, false),
           polarization_factor: polarizationFactor,
           dead_pixel_threshold: asOptionalNumber(activeMask.deadPixelThreshold),
           custom_mask_path: asString(activeMask.customMaskPath)
@@ -353,6 +363,11 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         npt1d: typeof params.npt1d === 'number' ? params.npt1d : 100,
         positiveQOnly: typeof params.positiveQOnly === 'boolean' ? params.positiveQOnly : undefined,
         absoluteIntensity: typeof params.absoluteIntensity === 'boolean' ? params.absoluteIntensity : undefined,
+        // v0.3.6: max-intensity normalization for the line_profile / fiber_1d_roi
+        // actions (passed through verbatim; consumed only by those actions).
+        // v0.3.6：最大强度归一化（原样透传，仅被 line_profile / fiber_1d_roi
+        // action 消费）。
+        normalizeMax: typeof params.normalizeMax === 'boolean' ? params.normalizeMax : undefined,
         correctSolidAngle: typeof params.correctSolidAngle === 'boolean' ? params.correctSolidAngle : undefined,
         maskConfig: asRecord(params.maskConfig),
         // fiber_result_mpl_preview fields (annotated WYSIWYG preview + PNG export).
@@ -756,7 +771,12 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
               label: asString(item.filename) ?? `Curve ${index + 1}`
             }
           }),
-          failed
+          failed,
+          // v0.3.6 max-intensity normalization feedback / v0.3.6 最大强度归一化回执
+          normalized: result.normalized === true,
+          normalizeWarnings: Array.isArray(result.normalize_warnings)
+            ? result.normalize_warnings.filter((w): w is string => typeof w === 'string')
+            : []
         }
       }
     }
@@ -774,7 +794,12 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
               label: asString(item.filename) ?? `Curve ${index + 1}`
             }
           }),
-          failed
+          failed,
+          // v0.3.6 max-intensity normalization feedback / v0.3.6 最大强度归一化回执
+          normalized: result.normalized === true,
+          normalizeWarnings: Array.isArray(result.normalize_warnings)
+            ? result.normalize_warnings.filter((w): w is string => typeof w === 'string')
+            : []
         }
       }
     }
@@ -792,7 +817,12 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
               name: asString(item.name) ?? `Curve ${index + 1}`
             }
           }),
-          failed
+          failed,
+          // v0.3.6 max-intensity normalization feedback / v0.3.6 最大强度归一化回执
+          normalized: result.normalized === true,
+          normalizeWarnings: Array.isArray(result.normalize_warnings)
+            ? result.normalize_warnings.filter((w): w is string => typeof w === 'string')
+            : []
         }
       }
     }

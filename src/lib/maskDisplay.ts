@@ -5,18 +5,21 @@
 // surfaces (CalibrationView's render bar and MaskMaker's display panel) and
 // TWO canvases. A module-level ref keeps them in sync reactively — no event
 // bus, no prop drilling across views — while localStorage persists the choice
-// across restarts. Bad/stale stored values fall back to 'red' so a corrupted
-// entry can never break the canvas renderers.
+// across restarts. Bad/stale stored values fall back to the default tier so
+// a corrupted entry can never break the canvas renderers.
 // 为什么用模块级 ref：同一偏好要驱动两处设置界面（标定渲染条、掩膜工具显示
 // 面板）与两个画布。模块级 ref 让它们响应式同步——无需事件总线、无需跨视图
-// 传 props；localStorage 负责重启后保留选择。坏值回退 'red'，损坏的存储项
+// 传 props；localStorage 负责重启后保留选择。坏值回退默认档，损坏的存储项
 // 不会让画布渲染崩溃。
 //
 // Tier semantics / 三档语义:
-//   red    — translucent red (default): marks masked areas, keeps detail visible
-//            半透明淡红（默认）：标记掩膜区域，其下细节仍可见
-//   white  — solid opaque white: fully hides the data beneath (effective area)
-//            不透明纯白：完全遮挡下方数据，直观呈现有效探测范围
+//   red    — translucent red: marks masked areas, keeps detail visible
+//            半透明淡红：标记掩膜区域，其下细节仍可见
+//   white  — solid opaque white (default): fully hides the data beneath
+//            (effective area) — matches the exported-mask convention where
+//            masked pixels read as white
+//            不透明纯白（默认）：完全遮挡下方数据，直观呈现有效探测范围，
+//            与导出掩膜中掩膜像素呈白色的惯例一致
 //   violet — 5%-opacity deep violet: nearly non-intrusive extent hint
 //            5% 透明度深紫：几乎不干扰原图判读，仅提示掩膜大致范围
 import { ref } from 'vue'
@@ -28,7 +31,12 @@ export type MaskDisplayStyle = 'red' | 'white' | 'violet'
 export const MASK_DISPLAY_STYLES: MaskDisplayStyle[] = ['red', 'white', 'violet']
 
 const STORAGE_KEY = 'xfaos.display.maskStyle'
-const DEFAULT_STYLE: MaskDisplayStyle = 'red'
+// Default tier is opaque white (2026-11-06 用户指令). Only users who never
+// explicitly picked a tier are affected — an explicitly stored choice always
+// wins over the default.
+// 默认档为不透明纯白（2026-11-06 用户指令）。只影响从未显式选择过的用户——
+// 已显式存储的选择始终优先于默认值。
+const DEFAULT_STYLE: MaskDisplayStyle = 'white'
 
 function readStored(): MaskDisplayStyle {
   try {

@@ -8,13 +8,17 @@ Covers:
     Group C: CSV / JSON export + parse round-trips (BOM, Chinese names)
     Group D: match_transmission_entries (basename, case, duplicates)
     Group E: _merge_payload_transmissions (batch payload merge)
+    Group F: Pilatus acquisition log ("计算文件") — parse / match / handler
 
-Library-level only — handlers / asyncio are not exercised here; the
+Library-level only — handlers / asyncio are not exercised here except the
+thin Group F handler wrappers (no I/O beyond tmp_path); the
 validated-output-path wiring is covered by the handler tests elsewhere.
-本文件只做纯库级测试（不测 handler/asyncio）：区域积分、透过率比值、导出/
-解析往返、按文件名匹配，以及批量载荷的透过率合并。
+本文件以纯库级测试为主（Group F 的薄 handler 包装除外，除 tmp_path 外无
+I/O）；区域积分、透过率比值、导出/解析往返、按文件名匹配、批量载荷的透过
+率合并，以及采集日志解析与配对。
 """
 
+import asyncio
 import json
 import os
 
@@ -25,12 +29,18 @@ from python.services.transmission import (
     compute_transmission_rows,
     export_transmission_csv,
     export_transmission_json,
+    match_log_ct0,
     match_transmission_entries,
+    parse_pilatus_log,
     parse_transmission_file,
     region_pixel_sum,
     validate_region,
 )
-from python.service_launcher import _merge_payload_transmissions
+from python.service_launcher import (
+    _handle_bg_log_ct0_parse,
+    _handle_bg_log_ct0_transmission,
+    _merge_payload_transmissions,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -400,6 +410,36 @@ class TestMatchTransmissionEntries:
         matches = match_transmission_entries(["c:/data/sample.edf"], entries)
         assert matches[0]["transmission"] == pytest.approx(0.75)
 
+    def test_windows_backslash_paths_match_on_posix(self):
+        """Windows ``\\``-separated paths must match on any OS (cross-platform).
+
+        Regression: ``os.path.basename`` does not recognize ``\\`` on Linux,
+        so a CSV exported by the Windows desktop build failed to import/match
+        on a Linux server. Splitting must accept both separators regardless
+        of the current platform.
+        回归：POSIX 上 ``os.path.basename`` 不认 ``\\``，Windows 桌面版导出的
+        透过率 CSV 在 Linux 服务器导入时全部匹配不上。basename 必须与当前
+        操作系统无关地识别两种分隔符。
+        """
+        entries = [
+            {"file": "D:\\ref\\ref.edf", "intensity": None, "transmission": 1.0},
+            {"file": "D:\\ref\\sample.edf", "intensity": None, "transmission": 0.4},
+        ]
+        matches = match_transmission_entries(
+            ["C:/data/ref.edf", "C:/data/sample.edf"], entries,
+        )
+        assert [m["transmission"] for m in matches] == [1.0, 0.4]
+
+        # Reverse direction: Windows-style data files, slash-style entries.
+        matches = match_transmission_entries(
+            ["C:\\data\\ref.edf", "C:\\data\\sample.edf"],
+            [
+                {"file": "D:/ref/ref.edf", "intensity": None, "transmission": 1.0},
+                {"file": "D:/ref/sample.edf", "intensity": None, "transmission": 0.4},
+            ],
+        )
+        assert [m["transmission"] for m in matches] == [1.0, 0.4]
+
     def test_duplicate_basename_uses_first_and_notes_it(self):
         entries = [
             {"file": "D:/one/sample.edf", "transmission": 0.3},
@@ -487,3 +527,297 @@ class TestMergePayloadTransmissions:
     def test_unmatched_key_is_ignored(self):
         merged = _merge_payload_transmissions(["a.edf"], {"zzz.edf": 0.5})
         assert merged == {}
+
+
+# ---------------------------------------------------------------------------
+# Group F: Pilatus acquisition log ("计算文件") — parse / match / handler
+# 2026-11-06 批次：线站固定格式日志，找 Pil Ct0，自动匹配 + 手动配对
+# ---------------------------------------------------------------------------
+
+# Inline sample mirroring D:\project\waxs\20261030\info.txt (fixed beamline
+# format): acquisition blocks name their EDF, each is followed by a
+# "Position <label>:" counter block whose "Pil Ct0 = <value>" line is the
+# reading; a "Position blank:" block is the open-beam reference.
+# 内联样例（对应真实 info.txt 的固定格式）：采集块登记 EDF 名，其后紧跟
+# "Position <标签>:" 计数块，其中的 "Pil Ct0 = <值>" 即读数；"Position
+# blank:" 块为开放光路参考。
+_LOG_SAMPLE = """X-RAY SHUTTER OPEN
+
+<PILATUS EXP. Acq mode is: saxs / saxs>
+
+ <Pilatus (det-0)> Will save data to file: /data/images/user/20261030/20261030_0_00101.edf
+Sleeping 3Sleeping 2Sleeping 1<Pilatus (det-0)> Processing headers in file: /data0/images/user/20261030/20261030_0_00101.edf
+
+ End Acquisition. File saved as : /data0/images/user/20261030/20261030_0_00101.edf
+
+
+Complete acquisition took 30.19
+X-RAY SHUTTER CLOSED
+Position 14:<Pilatus (det-0)> Saving data to file: /data/images/inhouse/tmp/diode_0.edf
+<Pilatus (det-0)> Processing headers in file: /data0/images/inhouse/tmp/diode_0.edf
+
+Sat Oct 31 14:29:25 2026
+
+     Seconds = 2.003
+     Monitor = 0 (0/s)
+     shutter = 0 (0/s)
+     Pil Ct0 = 1.84213e+07 (9.19686e+06/s)
+     Pil Ct1 = 0 (0/s)
+    Pil Roi0 = 1.84213e+07 (9.19686e+06/s)
+X-RAY SHUTTER CLOSED
+X-RAY SHUTTER OPEN
+
+ <Pilatus (det-0)> Will save data to file: /data/images/user/20261030/20261030_0_00102.edf
+
+ End Acquisition. File saved as : /data0/images/user/20261030/20261030_0_00102.edf
+
+Complete acquisition took 60.43
+X-RAY SHUTTER CLOSED
+Position 15:<Pilatus (det-0)> Saving data to file: /data/images/inhouse/tmp/diode_0.edf
+
+Sat Oct 31 15:03:30 2026
+
+     Seconds = 2.004
+     Pil Ct0 = 7.89707e+06 (3.94065e+06/s)
+     Pil Ct1 = 0 (0/s)
+X-RAY SHUTTER CLOSED
+Position blank:<Pilatus (det-0)> Saving data to file: /data/images/inhouse/tmp/diode_0.edf
+
+Sat Oct 31 15:34:27 2026
+
+     Seconds = 2.004
+     Pil Ct0 = 2.21774e+07 (1.10666e+07/s)
+     Pil Ct1 = 0 (0/s)
+X-RAY SHUTTER CLOSED
+"""
+
+
+def _write_log(tmp_path, text: str = _LOG_SAMPLE) -> str:
+    log = tmp_path / "info.txt"
+    log.write_text(text, encoding="utf-8")
+    return str(log)
+
+
+class TestParsePilatusLog:
+    def test_entries_in_order_with_source_and_blank(self, tmp_path):
+        parsed = parse_pilatus_log(_write_log(tmp_path))
+        entries = parsed["entries"]
+        assert [e["position"] for e in entries] == ["14", "15", "blank"]
+        assert [e["ct0"] for e in entries] == [
+            pytest.approx(1.84213e7), pytest.approx(7.89707e6),
+            pytest.approx(2.21774e7),
+        ]
+        # Each Position block remembers the acquisition EDF named before it.
+        # 每个 Position 块记住其前面登记的采集 EDF 名。
+        assert entries[0]["source_file"] == "20261030_0_00101.edf"
+        assert entries[1]["source_file"] == "20261030_0_00102.edf"
+        assert entries[0]["timestamp"].startswith("Sat Oct 31 14:29:25")
+
+    def test_blank_is_last_blank_labeled_entry(self, tmp_path):
+        parsed = parse_pilatus_log(_write_log(tmp_path))
+        assert parsed["blank"] is not None
+        assert parsed["blank"]["position"] == "blank"
+        assert parsed["blank"]["ct0"] == pytest.approx(2.21774e7)
+
+    def test_no_blank_returns_none(self, tmp_path):
+        text = _LOG_SAMPLE.replace(
+            "Position blank:", "Position 16:",
+        ).replace("2.21774e+07", "2.5e+07")
+        parsed = parse_pilatus_log(_write_log(tmp_path, text))
+        assert parsed["blank"] is None
+        assert [e["position"] for e in parsed["entries"]] == ["14", "15", "16"]
+
+    def test_empty_or_invalid_log_raises(self, tmp_path):
+        with pytest.raises(ValueError, match="Pil Ct0"):
+            parse_pilatus_log(_write_log(tmp_path, "no counter readings here\n"))
+        with pytest.raises(ValueError, match="日志文件不存在|Log file not found"):
+            parse_pilatus_log(str(tmp_path / "missing.txt"))
+
+    def test_tolerates_extra_whitespace_and_crlf(self, tmp_path):
+        text = _LOG_SAMPLE.replace("\n", "\r\n").replace(
+            "Pil Ct0 = 7.89707e+06", "  Pil Ct0  =  7.89707e+06  "
+        )
+        parsed = parse_pilatus_log(_write_log(tmp_path, text))
+        assert len(parsed["entries"]) == 3
+
+
+class TestMatchLogCt0:
+    def test_filename_match_beats_order(self):
+        parsed = {
+            "entries": [
+                {"position": "14", "timestamp": "t1", "ct0": 1.0e7,
+                 "source_file": "20261030_0_00101.edf"},
+                {"position": "15", "timestamp": "t2", "ct0": 5.0e6,
+                 "source_file": "20261030_0_00102.edf"},
+                {"position": "blank", "timestamp": "t3", "ct0": 2.0e7,
+                 "source_file": "20261030_0_00102.edf"},
+            ]
+        }
+        files = [
+            r"D:\\upload\\session\\20261030_0_00101.edf",
+            r"D:\\upload\\session\\20261030_0_00102.edf",
+        ]
+        rows = match_log_ct0(files, parsed["entries"])
+        # Filenames hit their own Position entries; the blank entry (same
+        # source basename) never steals a pairing.
+        # 文件名各自命中自己的 Position 条目；blank 条目（同名 source）不抢配对。
+        assert rows[0]["position"] == "14"
+        assert rows[0]["ct0"] == pytest.approx(1.0e7)
+        assert rows[0]["matched_by"] == "filename"
+        assert rows[1]["position"] == "15"
+        assert rows[1]["matched_by"] == "filename"
+
+    def test_order_fallback_flags_suggestion(self):
+        entries = [
+            {"position": "1", "timestamp": "", "ct0": 9.0e6,
+             "source_file": "sampleA.edf"},
+            {"position": "2", "timestamp": "", "ct0": 4.0e6,
+             "source_file": "sampleB.edf"},
+        ]
+        files = ["run_00001.edf", "run_00002.edf"]
+        rows = match_log_ct0(files, entries)
+        assert [r["matched_by"] for r in rows] == ["order", "order"]
+        assert rows[0]["position"] == "1"
+        assert rows[1]["position"] == "2"
+        assert "配对表" in rows[0]["note"]
+
+    def test_unmatched_file_gets_none(self):
+        entries = [
+            {"position": "1", "timestamp": "", "ct0": 9.0e6,
+             "source_file": "a.edf"},
+        ]
+        rows = match_log_ct0(["a.edf", "orphan.edf"], entries)
+        assert rows[0]["matched_by"] == "filename"
+        assert rows[1]["ct0"] is None
+        assert rows[1]["matched_by"] is None
+
+    def test_upload_conflict_suffix_loose_match(self):
+        entries = [
+            {"position": "14", "timestamp": "", "ct0": 1.0e7,
+             "source_file": "direct.edf"},
+        ]
+        rows = match_log_ct0(["direct_1.edf"], entries)
+        assert rows[0]["matched_by"] == "filename"
+        assert "冲突后缀" in rows[0]["note"]
+
+    def test_natural_order_keeps_numeric_sort(self):
+        entries = [
+            {"position": "1", "timestamp": "", "ct0": 9.0e6,
+             "source_file": ""},
+            {"position": "2", "timestamp": "", "ct0": 8.0e6,
+             "source_file": ""},
+            {"position": "3", "timestamp": "", "ct0": 7.0e6,
+             "source_file": ""},
+        ]
+        files = ["scan_00002.edf", "scan_00010.edf", "scan_00001.edf"]
+        rows = match_log_ct0(files, entries)
+        # Natural sort: 00001, 00002, 00010 — not lexicographic (10 < 2).
+        # 自然排序：00001、00002、00010——不是字典序（10 会排在 2 前）。
+        by_file = {r["data_file"]: r["position"] for r in rows}
+        assert by_file["scan_00001.edf"] == "1"
+        assert by_file["scan_00002.edf"] == "2"
+        assert by_file["scan_00010.edf"] == "3"
+
+
+class TestLogCt0Handlers:
+    def test_parse_handler_returns_entries_blank_and_matches(self, tmp_path):
+        log = _write_log(tmp_path)
+        files = [
+            str(tmp_path / "20261030_0_00101.edf"),
+            str(tmp_path / "20261030_0_00102.edf"),
+        ]
+
+        async def _run():
+            async def _progress(p, m):
+                pass
+            return await _handle_bg_log_ct0_parse(
+                {"log_file": log, "data_files": files}, _progress,
+                asyncio.Event(),
+            )
+
+        result = asyncio.run(_run())
+        assert result["status"] == "ok"
+        assert result["count"] == 3
+        assert result["blank"]["position"] == "blank"
+        assert [m["position"] for m in result["matches"]] == ["14", "15"]
+
+    def test_parse_handler_missing_file(self):
+        async def _run():
+            async def _progress(p, m):
+                pass
+            return await _handle_bg_log_ct0_parse(
+                {"log_file": ""}, _progress, asyncio.Event(),
+            )
+
+        result = asyncio.run(_run())
+        assert result["status"] == "error"
+        assert "log_file" in result["message"]
+
+    def test_transmission_handler_computes_ratio(self):
+        assignments = [
+            {"data_file": "a.edf", "ct0": 5.0e6, "position": "14"},
+            {"data_file": "b.edf", "ct0": 1.0e7, "position": "15"},
+        ]
+
+        async def _run():
+            async def _progress(p, m):
+                pass
+            return await _handle_bg_log_ct0_transmission(
+                {"assignments": assignments, "blank_ct0": 2.0e7},
+                _progress, asyncio.Event(),
+            )
+
+        result = asyncio.run(_run())
+        assert result["status"] == "ok"
+        assert result["computed_count"] == 2
+        assert result["matches"][0]["transmission"] == pytest.approx(0.25)
+        assert result["matches"][1]["transmission"] == pytest.approx(0.5)
+        # Both below 100% → no warning note.
+        assert result["matches"][0]["note"] == ""
+
+    def test_transmission_handler_flags_over_100(self):
+        async def _run():
+            async def _progress(p, m):
+                pass
+            return await _handle_bg_log_ct0_transmission(
+                {"assignments": [{"data_file": "a.edf", "ct0": 3.0e7}],
+                 "blank_ct0": 2.0e7},
+                _progress, asyncio.Event(),
+            )
+
+        result = asyncio.run(_run())
+        assert result["matches"][0]["transmission"] == pytest.approx(1.5)
+        assert "100%" in result["matches"][0]["note"]
+
+    def test_transmission_handler_rejects_bad_blank_and_ct0(self):
+        async def _run(payload):
+            async def _progress(p, m):
+                pass
+            return await _handle_bg_log_ct0_transmission(
+                payload, _progress, asyncio.Event(),
+            )
+
+        result = asyncio.run(_run(
+            {"assignments": [{"data_file": "a.edf", "ct0": 1.0}],
+             "blank_ct0": 0},
+        ))
+        assert result["status"] == "error"
+        result = asyncio.run(_run(
+            {"assignments": [{"data_file": "a.edf", "ct0": "junk"}],
+             "blank_ct0": 2.0e7},
+        ))
+        assert result["status"] == "ok"
+        assert result["matches"][0]["transmission"] is None
+        assert result["computed_count"] == 0
+
+    def test_transmission_handler_requires_assignments(self):
+        async def _run():
+            async def _progress(p, m):
+                pass
+            return await _handle_bg_log_ct0_transmission(
+                {"blank_ct0": 2.0e7}, _progress, asyncio.Event(),
+            )
+
+        result = asyncio.run(_run())
+        assert result["status"] == "error"
+        assert "assignments" in result["message"]
