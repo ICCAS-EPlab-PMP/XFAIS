@@ -165,6 +165,11 @@
             <input v-model="dropEmptyBins" type="checkbox" :data-testid="testIds.azimuthDropEmptyBins" />
             <span>{{ t('business.advancedOptions.dropEmptyBins') }}</span>
           </label>
+          <!-- Max-intensity normalization (default OFF) / 最大强度归一化（默认关） -->
+          <label class="az-toggle-label" :title="t('business.advancedOptions.normalizeMaxHint')">
+            <input v-model="normalizeMax" type="checkbox" />
+            <span>{{ t('business.advancedOptions.normalizeMax') }}</span>
+          </label>
           <!-- v0.3.0 integration method (absent before; backend default splitpixel
                keeps pre-0.3.0 results identical) / v0.3.0 积分算法（此前无此项；
                后端默认 splitpixel，旧结果保持一致） -->
@@ -436,6 +441,7 @@ import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
+import { downloadServerPaths } from '@/lib/download'
 import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } from '@/lib/chart-utils'
 import type { ColormapName } from '@/lib/chart-utils'
 
@@ -558,6 +564,8 @@ const method = ref<'splitpixel' | 'csr' | 'lut' | 'bbox' | 'numpy'>(
 )
 /** Drop fully-masked empty bins from the result (default on). / 剔除完全遮蔽的空 bin（默认开）。 */
 const dropEmptyBins = ref(true)
+/** Max-intensity normalization to 0–100 per curve (default off). / 每条曲线按自身最大强度归一化到 0–100（默认关）。 */
+const normalizeMax = ref(false)
 /** Azimuth integration range in degrees. Default -180..180 = full 360°. */
 const azimuthMin = ref(-180)
 const azimuthMax = ref(180)
@@ -1384,6 +1392,7 @@ async function handleRun(): Promise<void> {
       nptRad: nptRad.value,
       method: method.value,
       dropEmptyBins: dropEmptyBins.value,
+      normalizeMax: normalizeMax.value,
     }
 
     const response = await transport.submitTask('integrate_azimuth', params)
@@ -1400,6 +1409,7 @@ async function handleRun(): Promise<void> {
       const result = payload.data as {
         results?: Array<{ chi: number[]; intensity: number[]; label?: string }>
         failed?: Array<{ file: string; reason: string }>
+        normalizeWarnings?: string[]
       } | null
 
       const results = Array.isArray(result?.results)
@@ -1416,6 +1426,21 @@ async function handleRun(): Promise<void> {
         toast.push({
           title: `${failedList.length} file(s) failed`,
           message: failedList.map(f => `${f.file}: ${f.reason}`).join('; '),
+          tone: 'warning',
+        })
+      }
+
+      // Max-intensity normalization: report groups skipped (non-positive max).
+      // 最大强度归一化：提示被跳过的组（最大强度非正）。
+      const normalizeSkipped = Array.isArray(result?.normalizeWarnings)
+        ? result.normalizeWarnings
+        : []
+      if (normalizeMax.value && normalizeSkipped.length > 0) {
+        toast.push({
+          title: t('business.normalizeMaxSkippedTitle'),
+          message: t('business.normalizeMaxSkipped', {
+            names: normalizeSkipped.slice(0, 5).join(', '),
+          }),
           tone: 'warning',
         })
       }
@@ -1491,13 +1516,34 @@ async function handleExport(payload: { format: ExportFormat; path: string; mode:
       })
 
     const removeOk = transport.onTaskResult(response.taskId, (r) => {
-      const data = r.data as { success?: boolean; error?: string; path?: string }
+      const data = r.data as {
+        success?: boolean
+        error?: string
+        path?: string
+        output_files?: string[]
+      }
       if (data?.success) {
+        // Web mode: fetch the session-temp files back through /api/download.
+        // web 模式：经 /api/download 取回会话临时目录中的文件。
+        const webFiles = transport.isDesktop() ? [] : data.output_files ?? []
         toast.push({
           title: t('integrateAzimuth.title'),
-          message: `${payload.format.toUpperCase()} → ${data.path ?? payload.path}`,
+          message: webFiles.length
+            ? t('business.downloads.exportedFiles', { count: webFiles.length })
+            : `${payload.format.toUpperCase()} → ${data.path ?? payload.path}`,
           tone: 'success',
         })
+        downloadServerPaths(
+          webFiles,
+          (serverPath, name) => transport.downloadFile(serverPath, name),
+          (_serverPath, name) => {
+            toast.push({
+              title: t('integrateAzimuth.title'),
+              message: t('business.downloads.failed', { name }),
+              tone: 'error',
+            })
+          },
+        )
       } else {
         toast.push({ title: t('integrateAzimuth.title'), message: data?.error ?? 'Export failed', tone: 'error' })
       }

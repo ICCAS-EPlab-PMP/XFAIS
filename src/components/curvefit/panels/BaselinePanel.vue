@@ -35,6 +35,14 @@ const ui = useUi()
 
 const meta = () => BASELINE_FN_MAP.get(pk.baseline.fn)
 
+/** Name of the baseline the fit really uses (null = no baseline in the fit). */
+const jointName = computed(() =>
+  pk.baseline.enabled && pk.baseline.fn !== 'none' ? (meta()?.name ?? null) : null,
+)
+
+/** An uncommitted scan baseline is preview-only — never part of the fit. */
+const scanPending = computed(() => bl.active.value && !!bl.fit.value)
+
 // -- route A: 自动拟合 Baseline ----------------------------------------------
 
 const methodHint = computed(
@@ -162,7 +170,7 @@ function fitBaselineOnly(): void {
       <span class="pt-help">
         <HelpTip
           :size="17"
-          text="两条路线二选一：路线 A 在拟合前把基线从数据中扣除（预处理）；路线 B 让参数化基线作为模型的一部分参与联合拟合。"
+          text="两条路线二选一：路线 A 在拟合前把基线从数据中扣除（预处理）；路线 B 让参数化基线作为模型的一部分参与联合拟合。扫描出的基线未扣除时只是预览，不参与拟合——可用「应用为联合基线」把它变成路线 B 的基线。"
         />
       </span>
     </div>
@@ -226,6 +234,17 @@ function fitBaselineOnly(): void {
         </div>
       </div>
 
+      <!-- 扫描基线未扣除时必须明说：它只是预处理预览，不参与联合拟合。
+           An uncommitted scan baseline must be announced: preview only. -->
+      <div v-if="scanPending" class="scan-notice">
+        <div class="scan-text">当前扫描基线尚未扣除，未参与联合拟合</div>
+        <p class="scan-sub">
+          本次拟合使用{{ jointName ? `参数化基线（${jointName}）` : '不含基线的模型' }} + 原始数据；
+          图上的虚线基线只是扫描预览。要让它真正参与拟合，点「应用为联合基线」；
+          要把基线从数据里去掉，点「扣除为新数据」。
+        </p>
+      </div>
+
       <template v-if="bl.active.value">
         <div class="sec-label sec-head">
           手动点选
@@ -243,7 +262,7 @@ function fitBaselineOnly(): void {
           </div>
         </div>
 
-        <div class="sec-label">扣除</div>
+        <div class="sec-label">扣除 / 应用</div>
         <div class="route-card">
           <label class="checkbox">
             <input v-model="bl.opts.zeroNegative" type="checkbox" />
@@ -251,6 +270,14 @@ function fitBaselineOnly(): void {
             Zero Negative（负值置零）
           </label>
           <div class="row-btns">
+            <button
+              class="btn"
+              :disabled="!sp.ready.value || !bl.fit.value || bl.applying.value || fit.status.value === 'running'"
+              title="用路线 B 选定的基线函数拟合扫描曲线，并提交为参与拟合的联合基线（可撤销）"
+              @click="bl.applyAsJointBaseline()"
+            >
+              <AppIcon name="fit" :size="13" />{{ bl.applying.value ? '应用中…' : '应用为联合基线' }}
+            </button>
             <button
               class="btn primary"
               :disabled="!sp.ready.value || !bl.fit.value"
@@ -260,7 +287,10 @@ function fitBaselineOnly(): void {
               <AppIcon name="check" :size="13" />扣除为新数据
             </button>
           </div>
-          <p class="hint">扣除后点选模式自动退出；正式拟合请在新数据上重新 自动拟合。</p>
+          <p class="hint">
+            扣除后点选模式自动退出；正式拟合请在新数据上重新 自动拟合。
+            「应用为联合基线」不改数据：它把扫描曲线拟合成路线 B 的基线函数并参与后续联合拟合。
+          </p>
         </div>
       </template>
 
@@ -409,6 +439,26 @@ function fitBaselineOnly(): void {
 .stats b {
   color: var(--text-1);
   font-weight: 600;
+}
+/* 未扣除扫描基线的警示卡：与数据步的排除提示同一视觉语言。 */
+.scan-notice {
+  margin: 8px 0;
+  padding: 9px 10px;
+  border: 1px solid var(--warning);
+  border-radius: var(--radius);
+  background: var(--warning-soft);
+}
+.scan-text {
+  font-size: var(--fs-body);
+  font-weight: 600;
+  color: var(--text-1);
+  line-height: 1.45;
+}
+.scan-sub {
+  margin: 4px 0 0;
+  font-size: var(--fs-small);
+  color: var(--text-2);
+  line-height: 1.5;
 }
 .content {
   padding: 2px 12px 12px;

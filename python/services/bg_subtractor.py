@@ -43,6 +43,7 @@ from __future__ import annotations
 import os
 import re
 import logging
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from enum import Enum
 from typing import Any, Dict, List, Optional, Tuple
@@ -265,6 +266,147 @@ def calc_transmission(
     return float(sample_intensity / bg_intensity)
 
 
+def calc_transmission_dual(
+    sample_ion_df: pd.DataFrame,
+    bg_ion_df: pd.DataFrame,
+    sample_before: str = "Ionchamber0",
+    sample_after: str = "Ionchamber1",
+    bg_before: str = "Ionchamber0",
+    bg_after: str = "Ionchamber1",
+    method: str = "median",
+) -> float:
+    """
+    Calculate transmission from upstream/downstream ionchamber pairs.
+    由前后（上游/下游）电离室通道对计算透射率。
+
+    Formula / 公式::
+
+        T = (sample_after / sample_before) * (bg_before / bg_after)
+
+    2026-11-06 用户指正后修正（2026-11-04 首版公式恰为其倒数）：样品后通道/
+    样品前通道 × 背景前通道/背景后通道。前=上游束路电离室（测入射），后=下游
+    电离室（测透射）；背景（空束路）运行的两通道比给出下游/上游响应比，用它
+    归一化样品运行的前后比即消除束流漂移。物理上透过率一般 <100%——若结果
+    >100%，请检查前后通道是否选反。
+    T is generally below 100%; a result above 100% means the before/after
+    channels were probably swapped.
+
+    Parameters
+    ----------
+    sample_ion_df : pd.DataFrame
+        Sample ionchamber DataFrame (from parse_ionchamber_file).
+        样品电离室 DataFrame。
+    bg_ion_df : pd.DataFrame
+        Background ionchamber DataFrame.
+        背景电离室 DataFrame。
+    sample_before : str
+        Upstream channel of the sample run ("Ionchamber0/1/2").
+        样品测量的前（上游）通道。
+    sample_after : str
+        Downstream channel of the sample run.
+        样品测量的后（下游）通道。
+    bg_before : str
+        Upstream channel of the background run.
+        背景测量的前（上游）通道。
+    bg_after : str
+        Downstream channel of the background run.
+        背景测量的后（下游）通道。
+    method : str
+        Statistical method: "median", "mean", or "trimmed_mean".
+
+    Returns
+    -------
+    float
+        Transmission ratio (decimal).
+
+    Raises
+    ------
+    ValueError
+        If before/after channels coincide, a channel is missing, or a
+        denominator is zero.
+        前后通道相同、通道不存在或分母为零时抛出。
+    """
+    if sample_before == sample_after:
+        raise ValueError(
+            f"Sample before/after channels must differ, got '{sample_before}' "
+            f"for both — the formula would always be 1. "
+            f"/ 样品前后通道必须不同（当前均为 '{sample_before}'），否则公式恒为 1。"
+        )
+    if bg_before == bg_after:
+        raise ValueError(
+            f"Background before/after channels must differ, got '{bg_before}' "
+            f"for both — the formula would always be 1. "
+            f"/ 背景前后通道必须不同（当前均为 '{bg_before}'），否则公式恒为 1。"
+        )
+
+    bg_before_i = _calc_ion_intensity(bg_ion_df, bg_before, method)
+    bg_after_i = _calc_ion_intensity(bg_ion_df, bg_after, method)
+    sample_before_i = _calc_ion_intensity(sample_ion_df, sample_before, method)
+    sample_after_i = _calc_ion_intensity(sample_ion_df, sample_after, method)
+
+    missing = [
+        name for name, value in (
+            (f"bg.{bg_before}", bg_before_i),
+            (f"bg.{bg_after}", bg_after_i),
+            (f"sample.{sample_before}", sample_before_i),
+            (f"sample.{sample_after}", sample_after_i),
+        ) if value is None
+    ]
+    if missing:
+        raise ValueError(
+            f"Cannot compute ion intensity for channel(s): {', '.join(missing)} "
+            f"with method '{method}'. / 以下通道无法计算强度：{', '.join(missing)}。"
+        )
+    for name, value in (
+        (f"sample.{sample_before}", sample_before_i),
+        (f"bg.{bg_after}", bg_after_i),
+    ):
+        if value == 0.0:
+            raise ValueError(
+                f"Denominator {name} is zero — cannot compute transmission. "
+                f"/ 分母 {name} 为零，无法计算透射率。"
+            )
+
+    return float(
+        (sample_after_i / sample_before_i) * (bg_before_i / bg_after_i)
+    )
+
+
+def _reject_warmup(values: np.ndarray) -> np.ndarray:
+    """
+    Drop a leading warm-up segment from one ionchamber channel.
+    剔除电离室单通道开头的预热段（如 shutter 未开时的读数）。
+
+    Continuous scans often start recording before the shutter opens, leaving
+    a few rows near the detector floor (orders of magnitude below the median,
+    e.g. 3e-11 vs 1e-5). The median is robust to them, but mean /
+    trimmed_mean are visibly biased. Only a *leading* contiguous run far
+    below the channel median is dropped, and never more than half the rows.
+
+    连续扫描常在 shutter 开启前就开始记录，留下几行贴底的读数（比中位数低
+    几个数量级，如 3e-11 对 1e-5）。中位数对它们稳健，但 mean / trimmed_mean
+    会被明显拉偏。只剔除「位于开头、连续、远低于通道中位数」的行段，且绝不
+    超过总行数的一半。
+    """
+    if values.size < 4:
+        return values
+    med = float(np.median(values))
+    if not np.isfinite(med) or med <= 0.0:
+        return values
+    threshold = 0.05 * med
+    n = 0
+    while n < values.size and values[n] < threshold:
+        n += 1
+    if 0 < n < values.size // 2:
+        logger.info(
+            "_reject_warmup: dropped %d leading warm-up rows "
+            "(threshold=%.3g, median=%.3g). 剔除 %d 行预热段。",
+            n, threshold, med, n,
+        )
+        return values[n:]
+    return values
+
+
 def _calc_ion_intensity(
     df: pd.DataFrame, channel: str, method: str
 ) -> Optional[float]:
@@ -273,7 +415,7 @@ def _calc_ion_intensity(
     计算电离室单通道的统计强度值。
     """
     try:
-        values = df[channel].to_numpy(dtype=float)
+        values = _reject_warmup(df[channel].to_numpy(dtype=float))
         if method == "median":
             return float(np.median(values))
         if method == "trimmed_mean":
@@ -316,13 +458,127 @@ def _split_name(stem: str) -> Tuple[str, Optional[str], Optional[int]]:
     return base, state, number
 
 
+_DETECTOR_TOKENS = frozenset({"waxs", "saxs", "maxs", "gisaxs", "pdf", "edxd"})
+
+
+def _normalize_state(state: Optional[str]) -> Optional[str]:
+    """
+    Token-normalize a state fragment for matching.
+    对状态片段做 token 归一化，供匹配比较。
+
+    Continuous-scan naming often omits or reorders the detector segment
+    between the data file and its ionchamber file (e.g. data
+    "DADT-...-TEST-waxs-9.9s_00001" vs ion "DADT-...-TEST-9.9s_1"), so the
+    raw strings never compare equal. Dropping known detector tokens makes
+    the two fragments identical without loosening anything else.
+
+    连续扫描命名中，数据文件与电离室文件常缺失或改排探测器段（如数据
+    "DADT-...-TEST-waxs-9.9s_00001" 对 电离室 "DADT-...-TEST-9.9s_1"），
+    原串永不相等。剔除已知探测器 token 后两者即相同，其余部分不受影响。
+    """
+    if state is None:
+        return None
+    tokens = [t for t in state.split("-") if t and t not in _DETECTOR_TOKENS]
+    return "-".join(tokens) if tokens else None
+
+
 def _state_similarity(left: Optional[str], right: Optional[str]) -> float:
-    """Calculate similarity between state fragments. 计算状态片段相似度。"""
-    if left is None and right is None:
+    """Calculate similarity between state fragments. 计算状态片段相似度。
+
+    Comparison runs on detector-token-normalized fragments, so a missing
+    "waxs"/"saxs" segment no longer lowers the score.
+    比较在剔除探测器 token 后的片段上进行，缺失 "waxs"/"saxs" 段不再拉低分数。
+    """
+    left_n = _normalize_state(left)
+    right_n = _normalize_state(right)
+    if left_n is None and right_n is None:
         return 1.0
-    if left is None or right is None:
+    if left_n is None or right_n is None:
         return 0.0
-    return SequenceMatcher(None, left, right).ratio()
+    return SequenceMatcher(None, left_n, right_n).ratio()
+
+
+# ---------------------------------------------------------------------------
+# Time-window matching helpers / 时间窗匹配辅助
+# ---------------------------------------------------------------------------
+
+# Pilatus TVX TIFF headers carry the acquisition time as plain ASCII
+# "YYYY:MM:DD HH:MM:SS" within the first bytes of the file.
+# Pilatus TVX TIFF 头部前若干字节内有纯文本采集时间 "YYYY:MM:DD HH:MM:SS"。
+_TIFF_ACQ_TIME_RE = re.compile(r"(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})")
+
+# Time-window matching constants / 时间窗匹配常量
+TIME_WINDOW_MIN_NAME_SCORE = 0.90   # name pairs trusted for clock calibration / 用于时钟校准的高置信命名对
+TIME_WINDOW_RETRY_BELOW = 0.85      # name results below this are retried by time / 低于此分数的命名结果重试时间窗
+TIME_WINDOW_SCORE = 0.85            # score reported for a time-window match / 时间窗匹配的报告分数
+TIME_WINDOW_MARGIN = timedelta(seconds=60)  # window half-width allowance / 时间窗半宽余量
+
+
+def _read_tiff_acq_time(path: str) -> Optional[datetime]:
+    """
+    Read the acquisition time from a Pilatus TVX TIFF header.
+    从 Pilatus TVX TIFF 头部读取采集时间。
+
+    Scans the first 8 KB for the ASCII pattern ``YYYY:MM:DD HH:MM:SS``.
+    Returns None for unreadable files, other formats (EDF/HDF5), or missing
+    timestamps — the caller then simply keeps the name-based result.
+    扫描前 8 KB 内的 ASCII 模式 ``YYYY:MM:DD HH:MM:SS``。文件不可读、其他
+    格式（EDF/HDF5）或无时间戳时返回 None——调用方保留按命名匹配的结果。
+    """
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(8192)
+    except OSError:
+        return None
+    match = _TIFF_ACQ_TIME_RE.search(head.decode("latin-1", errors="replace"))
+    if match is None:
+        return None
+    try:
+        return datetime(
+            int(match.group(1)), int(match.group(2)), int(match.group(3)),
+            int(match.group(4)), int(match.group(5)), int(match.group(6)),
+        )
+    except ValueError:
+        return None
+
+
+def _parse_ion_timestamp(line: str) -> Optional[datetime]:
+    """
+    Parse the leading timestamp of an ionchamber data row.
+    解析电离室数据行开头的纳秒时间戳（截到秒）。
+    """
+    try:
+        return datetime.strptime(line[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _ion_file_time_range(path: str) -> Optional[Tuple[datetime, datetime]]:
+    """
+    Parse the [first, last] recording timestamps of an ionchamber file.
+    解析电离室文件 [首行, 末行] 的记录时间窗。
+
+    Returns None when the file cannot be read or contains no parseable
+    timestamps (e.g. a stray report .txt caught by the extension fallback).
+    文件不可读或没有可解析时间戳（如扩展名兜底混入的报告 txt）时返回 None。
+    """
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as handle:
+            lines = [
+                line.strip() for line in handle
+                if line.strip() and not line.startswith("#")
+            ]
+    except OSError:
+        return None
+    if not lines:
+        return None
+    start = _parse_ion_timestamp(lines[0])
+    end = _parse_ion_timestamp(lines[-1])
+    if start is None or end is None:
+        return None
+    if end < start:
+        start, end = end, start
+    return start, end
 
 
 def match_ionchamber(
@@ -335,10 +591,19 @@ def match_ionchamber(
 
     Matching priority / 匹配优先级:
         1. Exact match (base + state + number)
-        2. Base + state match (closest number)
+        2. Base + state match (detector-token-normalized, closest number)
         3. Base + number match (best state similarity)
+        3b. Base + nearest number (continuous-scan fallback)
         4. Base only (best state similarity)
         5. Fuzzy (SequenceMatcher score >= 0.4)
+        6. Time-window match (continuous scans): high-confidence name pairs
+           (score >= 0.90) calibrate the constant clock offset between the
+           ionchamber software and the detector; files whose name score is
+           below 0.85 are then matched by which ionchamber recording window
+           contains their calibrated acquisition time.
+        6. 时间窗匹配（连续扫描）：用高置信命名对（分数 ≥ 0.90）校准电离室
+           软件与探测器之间的恒定时钟偏移；命名分数低于 0.85 的文件改按
+           「校准后采集时间落入哪个电离室记录时间窗」匹配。
 
     Parameters
     ----------
@@ -365,6 +630,72 @@ def match_ionchamber(
             "score": score,
             "method": method,
         })
+
+    # --- Time-window pass (continuous scans) / 时间窗兜底（连续扫描） ---
+    # The ionchamber recorder and the detector run on different machines with
+    # a constant clock offset. Name pairs we already trust (exact / same
+    # state / same base+number with a matching state) reveal that offset;
+    # files the naming could not place then match by time instead of being
+    # guessed by state-tie order.
+    # 电离室记录软件与探测器分属两台机器，存在恒定时钟偏移。已被命名信任的
+    # 对（exact / 同状态 / 同基础名同编号且状态相符）可揭示该偏移；命名放
+    # 不准的文件随后改按时间落位，而不是靠状态平局顺序猜。
+    ion_ranges: Dict[str, Optional[Tuple[datetime, datetime]]] = {}
+
+    def _range_for(path: str) -> Optional[Tuple[datetime, datetime]]:
+        if path not in ion_ranges:
+            ion_ranges[path] = _ion_file_time_range(path)
+        return ion_ranges[path]
+
+    acq_times: Dict[str, Optional[datetime]] = {}
+
+    def _acq_for(path: str) -> Optional[datetime]:
+        if path not in acq_times:
+            acq_times[path] = _read_tiff_acq_time(path)
+        return acq_times[path]
+
+    offsets: List[timedelta] = []
+    for result in results:
+        if result["score"] < TIME_WINDOW_MIN_NAME_SCORE:
+            continue
+        ion_path = result.get("matched_ion")
+        if not ion_path:
+            continue
+        ion_range = _range_for(ion_path)
+        acq_time = _acq_for(result["data_file"])
+        if ion_range is not None and acq_time is not None:
+            offsets.append(ion_range[0] - acq_time)
+
+    if offsets:
+        offsets.sort()
+        median_offset = offsets[len(offsets) // 2]
+        for result in results:
+            if result["score"] >= TIME_WINDOW_RETRY_BELOW:
+                continue
+            acq_time = _acq_for(result["data_file"])
+            if acq_time is None:
+                continue
+            guess = acq_time + median_offset
+            best_path: Optional[str] = None
+            best_dist: Optional[float] = None
+            for ion_path in ionchamber_files:
+                ion_range = _range_for(ion_path)
+                if ion_range is None:
+                    continue
+                window_start, window_end = ion_range
+                if not (window_start - TIME_WINDOW_MARGIN
+                        <= guess
+                        <= window_end + TIME_WINDOW_MARGIN):
+                    continue
+                center = window_start + (window_end - window_start) / 2
+                dist = abs((guess - center).total_seconds())
+                if best_dist is None or dist < best_dist:
+                    best_path, best_dist = ion_path, dist
+            if best_path is not None:
+                result["matched_ion"] = best_path
+                result["method"] = "time_window"
+                result["score"] = TIME_WINDOW_SCORE
+
     return results
 
 
@@ -395,12 +726,16 @@ def _match_single(
             return path, "exact", 1.0, _state_similarity(data_state, ion_state)
 
     # Priority 2: Base + state match / 基础名+状态匹配
+    # (state equality is compared on detector-token-normalized fragments —
+    # continuous-scan ionchamber names often omit the "waxs"/"saxs" segment)
+    # (状态相等按归一化片段比较——连续扫描的电离室文件名常缺 "waxs"/"saxs" 段)
+    norm_data_state = _normalize_state(data_state)
     same_base_state = [
         (path, ion_state, ion_number)
         for path, ion_base, ion_state, ion_number in ion_info
-        if ion_base == data_base and ion_state == data_state
+        if ion_base == data_base and _normalize_state(ion_state) == norm_data_state
     ]
-    if data_state is not None and same_base_state:
+    if data_state is not None and norm_data_state is not None and same_base_state:
         # Prefer the ion file whose number is CLOSEST to the data file's own
         # number — the lowest number is simply the oldest scan and pairs the
         # wrong background with the wrong image (silently wrong transmission).
@@ -433,6 +768,32 @@ def _match_single(
             )
             similarity = _state_similarity(data_state, chosen[1])
             return chosen[0], "base_num_best_state", 0.80 + similarity * 0.2, similarity
+
+    # Priority 3b: Base + nearest number / 基础名+最近编号（连续扫描兜底）。
+    # A continuous scan produces more data files than ionchamber files (e.g.
+    # 6 images, 3 ionchambers). For files whose number has no same-number
+    # donor, the closest-numbered ionchamber of the same base is the most
+    # plausible donor — closer in time than an arbitrary pick by state-tie
+    # order (the old behaviour silently chose the first same-state file).
+    # 连续扫描的数据文件数常多于电离室文件数（如 6 图 3 电离室）。编号没有
+    # 同号候选时，同基础名下编号最近的电离室是时间上最合理的供体——比按
+    # state 平局顺序任选（旧行为：静默选中列表里第一个）更接近真实。
+    if data_number is not None:
+        same_base_numbered = [
+            (path, ion_state, ion_number)
+            for path, ion_base, ion_state, ion_number in ion_info
+            if ion_base == data_base and ion_number is not None
+        ]
+        if same_base_numbered:
+            chosen = min(
+                same_base_numbered,
+                key=lambda item: (
+                    abs(item[2] - data_number),
+                    -_state_similarity(data_state, item[1]),
+                ),
+            )
+            similarity = _state_similarity(data_state, chosen[1])
+            return chosen[0], "base_num_nearest", 0.70 + similarity * 0.1, similarity
 
     # Priority 4: Base only, best state / 仅基础名，最佳状态
     same_base = [

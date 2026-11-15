@@ -94,7 +94,13 @@
          激活后画布切矩形框选模式——光标变十字，拖框（可缩放平移）删除框内
          全部已有峰；一次性，落框后自动退出。 -->
     <div class="cpp-row">
+      <!-- Hidden in com mode (2026-11-04): the direct-beam centroid owns the
+           centre there, so the backend refuses set_center — offering the
+           button would only produce a confusing error toast.
+           com 模式隐藏（2026-11-04）：中心归直通光质心所有，后端会拒绝
+           set_center，按钮留着只会弹一个令人困惑的错误提示。 -->
       <button
+        v-if="!hideCenterPick"
         type="button"
         class="cpp-btn"
         :class="{ 'cpp-btn--armed': centerPicking }"
@@ -287,6 +293,13 @@ const props = withDefaults(defineProps<{
   ringPicking?: boolean
   /** Whether the SINGLE-SHOT pick-initial-centre canvas mode is armed. */
   centerPicking?: boolean
+  /**
+   * Hide the "pick initial centre" button (com mode, 2026-11-04): a
+   * fixed-centre session rejects set_center by design.
+   * 隐藏「点选初猜中心」按钮（直通光模式，2026-11-04）：固定中心会话
+   * 按设计拒绝 set_center。
+   */
+  hideCenterPick?: boolean
   /** Whether the box-erase canvas mode is armed (2026-10-25). */
   eraseArmed?: boolean
   /** Whether a peak operation can be undone (回退, 2026-10-25). */
@@ -299,6 +312,7 @@ const props = withDefaults(defineProps<{
   guideCount: 0,
   ringPicking: false,
   centerPicking: false,
+  hideCenterPick: false,
   eraseArmed: false,
   canUndo: false,
   beyondMask: false,

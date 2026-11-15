@@ -112,6 +112,17 @@
                 />
                 <span class="fib-toggle-label">{{ t('integrateFiber.correctSolidAngle') }}</span>
               </label>
+              <!-- Max-intensity normalization (default OFF; applies to both the
+                   2D integration and the ROI 1D path) / 最大强度归一化（默认关；
+                   同时作用于 2D 积分与 ROI 1D 路径） -->
+              <label class="fib-toggle" :title="t('integrateFiber.normalizeMaxHint')">
+                <input
+                  type="checkbox"
+                  :checked="normalizeMax"
+                  @change="normalizeMax = !normalizeMax"
+                />
+                <span class="fib-toggle-label">{{ t('integrateFiber.normalizeMax') }}</span>
+              </label>
             </fieldset>
 
             <!-- Mask Import (collapsible, collapsed by default) / 掩膜导入（可折叠，默认收起） -->
@@ -760,10 +771,15 @@
               >
                 {{ t('integrateFiber.exportCurrentPng') }}
               </button>
+              <!-- Batch PNG export needs an output FOLDER, which the browser
+                   cannot pick (2026-11-04): disable it in web with the reason.
+                   / 批量 PNG 导出需要输出文件夹，浏览器无法选择（2026-11-04）：
+                   web 下禁用并说明原因。 -->
               <button
                 type="button"
                 class="fib-run-btn fib-batch-png-btn"
-                :disabled="!result || pngBatchExporting"
+                :disabled="!result || pngBatchExporting || !transport.isDesktop()"
+                :title="!transport.isDesktop() ? t('business.fileSelection.exportFolderNotAvailableInWeb') : ''"
                 @click="onBatchExportPng"
               >
                 {{ pngBatchExporting
@@ -925,6 +941,7 @@ import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
 import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { testIds } from '@/lib/testIds'
+import { downloadServerPaths } from '@/lib/download'
 import { COLORMAP_PRESETS, COLORMAP_DISPLAY_NAMES, resolveColorbarGradient } from '@/lib/chart-utils'
 import type { ColormapName } from '@/lib/chart-utils'
 
@@ -1228,6 +1245,10 @@ const maskConfig = ref<MaskConfig>({
 
 const polarizationFactor = ref<number | null>(null)
 const correctSolidAngle = ref(true)
+/** Max-intensity normalization to 0–100 per group (default off). Shared by the
+ * 2D integration and the ROI 1D paths. / 每组按自身最大强度归一化到 0–100
+ * （默认关）。2D 积分与 ROI 1D 两条路径共用。 */
+const normalizeMax = ref(false)
 
 // ── Preview (single-file) mode / 预览积分 ──
 const isPreviewRunning = ref(false)
@@ -2100,6 +2121,7 @@ function buildParams(previewOnly = false): Record<string, unknown> {
     },
     polarizationFactor: polarizationFactor.value,
     correctSolidAngle: correctSolidAngle.value,
+    normalizeMax: normalizeMax.value,
   }
 }
 
@@ -2135,6 +2157,20 @@ async function runPreviewIntegration(): Promise<void> {
 
     if (taskResult) {
       batchCachePath.value = (taskResult.batchCachePath as string | undefined) ?? null
+      // Max-intensity normalization: report groups skipped (non-positive max).
+      // 最大强度归一化：提示被跳过的组（最大强度非正）。
+      const normalizeSkipped = Array.isArray(taskResult.normalize_warnings)
+        ? (taskResult.normalize_warnings as unknown[]).filter((w): w is string => typeof w === 'string')
+        : []
+      if (normalizeMax.value && normalizeSkipped.length > 0) {
+        toast.push({
+          title: t('business.normalizeMaxSkippedTitle'),
+          message: t('business.normalizeMaxSkipped', {
+            names: normalizeSkipped.slice(0, 5).join(', '),
+          }),
+          tone: 'warning',
+        })
+      }
       resultSummaries.value = Array.isArray(taskResult.results_summary)
         ? taskResult.results_summary as FiberResultSummary[]
         : []
@@ -2269,17 +2305,40 @@ async function onExport(payload: { format: ExportFormat; path: string; mode: Exp
     const response = await transport.submitTask('export_integration', params)
 
     const removeOk = transport.onTaskResult(response.taskId, (r) => {
-      const d = r.data as { success?: boolean; error?: string; path?: string; files?: string[]; errors?: string[] }
+      const d = r.data as {
+        success?: boolean
+        error?: string
+        path?: string
+        files?: string[]
+        output_files?: string[]
+        errors?: string[]
+      }
       if (d?.success) {
         const count = d.files?.length ?? 1
         const errInfo = d.errors?.length ? ` (${d.errors.length} failed)` : ''
+        // Web mode: fetch the session-temp files back through /api/download.
+        // web 模式：经 /api/download 取回会话临时目录中的文件。
+        const webFiles = transport.isDesktop() ? [] : d.output_files ?? []
         toast.push({
           title: t('integrateFiber.title'),
-          message: count > 1
-            ? `${payload.format.toUpperCase()} → ${count} files${errInfo}`
-            : `${payload.format.toUpperCase()} → ${d.path ?? payload.path}`,
+          message: webFiles.length
+            ? t('business.downloads.exportedFiles', { count: webFiles.length }) + errInfo
+            : count > 1
+              ? `${payload.format.toUpperCase()} → ${count} files${errInfo}`
+              : `${payload.format.toUpperCase()} → ${d.path ?? payload.path}`,
           tone: 'success',
         })
+        downloadServerPaths(
+          webFiles,
+          (serverPath, name) => transport.downloadFile(serverPath, name),
+          (_serverPath, name) => {
+            toast.push({
+              title: t('integrateFiber.title'),
+              message: t('business.downloads.failed', { name }),
+              tone: 'error',
+            })
+          },
+        )
       } else {
         toast.push({ title: t('integrateFiber.title'), message: d?.error ?? 'Export failed', tone: 'error' })
       }
@@ -2746,6 +2805,7 @@ async function runRoiIntegration(): Promise<void> {
       npt1d: roiNpt.value,
       positiveQOnly: roiAbsQ.value,
       correctSolidAngle: correctSolidAngle.value,
+      normalizeMax: normalizeMax.value,
       maskConfig: {
         valueRangeMin: maskConfig.value.valueRangeMin,
         valueRangeMax: maskConfig.value.valueRangeMax,
@@ -2765,11 +2825,23 @@ async function runRoiIntegration(): Promise<void> {
       }>
       unit: string
       unit_ip?: string
+      normalize_warnings?: string[]
     }
     const ok = data.results?.filter(r => !r.error && r.radial?.length > 0) ?? []
     if (ok.length === 0) {
       roiError.value = 'No valid 1D results produced.'
       return
+    }
+    // Max-intensity normalization: report groups skipped (non-positive max).
+    // 最大强度归一化：提示被跳过的组（最大强度非正）。
+    if (normalizeMax.value && Array.isArray(data.normalize_warnings) && data.normalize_warnings.length > 0) {
+      toast.push({
+        title: t('business.normalizeMaxSkippedTitle'),
+        message: t('business.normalizeMaxSkipped', {
+          names: data.normalize_warnings.slice(0, 5).join(', '),
+        }),
+        tone: 'warning',
+      })
     }
     roi1dResult.value = {
       curves: ok.map(r => ({ radial: r.radial, intensity: r.intensity, filename: r.filename })),
@@ -2835,13 +2907,34 @@ async function exportRoi1d(): Promise<void> {
   try {
     const response = await transport.submitTask('export_integration', params)
     transport.onTaskResult(response.taskId, (r) => {
-      const d = r.data as { success?: boolean; error?: string; path?: string }
+      const d = r.data as {
+        success?: boolean
+        error?: string
+        path?: string
+        output_files?: string[]
+      }
       if (d?.success) {
+        // Web mode: fetch the session-temp CSV back through /api/download.
+        // web 模式：经 /api/download 取回会话临时目录中的 CSV。
+        const webFiles = transport.isDesktop() ? [] : d.output_files ?? []
         toast.push({
           title: '1D ROI Export',
-          message: `CSV → ${d.path ?? outputPath}`,
+          message: webFiles.length
+            ? t('business.downloads.exportedFiles', { count: webFiles.length })
+            : `CSV → ${d.path ?? outputPath}`,
           tone: 'success',
         })
+        downloadServerPaths(
+          webFiles,
+          (serverPath, name) => transport.downloadFile(serverPath, name),
+          (_serverPath, name) => {
+            toast.push({
+              title: '1D ROI Export',
+              message: t('business.downloads.failed', { name }),
+              tone: 'error',
+            })
+          },
+        )
       } else {
         toast.push({ title: '1D ROI Export', message: d?.error ?? 'Export failed', tone: 'error' })
       }

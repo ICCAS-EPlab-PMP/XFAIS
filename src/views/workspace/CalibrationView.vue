@@ -93,6 +93,7 @@
             :guide-count="ringGuide.length"
             :ring-picking="ringPicking"
             :center-picking="centerPicking"
+            :hide-center-pick="setupForm.mode === 'com'"
             :erase-armed="eraseArmed"
             :can-undo="peakUndoStack.length > 0"
             :beyond-mask="beyondMask"
@@ -348,7 +349,7 @@
                   : (step === 'peaks' && centerPicking ? centerPickHint : undefined)))"
           :mask-overlay="maskOverlay"
           :mask-style="maskStyle"
-          :beam-center="refinedBeamCenter"
+          :beam-center="step === 'com' ? null : refinedBeamCenter"
           :region-mode="step === 'com'
             ? comPickMode
             : (step === 'peaks' && eraseArmed ? 'rect' : null)"
@@ -365,7 +366,7 @@
           <span v-if="step === 'peaks'" class="cv-legend-item">{{ guideCountLabel }}</span>
           <span v-if="step === 'ring'" class="cv-legend-item">{{ ringPointsLabel }}</span>
           <span
-            v-if="refinedBeamCenter"
+            v-if="refinedBeamCenter && step !== 'com'"
             class="cv-legend-item cv-legend-item--center"
             :title="beamCenterLegendTitle"
           >
@@ -888,6 +889,13 @@ const peaks = ref<CalibPeak[]>([])
 const bandTolPx = ref(5)
 const rings = ref<CalibRing[]>([])
 
+// Rings stashed while the user is on the com (direct-beam) step (2026-11-04):
+// the beam frame must show no theoretical-ring overlay (calib2 never draws
+// them there). Leaving com restores them; a refresh while on com writes here.
+// com（直通光）步骤期间暂存的理论环（2026-11-04）：直通光图不得叠加理论环
+// （calib2 在此从不画环）。离开 com 时恢复；在 com 期间刷新则写入暂存。
+const stashedRings = ref<CalibRing[]>([])
+
 // REQ 2: ring-by-ring picking — the CURRENT ring number (calib2-style 1-based
 // UI; sent to the backend as the 0-based assignRing = currentRing - 1).
 // Canvas clicks ALWAYS collect guide points for this ring; 完成本环 harvests
@@ -1042,6 +1050,10 @@ const centerPicking = ref(false)
 let centerSeq = 0
 
 function toggleCenterPick(): void {
+  // com mode owns the centre via the direct-beam centroid — the backend
+  // rejects set_center there, so never arm the picker.
+  // 直通光模式下中心归质心所有——后端拒绝 set_center，禁止武装拾取。
+  if (setupForm.value.mode === 'com') return
   centerPicking.value = !centerPicking.value
 }
 
@@ -1074,7 +1086,9 @@ async function setCenterAt(row: number, col: number): Promise<void> {
       // set_center re-derives AUTO ring numbers — a peak-list mutation the
       // user may want to undo (the centre seed itself is NOT reverted).
       pushPeakUndo()
-      applyPeaksResponse(data)
+      // The overlay is refreshed unconditionally below.
+      // 叠加统一在下方无条件刷新。
+      applyPeaksResponse(data, { refreshOverlay: false })
     }
     void refreshRingOverlay()
     const refreshed = numberOrNull(data.rings_refreshed) ?? 0
@@ -1776,6 +1790,7 @@ watch(() => setupForm.value.mode, () => {
 function resetSessionResults(): void {
   peaks.value = []
   rings.value = []
+  stashedRings.value = []
   currentRing.value = 1
   ringGuide.value = []
   // A fresh session invalidates every undo snapshot (they belong to the old
@@ -2071,10 +2086,26 @@ let peaksUpdateSeq = 0
  *  Stale responses (a newer push happened meanwhile) are dropped by the
  *  caller's seq guard. The table is (re-)grouped by ring: ascending ring
  *  numbers, unassigned peaks last. / 应用 update_peaks 响应（环号 + 自检
- *  字段），并按环号升序重新分组（未分配者居后）。 */
-function applyPeaksResponse(data: Record<string, unknown>): void {
+ *  字段），并按环号升序重新分组（未分配者居后）。
+ *
+ *  2026-11-04: when the backend reports ``hasGeometry`` the round-trip has
+ *  just built/refreshed the session's refinement, so the theoretical-ring
+ *  overlay is refreshed here — the first harvest now draws the rings
+ *  immediately (calib2 parity) instead of only after refine. Callers that
+ *  already refresh the overlay themselves pass ``refreshOverlay: false`` so
+ *  one response never triggers two overlay requests.
+ *  2026-11-04：后端回带 hasGeometry 表示本次往返已建立/刷新精修器，因此
+ *  在这里刷新理论环叠加——首次收峰即可看到环（对齐 calib2），不再等到精修。
+ *  自身已刷新叠加的调用方传 refreshOverlay: false，避免同一响应请求两次。 */
+function applyPeaksResponse(
+  data: Record<string, unknown>,
+  opts: { refreshOverlay?: boolean } = {},
+): void {
   if (!Array.isArray(data.peaks)) return
   peaks.value = sortPeaksByRing(normalizePeaks(data.peaks))
+  if (opts.refreshOverlay !== false && data.hasGeometry === true) {
+    void refreshRingOverlay()
+  }
 }
 
 /** Group peaks by ring (ascending; unassigned last) — the peak table layout
@@ -2398,13 +2429,12 @@ async function finishRingPick(): Promise<void> {
     // (calib2 "+" semantics). / 按环重新分组，数字框跳到 max+1。
     peaks.value = sortPeaksByRing(peaks.value)
     if (added) currentRing.value = nextDisplayRing()
-    const pushed = pushPeaksUpdate()
-    // The auto-seeded centre's ring overlay needs the refinement the update
-    // just built — refresh AFTER the round-trip (firing earlier hits a
-    // session without gr and the backend politely refuses).
-    // 中心自动种子后的理论环叠加依赖 update_peaks 建立的精修器——在往返
-    // 之后再刷新（过早调用时后端还没有 gr，会被拒绝）。
-    if (seeded) void pushed.then(() => refreshRingOverlay())
+    // The overlay is now refreshed by applyPeaksResponse itself (it reacts to
+    // the backend's hasGeometry flag), so the auto-seeded centre's rings show
+    // up right after this round-trip without a second request.
+    // 理论环叠加现由 applyPeaksResponse 按后端 hasGeometry 标志自行刷新，
+    // 中心自动种子后的环在本次往返后即出现，无需再发第二次请求。
+    void pushPeaksUpdate()
   } catch (err) {
     toastError(t('calibration.title'), err, t('calibration.errors.loadFailed'))
   } finally {
@@ -2655,11 +2685,30 @@ watch(() => setupForm.value.imagePath, () => {
 // has session["gr"] since ring_standard succeeded. / 进入内标预览步时刷新一次
 // 1D/2D 积分预览（对标精修步的刷新）；ring_standard 成功后后端已持有
 // session["gr"]。
-watch(step, (s) => {
+watch(step, (s, prev) => {
   if (s === 'preview') void refreshIntegrationPreview()
   // Region selection only exists on the com step — leaving it disarms any
   // pending draft. / 区域框选只属于 com 步骤——离开即解除武装。
   if (s !== 'com') comPickMode.value = null
+  // Theoretical rings belong to the standard image: stash and clear them on
+  // the way into com (the direct-beam frame must not carry an overlay), then
+  // restore them when the user returns to the standard steps.
+  // 理论环属于标样图：进入 com 时暂存并清空（直通光图不得带叠加），回到
+  // 标准步骤时恢复。
+  if (s === 'com') {
+    if (prev !== 'com') {
+      stashedRings.value = rings.value
+      rings.value = []
+    }
+  } else if (prev === 'com') {
+    rings.value = stashedRings.value
+    stashedRings.value = []
+    // Geometry may have changed while away — re-derive in the background.
+    // 离开期间几何可能已变——后台重新计算一次。
+    if (sessionActive.value && setupForm.value.mode !== 'internal') {
+      void refreshRingOverlay()
+    }
+  }
   // Going BACK to the com step must show the direct-beam frame again (the
   // standard image may have replaced it on screen). / 返回 com 步骤时必须重新
   // 显示直通光图（屏幕上可能已换成标样图）。
@@ -2773,7 +2822,11 @@ async function handleRefine(payload: { passes: number }): Promise<void> {
     // longer silently poison the refinement. / 精修前已按当前几何自动重排环号：
     // 应用刷新后的峰表并提示修正数量——未点「刷新环号」的旧分配不会再悄悄
     // 毁掉精修。
-    if (Array.isArray(data.peaks)) applyPeaksResponse(data)
+    if (Array.isArray(data.peaks)) {
+      // Overlay is refreshed unconditionally at the end of this handler.
+      // 叠加在本处理末尾统一刷新。
+      applyPeaksResponse(data, { refreshOverlay: false })
+    }
     const refreshed = numberOrNull(data.rings_refreshed) ?? 0
     if (refreshed > 0) {
       toast.push({
@@ -2821,7 +2874,12 @@ async function refreshRingOverlay(): Promise<void> {
   if (setupForm.value.mode === 'internal') return
   try {
     const data = await submitAndWait('calibration', sessionPayload('ring_overlay'))
-    rings.value = normalizeRings(data.rings)
+    const next = normalizeRings(data.rings)
+    // On the com step the overlay belongs to the standard image — write the
+    // stash instead so the direct-beam frame stays clean.
+    // com 步骤上叠加属于标样图——写入暂存，保持直通光图干净。
+    if (step.value === 'com') stashedRings.value = next
+    else rings.value = next
   } catch {
     // Ring overlay is decorative — keep whatever is on screen.
     // 圆环叠加仅辅助显示，失败时保留现状。

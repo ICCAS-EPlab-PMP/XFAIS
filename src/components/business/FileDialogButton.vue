@@ -1,10 +1,16 @@
 <template>
-  <div v-if="mode === 'openFolder' && !transport.isDesktop()" class="file-dialog-button">
-    <!-- Folder selection unavailable in Web mode -->
+  <div
+    v-if="mode === 'openFolder' && !transport.isDesktop()"
+    class="file-dialog-button"
+    :title="t('business.fileSelection.folderNotAvailableInWeb')"
+  >
+    <!-- Folder selection unavailable in Web mode (2026-11-04): show the
+         reason instead of a picker that would silently return null. -->
     <label class="fd-label">{{ label ?? t('business.fileDialog.chooseFolder') }}</label>
     <div class="fd-row">
       <span class="fd-placeholder">{{ t('business.fileDialog.noSelection') }}</span>
     </div>
+    <span class="fd-hint">{{ t('business.fileSelection.folderNotAvailableInWeb') }}</span>
   </div>
   <div
     v-else
@@ -282,6 +288,14 @@ function handleClear(): void {
 .fd-placeholder--drop {
   color: var(--primary);
   font-weight: 600;
+}
+
+/* Web-mode folder notice (2026-11-04) — explains why no picker is shown. */
+.fd-hint {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
 }
 
 .fd-clear {

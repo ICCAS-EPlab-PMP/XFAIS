@@ -120,6 +120,17 @@
         />
         <span class="aof-toggle-label">{{ t('business.advancedOptions.dropEmptyBins') }}</span>
       </label>
+
+      <!-- Max-intensity normalization (default OFF) / 最大强度归一化（默认关） -->
+      <label class="aof-toggle" :title="t('business.advancedOptions.normalizeMaxHint')">
+        <input
+          type="checkbox"
+          :checked="modelValue.normalizeMax ?? false"
+          :data-testid="testIds.advancedNormalizeMax"
+          @change="onCheckboxToggle('normalizeMax')"
+        />
+        <span class="aof-toggle-label">{{ t('business.advancedOptions.normalizeMax') }}</span>
+      </label>
     </div>
   </fieldset>
 </template>
@@ -171,6 +182,8 @@ export interface AdvancedOptions {
   correctSolidAngle: boolean
   /** Drop fully-masked empty bins (default on) / 剔除完全遮蔽的空 bin（默认开） */
   dropEmptyBins: boolean
+  /** Max-intensity normalization to 0–100 (default off) / 最大强度归一化到 0–100（默认关） */
+  normalizeMax?: boolean
   /** Integration algorithm method (1D only) / 积分算法方法（仅1D） */
   algorithm?: IntegrationAlgorithm
   /** Integrator engine (1D only) / 积分器引擎（仅1D） */
@@ -195,6 +208,7 @@ const props = withDefaults(defineProps<{
     unit: 'q_nm',
     correctSolidAngle: true,
     dropEmptyBins: true,
+    normalizeMax: false,
   }),
   showIntegrationMethod: false,
   hideUnit: false,
@@ -252,7 +266,7 @@ function onIntegratorChange(event: Event): void {
   emit('update:modelValue', { ...props.modelValue, integrator: val })
 }
 
-function onCheckboxToggle(field: 'correctSolidAngle' | 'dropEmptyBins'): void {
+function onCheckboxToggle(field: 'correctSolidAngle' | 'dropEmptyBins' | 'normalizeMax'): void {
   emit('update:modelValue', {
     ...props.modelValue,
     [field]: !props.modelValue[field],

@@ -15,6 +15,7 @@ import type {
   RobustMethod,
 } from '@/lib/pwcore/shared/types'
 import { platform } from '../platform/platform'
+import { BASELINE_FN_MAP, type BaselineFnMeta } from '@/lib/pwcore/shared/registry'
 import { usePeaks } from '../stores/peaks'
 import { useSpectrum } from '../stores/spectrum'
 import { useUi, type StepId } from '../stores/ui'
@@ -116,6 +117,22 @@ function toPlainOptions(o: FitOptions): FitOptions {
   }
 }
 
+/**
+ * The joint baseline the engine fits — the SAME definition the chart draws
+ * into the 拟合 envelope (plotController.refreshChart). Keep the two predicates
+ * identical or the drawn model and the fitted model drift apart.
+ * 引擎参与拟合的联合基线判定——与图上「拟合」包络所用的判定逐字一致，二者
+ * 不一致就会出现“画的模型 ≠ 拟合的模型”。
+ */
+function jointBaselineMeta(): BaselineFnMeta | null {
+  const bl = usePeaks().baseline
+  if (!bl.enabled || bl.fn === 'none') return null
+  return BASELINE_FN_MAP.get(bl.fn) ?? null
+}
+
+/** Scan vector the "not subtracted" notice was last shown for (no toast spam). */
+let scanNoticeFor: Float64Array | null = null
+
 function buildRequest(enabledOnly: PeakSpec[], jobId: string): Parameters<typeof platform.fit>[0] | null {
   const sp = useSpectrum()
   const xv = sp.x.value
@@ -152,6 +169,23 @@ function buildRequest(enabledOnly: PeakSpec[], jobId: string): Parameters<typeof
     }
   }
 
+  // An uncommitted 自动扫描 baseline is PREPROCESSING: it is drawn as a preview
+  // but never reaches the engine. Say so once per scan curve so the dashed
+  // preview cannot silently mislead the user about what is being fitted.
+  // 未扣除的自动扫描基线属预处理：图上只作预览，绝不进引擎。每条扫描曲线提示
+  // 一次，避免虚线预览让用户误以为它参与了拟合。
+  const blMeta = jointBaselineMeta()
+  const scan = pk.scanBase.value
+  if (scan && scan.length === yv.length && scanNoticeFor !== scan) {
+    scanNoticeFor = scan
+    pushToast(
+      'info',
+      blMeta
+        ? `扫描基线尚未扣除，未参与联合拟合；本次拟合使用参数化基线（${blMeta.name}）+ 原始数据`
+        : '扫描基线尚未扣除，未参与联合拟合；本次拟合不含基线，直接用原始数据',
+    )
+  }
+
   return {
     jobId,
     x: xv,
@@ -163,7 +197,7 @@ function buildRequest(enabledOnly: PeakSpec[], jobId: string): Parameters<typeof
       fn: pk.baseline.fn,
       p: { ...pk.baseline.p },
       locked: { ...pk.baseline.locked },
-      enabled: pk.baseline.enabled && pk.baseline.fn !== 'none',
+      enabled: blMeta !== null,
     },
     options: toPlainOptions(options),
     stream: true,
@@ -349,7 +383,10 @@ function applyResult(res: FitResult, preSnap: ModelSnapshot | null, announce = t
     const r = byId.get(live.id)
     if (r) live.p = { ...r.p }
   }
-  if (pk.baseline.enabled && pk.baseline.fn !== 'none') {
+  // Write back exactly the baseline the engine used — the chart draws its
+  // envelope from these same params. / 只回写引擎真正使用的基线参数，图上包络
+  // 也画同一份参数。
+  if (jointBaselineMeta()) {
     pk.baseline.p = { ...res.baselineP }
   }
   pk.setResultMap(byId)

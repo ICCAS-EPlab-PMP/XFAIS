@@ -5,9 +5,14 @@
  */
 import { reactive, ref, shallowRef } from 'vue'
 import type { BaselineMethod, BaselineModelId, BaselineFitResult } from '@/lib/pwcore/core'
+import { DEFAULT_CONSTRAINTS } from '@/lib/pwcore/shared/types'
+import { BASELINE_FN_MAP } from '@/lib/pwcore/shared/registry'
 import { autoBaseline, refitBaseline, subtractBaseline } from '../core-bridge/engine'
+import { platform } from '../platform/platform'
 import { useSpectrum } from '../stores/spectrum'
-import { usePeaks } from '../stores/peaks'
+import { setBaselineEnabled, setBaselineParam, usePeaks } from '../stores/peaks'
+import { useFit } from '../stores/fit'
+import { pushCommand } from '../stores/undo'
 import { pushToast } from '../stores/toast'
 
 export const BASELINE_METHODS: { id: BaselineMethod; label: string; hint: string }[] = [
@@ -124,6 +129,113 @@ function clear(): void {
   publish()
 }
 
+/** True while 应用为联合基线 is fitting the scan curve. */
+const applying = ref(false)
+
+/**
+ * Route A → route B bridge: make the scanned curve the baseline the fit REALLY
+ * uses. The selected parametric baseline function is fitted to the scan vector
+ * (every point, so it tracks the drawn curve), its parameters are committed as
+ * the joint baseline, and the scan preview is retired — from then on the drawn
+ * baseline and the fitted baseline are the same parameters. No numeric core
+ * change: this reuses the fit worker with the scan curve as its data.
+ * 路线 A → 路线 B 桥接：让扫描曲线成为拟合真正使用的基线。用当前选定的参数化
+ * 基线函数拟合扫描向量（全点，贴合所画曲线），把参数提交为联合基线并退掉扫描
+ * 预览——此后图上基线与拟合基线是同一份参数。不改数值内核：复用拟合 Worker，
+ * 把扫描曲线当作它的数据。
+ */
+async function applyAsJointBaseline(): Promise<boolean> {
+  const sp = useSpectrum()
+  const pk = usePeaks()
+  const x = sp.x.value
+  const z = fit.value ? fit.value.z : null
+  if (!x || !z || z.length !== x.length) {
+    pushToast('warn', '没有可用的扫描基线：请先自动检测基线')
+    return false
+  }
+  const meta = BASELINE_FN_MAP.get(pk.baseline.fn)
+  if (!meta || meta.params.length === 0) {
+    pushToast('warn', '请先在路线 B 选择一个带参数的基线函数（如 BGLIN）')
+    return false
+  }
+  if (applying.value || useFit().status.value === 'running') {
+    pushToast('info', '已有拟合正在运行：请稍候再应用为联合基线')
+    return false
+  }
+
+  applying.value = true
+  const before = pk.exportSnapshot()
+  const prevScan = { fit: fit.value, used: used.value, active: active.value }
+  const retire = (): void => {
+    used.value = null
+    fit.value = null
+    active.value = false
+    publish()
+  }
+  try {
+    const outcome = await platform.fit({
+      jobId: `basescan-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      x,
+      y: z,
+      mask: new Uint8Array(x.length).fill(1),
+      peaks: [],
+      baseline: { fn: pk.baseline.fn, p: { ...pk.baseline.p }, locked: {}, enabled: true },
+      options: {
+        maxIter: 300,
+        convDigits: 6,
+        robust: 'ls',
+        fitExtent: 1,
+        xMin: null,
+        xMax: null,
+        constraints: DEFAULT_CONSTRAINTS,
+      },
+      stream: false,
+    })
+    if (!outcome.ok) {
+      pushToast('error', `应用为联合基线失败：${outcome.error}`)
+      return false
+    }
+    for (const pm of meta.params) {
+      const v = outcome.baselineP[pm.key]
+      if (typeof v === 'number' && Number.isFinite(v)) setBaselineParam(pm.key, v)
+    }
+    setBaselineEnabled(true)
+    const after = pk.exportSnapshot()
+    retire()
+    pushCommand({
+      label: '应用扫描基线为联合基线',
+      undo: () => {
+        pk.importSnapshot(before)
+        fit.value = prevScan.fit
+        used.value = prevScan.used
+        active.value = prevScan.active
+        publish()
+      },
+      redo: () => {
+        pk.importSnapshot(after)
+        retire()
+      },
+    })
+    const r2 = outcome.stats.r2
+    const r2Text = Number.isFinite(r2) ? r2.toFixed(4) : '—'
+    if (r2 >= 0.98) {
+      pushToast('success', `已应用为联合基线（${meta.name}，对扫描曲线 R²=${r2Text}）：后续拟合与图上包络都用它`)
+    } else {
+      pushToast(
+        'warn',
+        `已应用为联合基线（${meta.name}），但它对扫描曲线贴合较差（R²=${r2Text}）：` +
+          '可换基线函数后重试，或改用「扣除为新数据」',
+      )
+    }
+    return true
+  } catch (err) {
+    pushToast('error', `应用为联合基线异常：${err instanceof Error ? err.message : String(err)}`)
+    return false
+  } finally {
+    applying.value = false
+  }
+}
+
 export function useBaselineWork() {
-  return { opts, used, fit, version, active, detect, refit, togglePoint, excludeBand, includeBand, buildSubtracted, clear }
+  return { opts, used, fit, version, active, applying, detect, refit, togglePoint, excludeBand, includeBand, buildSubtracted, applyAsJointBaseline, clear }
 }

@@ -113,7 +113,22 @@
 
           <!-- Batch mode: folder selection + scan / 批量模式：文件夹选择 + 扫描 -->
           <template v-else>
+            <!-- Web mode: browsers cannot pick a server-side folder, so the
+                 batch source is a multi-file selection (the backend then
+                 writes each "_subtracted" file next to its source).
+                 / web 模式：浏览器无法选择服务器端文件夹，批量改为多选文件
+                 （后端把每个 "_subtracted" 结果写到源文件旁）。 -->
+            <button
+              v-if="!transport.isDesktop()"
+              type="button"
+              class="bgs-btn"
+              data-ai-id="bg:batch-files"
+              @click="handleChooseBatchFiles"
+            >
+              {{ t('bgSubtract.selectFiles') }}
+            </button>
             <FileDialogButton
+              v-else
               v-model="sampleFolder"
               mode="openFolder"
               :label="t('bgSubtract.sampleFolder')"
@@ -165,6 +180,10 @@
               <input v-model="transmissionSource" type="radio" value="file" data-testid="bg-trans-file-radio" />
               <span>{{ t('bgSubtract.transFile') }}</span>
             </label>
+            <label class="bgs-radio-label">
+              <input v-model="transmissionSource" type="radio" value="log" data-testid="bg-trans-log-radio" />
+              <span>{{ t('bgSubtract.transLog') }}</span>
+            </label>
           </div>
 
           <!-- Over-limit notice: shown whenever the per-file option is out of
@@ -213,8 +232,17 @@
               ⚠ {{ t('bgSubtract.noBgIonchamberWarning') }}
             </div>
 
-            <!-- Ionchamber channel selector / 电离室通道选择 -->
+            <!-- Ionchamber mode / 计算模式（单通道 or 前后通道） -->
             <div class="bgs-field">
+              <label class="bgs-label">{{ t('bgSubtract.ionMode') }}</label>
+              <select v-model="ionchamberMode" class="bgs-select" data-testid="bg-ion-mode">
+                <option value="single">{{ t('bgSubtract.ionModeSingle') }}</option>
+                <option value="dual">{{ t('bgSubtract.ionModeDual') }}</option>
+              </select>
+            </div>
+
+            <!-- Ionchamber channel selector / 电离室通道选择（单通道） -->
+            <div v-if="ionchamberMode === 'single'" class="bgs-field">
               <label class="bgs-label">{{ t('bgSubtract.ionchamberChannel') }}</label>
               <select v-model="ionchamberChannel" class="bgs-select">
                 <option value="Ionchamber0">Ionchamber0 (I₀)</option>
@@ -222,6 +250,49 @@
                 <option value="Ionchamber2">Ionchamber2 (I₂)</option>
               </select>
             </div>
+
+            <!-- Dual mode: before/after channel pairs / 前后通道模式 -->
+            <template v-else>
+              <p class="bgs-ion-formula">{{ t('bgSubtract.ionDualFormula') }}</p>
+              <div class="bgs-dual-grid">
+                <div class="bgs-field">
+                  <label class="bgs-label">{{ t('bgSubtract.ionSampleBefore') }}</label>
+                  <select v-model="ionSampleBefore" class="bgs-select">
+                    <option value="Ionchamber0">Ionchamber0 (I₀)</option>
+                    <option value="Ionchamber1">Ionchamber1 (I₁)</option>
+                    <option value="Ionchamber2">Ionchamber2 (I₂)</option>
+                  </select>
+                </div>
+                <div class="bgs-field">
+                  <label class="bgs-label">{{ t('bgSubtract.ionSampleAfter') }}</label>
+                  <select v-model="ionSampleAfter" class="bgs-select">
+                    <option value="Ionchamber0">Ionchamber0 (I₀)</option>
+                    <option value="Ionchamber1">Ionchamber1 (I₁)</option>
+                    <option value="Ionchamber2">Ionchamber2 (I₂)</option>
+                  </select>
+                </div>
+                <div class="bgs-field">
+                  <label class="bgs-label">{{ t('bgSubtract.ionBgBefore') }}</label>
+                  <select v-model="ionBgBefore" class="bgs-select">
+                    <option value="Ionchamber0">Ionchamber0 (I₀)</option>
+                    <option value="Ionchamber1">Ionchamber1 (I₁)</option>
+                    <option value="Ionchamber2">Ionchamber2 (I₂)</option>
+                  </select>
+                </div>
+                <div class="bgs-field">
+                  <label class="bgs-label">{{ t('bgSubtract.ionBgAfter') }}</label>
+                  <select v-model="ionBgAfter" class="bgs-select">
+                    <option value="Ionchamber0">Ionchamber0 (I₀)</option>
+                    <option value="Ionchamber1">Ionchamber1 (I₁)</option>
+                    <option value="Ionchamber2">Ionchamber2 (I₂)</option>
+                  </select>
+                </div>
+              </div>
+              <div v-if="ionchamberDualInvalid" class="bgs-match-warning">
+                ⚠ {{ t('bgSubtract.ionDualInvalid') }}
+              </div>
+              <p class="bgs-ion-hint">{{ t('bgSubtract.ionFormulaHint') }}</p>
+            </template>
 
             <!-- Ionchamber method selector / 电离室计算方法 -->
             <div class="bgs-field">
@@ -296,9 +367,12 @@
                   <tr v-for="m in ionchamberMatches" :key="m.data_file">
                     <td :title="m.data_file">{{ extractFileName(m.data_file) }}</td>
                     <td>{{ m.matched_ion ?? '—' }}</td>
-                    <td>{{ typeof m.score === 'number' ? m.score.toFixed(3) : '—' }}</td>
+                    <td
+                      :class="{ 'bgs-warn-cell': typeof m.score === 'number' && m.score < 0.8 }"
+                      :title="m.method"
+                    >{{ typeof m.score === 'number' ? m.score.toFixed(3) : '—' }}</td>
                     <td>{{ typeof m.transmission === 'number' ? (m.transmission * 100).toFixed(2) + '%' : '—' }}</td>
-                    <td :class="{ 'bgs-error-cell': m.error }">{{ m.note || m.error || '' }}</td>
+                    <td :class="{ 'bgs-error-cell': m.error, 'bgs-warn-cell': !m.error && ionMatchWarn(m) }">{{ ionMatchNote(m) }}</td>
                   </tr>
                 </tbody>
               </table>
@@ -369,6 +443,102 @@
           </template>
         </div>
 
+        <!-- Acquisition log ("计算文件") import / 采集日志（计算文件）导入 -->
+        <div class="bgs-card">
+          <h3 class="bgs-card-title">{{ t('bgSubtract.transLog') }}</h3>
+          <p
+            v-if="transmissionSource !== 'log' && logCt0Entries.length === 0"
+            class="bgs-file-summary bgs-file-summary--muted"
+          >
+            {{ t('bgSubtract.transLogHint') }}
+          </p>
+          <template v-else>
+            <FileDialogButton
+              v-model="logCt0File"
+              mode="openFile"
+              :label="t('bgSubtract.transLogPick')"
+              :filters="logCt0Filters"
+              data-testid="bg-log-pick"
+            />
+            <p class="bgs-ion-formula">{{ t('bgSubtract.logFormula') }}</p>
+            <p class="bgs-ion-hint">{{ t('bgSubtract.logFormulaHint') }}</p>
+
+            <button
+              type="button"
+              class="bgs-btn"
+              :disabled="!canMatchLogCt0"
+              data-testid="bg-log-parse"
+              @click="handleParseLogCt0"
+            >
+              {{ matchingLogCt0 ? t('bgSubtract.matching') : t('bgSubtract.logParseBtn') }}
+            </button>
+
+            <template v-if="logCt0Entries.length > 0">
+              <!-- Blank (open-beam) reference / blank（开放光路）参考读数 -->
+              <div class="bgs-field">
+                <label class="bgs-label">{{ t('bgSubtract.logBlankRef') }}</label>
+                <select
+                  v-model.number="logCt0BlankIndex"
+                  class="bgs-select"
+                  data-testid="bg-log-blank"
+                >
+                  <option :value="null">—</option>
+                  <option v-for="(e, i) in logCt0Entries" :key="i" :value="i">
+                    {{ logEntryLabel(e) }}
+                  </option>
+                </select>
+                <p v-if="logCt0BlankIndex == null" class="bgs-match-warning">
+                  ⚠ {{ t('bgSubtract.logBlankRequired') }}
+                </p>
+              </div>
+
+              <!-- Editable pairing table / 可编辑配对表 -->
+              <div v-if="logCt0Matches.length > 0" class="bgs-match-table-wrap" data-testid="bg-log-match-table">
+                <table class="bgs-match-table">
+                  <thead>
+                    <tr>
+                      <th>{{ t('bgSubtract.matchColFile') }}</th>
+                      <th>{{ t('bgSubtract.logColEntry') }}</th>
+                      <th>{{ t('bgSubtract.logColCt0') }}</th>
+                      <th>{{ t('bgSubtract.transMatchColNote') }}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="row in logCt0Matches" :key="row.data_file">
+                      <td :title="row.data_file">{{ extractFileName(row.data_file) }}</td>
+                      <td>
+                        <select
+                          class="bgs-select bgs-select--compact"
+                          :value="logCt0Assignment[row.data_file] ?? -1"
+                          data-testid="bg-log-assign"
+                          @change="onLogAssignment(row.data_file, $event)"
+                        >
+                          <option :value="-1">—</option>
+                          <option v-for="(e, i) in logCt0Entries" :key="i" :value="i">
+                            {{ logEntryLabel(e) }}
+                          </option>
+                        </select>
+                      </td>
+                      <td>{{ logRowCt0(row) }}</td>
+                      <td :title="logRowNote(row)">{{ logRowNote(row) }}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <button
+                type="button"
+                class="bgs-btn"
+                :disabled="!canApplyLogCt0"
+                data-testid="bg-log-apply"
+                @click="handleApplyLogCt0"
+              >
+                {{ applyingLogCt0 ? t('bgSubtract.matching') : t('bgSubtract.logApplyBtn') }}
+              </button>
+            </template>
+          </template>
+        </div>
+
         <!-- Export settings / 导出设置 -->
         <div class="bgs-card">
           <h3 class="bgs-card-title">{{ t('bgSubtract.export') }}</h3>
@@ -380,6 +550,7 @@
             {{ t('bgSubtract.webExportNote') }}
           </div>
           <FileDialogButton
+            v-if="transport.isDesktop()"
             v-model="outputDir"
             mode="openFolder"
             :label="t('bgSubtract.outputDir')"
@@ -642,6 +813,31 @@ interface TransmissionFileMatch {
   note?: string
 }
 
+/** One "Pil Ct0" counter reading parsed from the beamline acquisition log
+ *  ("计算文件", fixed format, 2026-11-06). / 从线站固定格式采集日志（计算文
+ *  件）解析出的一条 Pil Ct0 计数读数。 */
+interface LogCt0Entry {
+  position: string
+  timestamp: string
+  ct0: number | null
+  source_file: string
+}
+
+/** One row of the log pairing table: a data file with its suggested Ct0
+ *  reading (filename match first, log order flagged as a suggestion).
+ *  日志配对表的一行：数据文件 + 建议配对的 Ct0 读数（文件名优先，日志顺序
+ *  兜底并标注为建议）。 */
+interface LogCt0MatchRow {
+  data_file: string
+  position: string
+  ct0: number | null
+  timestamp: string
+  source_file: string
+  entry_index?: number | null
+  matched_by: 'filename' | 'order' | null
+  note?: string
+}
+
 interface BatchResult {
   success_count: number
   failed_count: number
@@ -661,7 +857,7 @@ interface PreviewStats {
 
 type PageState = 'idle' | 'running' | 'done' | 'error'
 type Mode = 'single' | 'batch'
-type TransmissionSource = 'manual' | 'per-file' | 'ionchamber' | 'file'
+type TransmissionSource = 'manual' | 'per-file' | 'ionchamber' | 'file' | 'log'
 type ImportMode = 'replace' | 'append'
 
 // === Composables / 组合函数 ===
@@ -717,6 +913,22 @@ const minScore = ref(0.4)
 const regexPattern = ref('')
 const ionchamberChannel = ref('Ionchamber0')
 const ionchamberMethod = ref<'median' | 'mean' | 'trimmed_mean'>('median')
+/** Transmission calculation mode: single channel ratio or the before/after
+ *  pair formula T = (sample_after/sample_before)·(bg_before/bg_after)
+ *  (corrected 2026-11-06 — the 2026-11-04 first version was its reciprocal).
+ *  / 透射率计算模式：单通道比值，或前后通道公式 T = 样品后/样品前 × 背景前/
+ *  背景后（2026-11-06 用户指正后修正——2026-11-04 首版恰为其倒数）。 */
+const ionchamberMode = ref<'single' | 'dual'>('single')
+const ionSampleBefore = ref('Ionchamber0')
+const ionSampleAfter = ref('Ionchamber1')
+const ionBgBefore = ref('Ionchamber0')
+const ionBgAfter = ref('Ionchamber1')
+/** Before/after channels must differ or the formula degenerates to 100%.
+ *  前后通道必须不同，否则公式恒为 100%。 */
+const ionchamberDualInvalid = computed(() =>
+  ionchamberMode.value === 'dual'
+  && (ionSampleBefore.value === ionSampleAfter.value
+    || ionBgBefore.value === ionBgAfter.value))
 
 // === Transmission file (CSV/JSON from the transmission page) / 透过率文件 ===
 
@@ -725,6 +937,24 @@ const transmissionMatches = ref<TransmissionFileMatch[]>([])
 const matchingTransmissionFile = ref(false)
 const transmissionFileFilters = [
   { name: 'Transmission Files', extensions: ['csv', 'json'] },
+  { name: 'All Files', extensions: ['*'] },
+]
+
+// === Acquisition log ("计算文件", Pil Ct0) / 采集日志（计算文件，Pil Ct0）===
+
+const logCt0File = ref<string | null>(null)
+const logCt0Entries = ref<LogCt0Entry[]>([])
+const logCt0Matches = ref<LogCt0MatchRow[]>([])
+const matchingLogCt0 = ref(false)
+const applyingLogCt0 = ref(false)
+/** Chosen blank (open-beam) reference: index into logCt0Entries. / 选定的
+ *  blank（开放光路）参考读数：logCt0Entries 的下标。 */
+const logCt0BlankIndex = ref<number | null>(null)
+/** User-adjusted pairing: data file → index into logCt0Entries. / 用户调整后
+ *  的配对：数据文件 → logCt0Entries 下标（-1 = 不配对）。 */
+const logCt0Assignment = ref<Record<string, number>>({})
+const logCt0Filters = [
+  { name: 'Log Files', extensions: ['txt', 'log', 'text'] },
   { name: 'All Files', extensions: ['*'] },
 ]
 
@@ -816,13 +1046,15 @@ const canSubtract = computed(() => {
   // must also land on disk (the legacy single path computed a preview but
   // never saved — user report 2026-10-23 "subtracted but nothing exported").
   // Web mode has NO folder picker (browsers cannot browse the server), so
-  // single mode there must not require one: results are saved next to the
-  // uploaded samples and auto-downloaded via /api/download.
+  // NEITHER mode requires one there: results are saved next to the uploaded
+  // samples and auto-downloaded via /api/download (2026-11-04: batch used to
+  // stay blocked on the missing output dir in web mode).
   // 桌面模式两种方式都要求显式输出目录：单文件执行同样要落盘（旧单文件
   // 路径只算不存，2026-10-23 用户报告"发生了扣除但不导出"的根因）。
-  // web 模式没有目录选择器（浏览器无法浏览服务器目录），单文件模式不
-  // 要求输出目录：结果保存到样品上传目录旁并经 /api/download 自动下载。
-  const requireOutDir = transport.isDesktop() || mode.value === 'batch'
+  // web 模式没有目录选择器（浏览器无法浏览服务器目录），两种模式都不要求
+  // 输出目录：结果保存到样品上传目录旁并经 /api/download 自动下载
+  // （2026-11-04：批量此前在 web 下被缺失的输出目录卡死）。
+  const requireOutDir = transport.isDesktop()
   const ionchamberReady = transmissionSource.value !== 'ionchamber'
     || matchedTransmissionCount.value > 0
   return currentSamplePaths.value.length > 0 && !!bgPath.value
@@ -860,6 +1092,7 @@ const canMatchIonchamber = computed(() => {
   // 背景电离室文件为必需项——没有它后端算不出任何透射率（现在会明确拒绝）。
   return hasFiles && !!ionchamberFolder.value && !!bgIonchamberPath.value
     && !matchingIonchamber.value
+    && !ionchamberDualInvalid.value
 })
 
 /** Human-readable list of what still blocks the run button. The button is
@@ -870,7 +1103,7 @@ const missingPrerequisites = computed<string[]>(() => {
   const items: string[] = []
   if (currentSamplePaths.value.length === 0) items.push(t('bgSubtract.reqSamples'))
   if (!bgPath.value) items.push(t('bgSubtract.reqBackground'))
-  if ((transport.isDesktop() || mode.value === 'batch') && !outputDir.value) {
+  if (transport.isDesktop() && !outputDir.value) {
     items.push(t('bgSubtract.reqOutput'))
   }
   if (transmissionSource.value === 'ionchamber' && matchedTransmissionCount.value === 0) {
@@ -898,6 +1131,62 @@ const allTransmissionUnmatched = computed(() =>
   transmissionMatches.value.length > 0
   && transmissionMatches.value.every(m => typeof m.transmission !== 'number')
 )
+
+// === Log ("计算文件") matching computeds / 日志匹配计算属性 ===
+
+/** Files present + a log file chosen. / 有数据文件且已选日志文件。 */
+const canMatchLogCt0 = computed(() => {
+  const hasFiles = mode.value === 'batch'
+    ? !!sampleFolder.value || batchFolderFiles.value.length > 0
+    : samplePaths.value.length > 0
+  return hasFiles && !!logCt0File.value && !matchingLogCt0.value
+})
+
+/** The blank reference must be picked and carry a positive reading; at least
+ *  one pairing row must have a usable Ct0. / blank 参考必须已选且读数为正；
+ *  至少一行配对有可用 Ct0。 */
+const canApplyLogCt0 = computed(() => {
+  if (logCt0Matches.value.length === 0 || applyingLogCt0.value) return false
+  const blank = logCt0BlankIndex.value != null
+    ? logCt0Entries.value[logCt0BlankIndex.value]
+    : null
+  if (!blank || typeof blank.ct0 !== 'number' || blank.ct0 <= 0) return false
+  return Object.entries(logCt0Assignment.value).some(([, idx]) =>
+    idx != null && idx >= 0
+    && typeof logCt0Entries.value[idx]?.ct0 === 'number')
+})
+
+/** Select-option label for one Ct0 entry. / 一条 Ct0 读数的下拉选项文案。 */
+function logEntryLabel(entry: LogCt0Entry): string {
+  const value = typeof entry.ct0 === 'number' ? formatSci(entry.ct0) : '—'
+  return `Position ${entry.position || '?'} · ${value}`
+}
+
+/** Ct0 value of the row's CURRENTLY ASSIGNED entry (live with the dropdown).
+ *  该行当前所选读数的 Ct0 值（随下拉即时变化）。 */
+function logRowCt0(row: LogCt0MatchRow): string {
+  const idx = logCt0Assignment.value[row.data_file]
+  const entry = idx != null && idx >= 0 ? logCt0Entries.value[idx] : null
+  if (!entry || typeof entry.ct0 !== 'number') return '—'
+  return formatSci(entry.ct0)
+}
+
+/** Note text for a pairing row. / 配对行的备注文案。 */
+function logRowNote(row: LogCt0MatchRow): string {
+  if (row.note) return row.note
+  if (row.matched_by === 'filename') return t('bgSubtract.logMatchByFilename')
+  if (row.matched_by === 'order') return t('bgSubtract.logMatchByOrder')
+  return t('bgSubtract.logNoMatch')
+}
+
+/** Dropdown change on a pairing row. / 配对行下拉变化。 */
+function onLogAssignment(dataFile: string, event: Event): void {
+  const value = Number((event.target as HTMLSelectElement).value)
+  logCt0Assignment.value = {
+    ...logCt0Assignment.value,
+    [dataFile]: Number.isFinite(value) ? value : -1,
+  }
+}
 
 // Per-file transmission cap (user request 2026-10-13: raised 10 → 100). The
 // UI keeps the per-file inputs for up to 100 sample images; beyond that the
@@ -986,6 +1275,28 @@ watch(tooManyFilesForPerFile, (tooMany) => {
 })
 
 // === Helpers / 辅助函数 ===
+
+/** Note cell for an ionchamber match row: error, backend note, method badge
+ *  for continuous-scan fallbacks, and a >100% transmission hint.
+ *  电离室匹配行的备注列：错误 / 后端备注 / 就近与时间窗方法标记 / 超 100% 提示。 */
+function ionMatchNote(m: IonchamberMatch): string {
+  const parts: string[] = []
+  if (m.error) parts.push(m.error)
+  else if (m.note) parts.push(m.note)
+  else if (m.method === 'time_window') parts.push(t('bgSubtract.ionMethodTimeWindow'))
+  else if (m.method === 'base_num_nearest') parts.push(t('bgSubtract.ionMethodNearest'))
+  if (typeof m.transmission === 'number' && m.transmission > 1) {
+    parts.push(t('bgSubtract.ionTransOverHint'))
+  }
+  return parts.join(' · ')
+}
+
+/** True when the row needs attention: weak name match or T over 100%.
+ *  需要注意的行：弱命名匹配或透射率超 100%。 */
+function ionMatchWarn(m: IonchamberMatch): boolean {
+  return (typeof m.score === 'number' && m.score < 0.8)
+    || (typeof m.transmission === 'number' && m.transmission > 1)
+}
 
 function extractFileName(filePath: string): string {
   const sep = filePath.includes('/') ? '/' : '\\'
@@ -1089,6 +1400,28 @@ async function handleChooseSampleFiles(): Promise<void> {
   applySampleFilePaths(Array.isArray(result) ? result : [result])
 }
 
+/**
+ * Web-mode batch source picker (2026-11-04): with no server-side folder
+ * picker available, the batch list is filled by a multi-file selection. The
+ * run then sends ``data_files`` and the backend writes each result next to
+ * its source file.
+ * web 模式的批量来源选择（2026-11-04）：没有服务器端目录选择器，批量列表
+ * 改由多选文件填充；执行时发送 data_files，后端把结果写到各源文件旁。
+ */
+async function handleChooseBatchFiles(): Promise<void> {
+  const result = await transport.selectFiles({
+    filters: dataFileFilters,
+    multiSelections: true,
+  })
+  if (!result) return
+  batchFolderFiles.value = Array.isArray(result) ? result : [result]
+  currentSampleIndex.value = 0
+  if (batchFolderFiles.value.length > 0) {
+    loadSamplePanel()
+    generateThumbnails()
+  }
+}
+
 // Drag & drop onto the sample file area mirrors the select-files button.
 // (Dropping a folder routes through the batch-mode folder scan only in
 // desktop mode; in web mode a toast explains folders are unsupported.)
@@ -1153,6 +1486,14 @@ async function handleMatchIonchamber(): Promise<void> {
     })
     return
   }
+  if (ionchamberDualInvalid.value) {
+    toast.push({
+      title: t('bgSubtract.errorTitle'),
+      message: t('bgSubtract.ionDualInvalid'),
+      tone: 'error',
+    })
+    return
+  }
 
   matchingIonchamber.value = true
   // Drop values from the previous match so a re-match cannot leave stale
@@ -1165,14 +1506,24 @@ async function handleMatchIonchamber(): Promise<void> {
   ionchamberMatches.value = []
 
   try {
+    // Web batch mode has no folder path — send the selected files instead.
+    // web 批量模式没有文件夹路径——改发选中的文件列表。
+    const batchOnWeb = mode.value === 'batch' && !transport.isDesktop()
     const response = await transport.submitTask('bg_subtract', {
       action: 'ionchamber_match',
-      sample_folder: mode.value === 'batch' ? sampleFolder.value : undefined,
-      data_files: mode.value === 'single' ? [...files] : undefined,
+      sample_folder: mode.value === 'batch' && !batchOnWeb ? sampleFolder.value : undefined,
+      data_files: mode.value === 'single'
+        ? [...files]
+        : (batchOnWeb ? [...batchFolderFiles.value] : undefined),
       ionchamber_folder: ionchamberFolder.value,
       bg_ionchamber_path: bgIonchamberPath.value || undefined,
       ionchamber_channel: ionchamberChannel.value,
       ionchamber_method: ionchamberMethod.value,
+      ionchamber_mode: ionchamberMode.value,
+      ionchamber_sample_before: ionSampleBefore.value,
+      ionchamber_sample_after: ionSampleAfter.value,
+      ionchamber_bg_before: ionBgBefore.value,
+      ionchamber_bg_after: ionBgAfter.value,
       min_score: minScore.value,
       regex_pattern: regexPattern.value || undefined,
     })
@@ -1268,10 +1619,15 @@ async function handleMatchTransmissionFile(): Promise<void> {
   transmissionMatches.value = []
 
   try {
+    // Web batch mode has no folder path — send the selected files instead.
+    // web 批量模式没有文件夹路径——改发选中的文件列表。
+    const batchOnWeb = mode.value === 'batch' && !transport.isDesktop()
     const response = await transport.submitTask('bg_subtract', {
       action: 'transmission_file_match',
-      data_files: mode.value === 'single' ? [...samplePaths.value] : undefined,
-      sample_folder: mode.value === 'batch' ? sampleFolder.value ?? undefined : undefined,
+      data_files: mode.value === 'single'
+        ? [...samplePaths.value]
+        : (batchOnWeb ? [...batchFolderFiles.value] : undefined),
+      sample_folder: mode.value === 'batch' && !batchOnWeb ? sampleFolder.value ?? undefined : undefined,
       transmission_file: transmissionFile.value ?? undefined,
     })
 
@@ -1339,6 +1695,219 @@ async function handleMatchTransmissionFile(): Promise<void> {
     })
   } catch (err) {
     matchingTransmissionFile.value = false
+    toast.push({
+      title: t('bgSubtract.errorTitle'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
+// === Acquisition log ("计算文件") flow / 采集日志（计算文件）流程 ===
+
+/**
+ * Parse the fixed-format beamline log for the ordered "Pil Ct0" readings
+ * (plus the blank open-beam reference) and get auto-matched suggestions —
+ * filename first, log order as a flagged fallback. The pairing table stays
+ * fully editable: the user can re-assign any row's reading and pick the
+ * blank before applying (T = Ct0(file) / Ct0(blank), generally < 100%).
+ * 解析线站固定格式日志中的有序 "Pil Ct0" 读数（含 blank 开放光路参考）并取
+ * 回自动匹配建议——文件名优先，日志顺序兜底并标注。配对表完全可编辑：用户
+ * 可改配任意行的读数、指定 blank 后再应用（T = Ct0(文件) / Ct0(blank)，一般
+ * 小于 100%）。
+ */
+async function handleParseLogCt0(): Promise<void> {
+  if (!canMatchLogCt0.value) return
+
+  matchingLogCt0.value = true
+  logCt0Entries.value = []
+  logCt0Matches.value = []
+  logCt0Assignment.value = {}
+  logCt0BlankIndex.value = null
+
+  try {
+    // Web batch mode has no folder path — send the selected files instead.
+    // web 批量模式没有文件夹路径——改发选中的文件列表。
+    const batchOnWeb = mode.value === 'batch' && !transport.isDesktop()
+    const response = await transport.submitTask('bg_subtract', {
+      action: 'log_ct0_parse',
+      log_file: logCt0File.value ?? undefined,
+      data_files: mode.value === 'single'
+        ? [...samplePaths.value]
+        : (batchOnWeb ? [...batchFolderFiles.value] : undefined),
+      sample_folder: mode.value === 'batch' && !batchOnWeb ? sampleFolder.value ?? undefined : undefined,
+    })
+
+    const unsubResult = transport.onTaskResult(response.taskId, (payload) => {
+      const data = payload.data as {
+        entries?: LogCt0Entry[]
+        blank?: LogCt0Entry | null
+        matches?: LogCt0MatchRow[]
+      }
+      const entries = Array.isArray(data.entries) ? data.entries : []
+      const matches = Array.isArray(data.matches) ? data.matches : []
+      logCt0Entries.value = entries
+      logCt0Matches.value = matches
+      matchingLogCt0.value = false
+
+      // Default blank: the entry the parser flagged as the open-beam reading.
+      // 默认 blank：解析器标记的开放光路条目。
+      const blankIdx = entries.findIndex(
+        e => typeof e.position === 'string' && /blank/i.test(e.position)
+      )
+      logCt0BlankIndex.value = blankIdx >= 0 ? blankIdx : null
+
+      // Seed the editable pairing from the suggestions (entry_index points
+      // back into entries). / 以建议初始化可编辑配对（entry_index 指回
+      // entries 数组）。
+      const assign: Record<string, number> = {}
+      for (const m of matches) {
+        if (typeof m.entry_index === 'number' && m.entry_index >= 0) {
+          assign[m.data_file] = m.entry_index
+        }
+      }
+      logCt0Assignment.value = assign
+
+      if (entries.length === 0) {
+        toast.push({
+          title: t('bgSubtract.transLog'),
+          message: t('bgSubtract.transFileNoMatch'),
+          tone: 'error',
+        })
+      } else {
+        toast.push({
+          title: t('bgSubtract.transLog'),
+          message: t('bgSubtract.logParsed', {
+            count: entries.length,
+            matched: matches.filter(m => m.matched_by != null).length,
+          }),
+          tone: 'success',
+        })
+        if (blankIdx < 0) {
+          toast.push({
+            title: t('bgSubtract.transLog'),
+            message: t('bgSubtract.logBlankMissing'),
+            tone: 'warning',
+          })
+        }
+      }
+
+      unsubResult()
+      unsubError()
+    })
+
+    const unsubError = transport.onTaskError(response.taskId, (payload) => {
+      matchingLogCt0.value = false
+      toast.push({
+        title: t('bgSubtract.errorTitle'),
+        message: payload.error,
+        tone: 'error',
+      })
+      unsubResult()
+      unsubError()
+    })
+  } catch (err) {
+    matchingLogCt0.value = false
+    toast.push({
+      title: t('bgSubtract.errorTitle'),
+      message: err instanceof Error ? err.message : String(err),
+      tone: 'error',
+    })
+  }
+}
+
+/**
+ * Apply the confirmed pairing: the backend computes T = ct0 / blank_ct0 per
+ * row (validating positivity, flagging >100% in the note) and the values
+ * land in the per-file map exactly like the transmission-file import.
+ * 应用确认后的配对：后端逐行计算 T = ct0 / blank_ct0（校验正数、>100% 时在
+ * note 中提示），数值与透过率文件导入一样落入逐文件映射。
+ */
+async function handleApplyLogCt0(): Promise<void> {
+  if (!canApplyLogCt0.value) return
+  const blankIdx = logCt0BlankIndex.value
+  const blankEntry = blankIdx != null ? logCt0Entries.value[blankIdx] : null
+  if (!blankEntry || typeof blankEntry.ct0 !== 'number') return
+
+  const assignments = logCt0Matches.value
+    .map(row => {
+      const idx = logCt0Assignment.value[row.data_file]
+      const entry = idx != null && idx >= 0 ? logCt0Entries.value[idx] : null
+      if (!entry || typeof entry.ct0 !== 'number') return null
+      return { data_file: row.data_file, ct0: entry.ct0, position: entry.position }
+    })
+    .filter((a): a is { data_file: string; ct0: number; position: string } => a != null)
+  if (assignments.length === 0) return
+
+  applyingLogCt0.value = true
+  try {
+    const response = await transport.submitTask('bg_subtract', {
+      action: 'log_ct0_transmission',
+      assignments,
+      blank_ct0: blankEntry.ct0,
+    })
+
+    const unsubResult = transport.onTaskResult(response.taskId, (payload) => {
+      const data = payload.data as {
+        matches?: { data_file: string; transmission: number | null; note?: string }[]
+      }
+      const matches = Array.isArray(data.matches) ? data.matches : []
+      const matched = matches.filter(
+        m => typeof m.transmission === 'number' && m.transmission > 0
+      )
+      applyingLogCt0.value = false
+
+      if (matched.length > 0) {
+        for (const m of matched) {
+          // Same 4-decimal percent rounding as the transmission-file flow —
+          // no false precision, no overflowing the narrow per-file input.
+          // 与透过率文件流程相同的 4 位小数百分比取整——不带假精度，也不
+          // 撑爆逐文件输入框。
+          perFileTransmissions.value[m.data_file] =
+            Math.round((m.transmission as number) * 100 * 1e4) / 1e4
+        }
+        if (!tooManyFilesForPerFile.value) {
+          transmissionSource.value = 'per-file'
+        }
+        const over = matches.filter(m =>
+          typeof m.transmission === 'number' && (m.transmission as number) > 1
+        ).length
+        toast.push({
+          title: t('bgSubtract.transLog'),
+          message: over > 0
+            ? t('bgSubtract.logAppliedOver', { matched: matched.length, over })
+            : t('bgSubtract.logApplied', { matched: matched.length }),
+          tone: 'success',
+        })
+        // Refresh the result preview — it depends on the transmission.
+        // 刷新结果预览——它依赖透射率。
+        if (resultPreviewUrl.value || state.value === 'done') {
+          loadResultPanel()
+        }
+      } else {
+        toast.push({
+          title: t('bgSubtract.transLog'),
+          message: t('bgSubtract.transFileNoMatch'),
+          tone: 'error',
+        })
+      }
+
+      unsubResult()
+      unsubError()
+    })
+
+    const unsubError = transport.onTaskError(response.taskId, (payload) => {
+      applyingLogCt0.value = false
+      toast.push({
+        title: t('bgSubtract.errorTitle'),
+        message: payload.error,
+        tone: 'error',
+      })
+      unsubResult()
+      unsubError()
+    })
+  } catch (err) {
+    applyingLogCt0.value = false
     toast.push({
       title: t('bgSubtract.errorTitle'),
       message: err instanceof Error ? err.message : String(err),
@@ -1614,10 +2183,31 @@ async function handleSubtract(): Promise<void> {
         ionchamber_method: transmissionSource.value === 'ionchamber'
           ? ionchamberMethod.value
           : undefined,
+        ionchamber_mode: transmissionSource.value === 'ionchamber'
+          ? ionchamberMode.value
+          : undefined,
+        ionchamber_sample_before: transmissionSource.value === 'ionchamber'
+          ? ionSampleBefore.value
+          : undefined,
+        ionchamber_sample_after: transmissionSource.value === 'ionchamber'
+          ? ionSampleAfter.value
+          : undefined,
+        ionchamber_bg_before: transmissionSource.value === 'ionchamber'
+          ? ionBgBefore.value
+          : undefined,
+        ionchamber_bg_after: transmissionSource.value === 'ionchamber'
+          ? ionBgAfter.value
+          : undefined,
       }
     : {
         action: 'batch',
-        folder_path: sampleFolder.value,
+        // Web mode has no folder picker: send the explicitly selected files
+        // (the backend then defaults the output dir to their own folder).
+        // web 模式没有目录选择器：发送显式选中的文件列表（后端默认写到
+        // 这些文件所在目录）。
+        ...(transport.isDesktop()
+          ? { folder_path: sampleFolder.value }
+          : { data_files: [...batchFolderFiles.value] }),
         bg_path: bgPath.value,
         ionchamber_folder: transmissionSource.value === 'ionchamber'
           ? ionchamberFolder.value ?? undefined
@@ -1631,7 +2221,22 @@ async function handleSubtract(): Promise<void> {
         ionchamber_method: transmissionSource.value === 'ionchamber'
           ? ionchamberMethod.value
           : undefined,
-        output_dir: outputDir.value,
+        ionchamber_mode: transmissionSource.value === 'ionchamber'
+          ? ionchamberMode.value
+          : undefined,
+        ionchamber_sample_before: transmissionSource.value === 'ionchamber'
+          ? ionSampleBefore.value
+          : undefined,
+        ionchamber_sample_after: transmissionSource.value === 'ionchamber'
+          ? ionSampleAfter.value
+          : undefined,
+        ionchamber_bg_before: transmissionSource.value === 'ionchamber'
+          ? ionBgBefore.value
+          : undefined,
+        ionchamber_bg_after: transmissionSource.value === 'ionchamber'
+          ? ionBgAfter.value
+          : undefined,
+        output_dir: transport.isDesktop() ? outputDir.value : undefined,
         output_format: outputFormat.value,
       }
 
@@ -1643,10 +2248,16 @@ async function handleSubtract(): Promise<void> {
   // 注意：Python 批量端只读取标量 `transmission`（以及它自己根据电离室文件夹
   // 计算出的逐文件值）。旧代码仅在 single 模式下设置透射率，导致 batch 模式
   // 下被静默忽略（T=1.0）。现在两种模式都设置，以尊重用户选择。
-  // 'file' (imported transmission file) is equivalent to 'per-file' — the match
-  // step has already filled perFileTransmissions.
-  // 'file'（导入的透过率文件）与“分别设置”等价——匹配步骤已填好逐文件映射。
-  if (transmissionSource.value === 'per-file' || transmissionSource.value === 'file') {
+  // 'file' (imported transmission file) and 'log' (acquisition-log Ct0) are
+  // equivalent to 'per-file' — the match/apply step has already filled
+  // perFileTransmissions.
+  // 'file'（导入的透过率文件）与 'log'（采集日志 Ct0）都和“分别设置”等价
+  // ——匹配/应用步骤已填好逐文件映射。
+  if (
+    transmissionSource.value === 'per-file'
+    || transmissionSource.value === 'file'
+    || transmissionSource.value === 'log'
+  ) {
     if (mode.value === 'single' && samplePaths.value.length === 1) {
       params.transmission = (perFileTransmissions.value[samplePaths.value[0]] ?? manualTransmission.value) / 100
     } else if (mode.value === 'single' && samplePaths.value.length > 1) {
@@ -1932,6 +2543,34 @@ onUnmounted(() => {
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.15);
 }
 
+/* Compact select for the log pairing table cells. / 日志配对表单元格内的紧凑下拉。 */
+.bgs-select--compact {
+  padding: 2px 4px;
+  font-size: 0.6875rem;
+  max-width: 200px;
+}
+
+/* Ionchamber dual formula line / 前后通道公式行 */
+.bgs-ion-formula {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: rgba(59, 130, 246, 0.08);
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  border-radius: var(--radius-md);
+  padding: 6px 10px;
+}
+
+/* <100% sanity hint under the formula. / 公式下方的 <100% 提示。 */
+.bgs-ion-hint {
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
 .bgs-slider {
   width: 100%;
   accent-color: var(--primary);
@@ -2178,6 +2817,24 @@ onUnmounted(() => {
 .bgs-error-cell {
   color: var(--error);
   font-weight: 500;
+}
+
+/* Attention rows: weak name match (<0.8) or transmission over 100%.
+ * amber-700: 4.5:1 on white, distinct from the error red.
+ * 需要注意的行：弱命名匹配（<0.8）或透射率超 100%。amber-700 白底对比
+ * 4.5:1，与错误红区分。 */
+.bgs-warn-cell {
+  color: #b45309;
+  font-weight: 500;
+}
+
+/* Dual-mode before/after channel grid: 2×2 on narrow cards.
+ * 前后通道模式的 2×2 通道选择网格。 */
+.bgs-dual-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+  width: 100%;
 }
 
 .bgs-match-table tr:hover td {

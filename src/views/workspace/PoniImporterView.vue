@@ -456,6 +456,7 @@ import { useI18n } from 'vue-i18n'
 import { useToast } from '@/lib/toast'
 import { useTransport } from '@/lib/transport'
 import { matchesExtensions, useDropZone } from '@/lib/fileDrop'
+import { downloadText, fileNameFromPath } from '@/lib/download'
 import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
 import ImagePreview from '@/components/charts/ImagePreview.vue'
 import type { Overlay } from '@/components/charts/ImagePreview.vue'
@@ -1368,7 +1369,14 @@ async function doExport(): Promise<void> {
     const plainPoniData = JSON.parse(JSON.stringify(poniData.value)) as PoniData
     let outputPath: string | undefined
     const fmt = exportFormat.value
-    if (fmt === 'poni' || fmt === 'json') {
+    // Desktop picks a save path. Web has no save dialog (2026-11-04): the
+    // backend writes the .poni into the session temp tree and returns
+    // ``exported_path`` (fetched via /api/download), while JSON comes back as
+    // ``exported_content`` and is downloaded directly.
+    // 桌面版选保存路径；web 无保存对话框（2026-11-04）：.poni 由后端写进会话
+    // 临时目录并回带 exported_path（经 /api/download 取回），JSON 直接回带
+    // exported_content 由浏览器下载。
+    if (transport.isDesktop() && (fmt === 'poni' || fmt === 'json')) {
       const ext = fmt === 'poni' ? 'poni' : 'json'
       const defaultName = `calibration.${ext}`
       const filters = fmt === 'poni'
@@ -1388,7 +1396,37 @@ async function doExport(): Promise<void> {
 
     const unsubResult = transport.onTaskResult(response.taskId, (payload) => {
       const data = payload.data as { exported_path?: string; exported_content?: string; exported_params?: unknown }
-      if (data.exported_path) {
+      if (!transport.isDesktop()) {
+        if (data.exported_path) {
+          const name = fileNameFromPath(data.exported_path)
+          transport.downloadFile(data.exported_path, name).then(() => {
+            toast.push({
+              title: t('poniImporter.exportSuccessTitle'),
+              message: t('business.downloads.exportedFile', { name }),
+              tone: 'success',
+            })
+          }).catch(() => {
+            toast.push({
+              title: t('poniImporter.errorTitle'),
+              message: t('business.downloads.failed', { name }),
+              tone: 'error',
+            })
+          })
+        } else if (data.exported_content) {
+          const ext = fmt === 'poni' ? 'poni' : 'json'
+          const name = `calibration.${ext}`
+          downloadText(
+            data.exported_content,
+            name,
+            fmt === 'json' ? 'application/json;charset=utf-8' : 'text/plain;charset=utf-8',
+          )
+          toast.push({
+            title: t('poniImporter.exportSuccessTitle'),
+            message: t('business.downloads.exportedFile', { name }),
+            tone: 'success',
+          })
+        }
+      } else if (data.exported_path) {
         toast.push({
           title: t('poniImporter.exportSuccessTitle'),
           message: t('poniImporter.exportSuccessWithPath', { path: data.exported_path }),

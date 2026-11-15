@@ -381,6 +381,20 @@ def _fmt_number(value: Optional[float]) -> str:
     return repr(float(value))
 
 
+def _basename_any(value: str) -> str:
+    """Cross-platform basename: split on both ``/`` and ``\\``.
+
+    ``os.path.basename`` is platform-dependent — on POSIX it does not treat
+    ``\\`` as a separator, so a Windows-exported transmission CSV fails to
+    match on a Linux server. Values here come from foreign machines/CSVs, so
+    both separators must be recognized regardless of the current OS.
+    跨平台 basename：同时识别 ``/`` 与 ``\\``。``os.path.basename`` 依赖当前
+    平台（POSIX 不认 ``\\``），而这里的值可能来自另一台机器或导出的 CSV，
+    必须与当前操作系统无关地识别两种分隔符。
+    """
+    return re.split(r"[/\\]", value)[-1]
+
+
 def _export_name(file_value: str) -> str:
     """Basename for the exported ``file`` column.
 
@@ -392,7 +406,7 @@ def _export_name(file_value: str) -> str:
     目录，该路径换台机器、甚至换个会话就失效），行的可移植标识是文件名，
     与 ``match_transmission_entries`` 的匹配键一致。
     """
-    return os.path.basename(file_value) or file_value
+    return _basename_any(file_value) or file_value
 
 
 def export_transmission_csv(rows: List[Dict[str, Any]], path: str) -> str:
@@ -734,12 +748,12 @@ def match_transmission_entries(
         file_value = entry.get("file")
         if not isinstance(file_value, str) or not file_value:
             continue
-        key = os.path.normcase(os.path.basename(file_value))
+        key = os.path.normcase(_basename_any(file_value))
         if key in index:
             duplicated.add(key)
         else:
             index[key] = entry
-        loose_key = os.path.normcase(_strip_conflict_suffix(os.path.basename(file_value)))
+        loose_key = os.path.normcase(_strip_conflict_suffix(_basename_any(file_value)))
         if loose_key != key:
             loose_index.setdefault(loose_key, entry)
 
@@ -751,7 +765,7 @@ def match_transmission_entries(
     results: List[Dict[str, Any]] = []
     for data_file in data_files or []:
         path_value = str(data_file)
-        base = os.path.basename(path_value)
+        base = _basename_any(path_value)
         key = os.path.normcase(base)
         stripped_key = os.path.normcase(_strip_conflict_suffix(base))
         entry = index.get(key)
@@ -795,6 +809,265 @@ def match_transmission_entries(
             "data_file": path_value,
             "matched_file": entry.get("file", ""),
             "transmission": transmission,
+            "note": "；".join(notes),
+        })
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Pilatus acquisition log ("计算文件") parsing / 采集日志（计算文件）解析
+# 2026-11-06
+# ---------------------------------------------------------------------------
+#
+# The beamline writes a fixed-format acquisition log alongside the images
+# (user sample: D:\project\waxs\20261030\info.txt). Every image acquisition
+# block names its EDF, and right after it a counter reading block appears:
+#
+#     <Pilatus (det-0)> Will save data to file: .../20261030_0_00101.edf
+#      End Acquisition. File saved as : .../20261030_0_00101.edf
+#     Position 14:<Pilatus (det-0)> Saving data to file: .../diode_0.edf
+#     Sat Oct 31 14:29:25 2026
+#          Seconds = 2.003
+#          ...
+#          Pil Ct0 = 1.84213e+07 (9.19686e+06/s)
+#
+# A "Position blank:" block (open beam) serves as the reference. Transmission
+# per data file is then T = Ct0(file) / Ct0(blank) — generally below 100%.
+# 同步线站输出的固定格式采集日志（用户样例 info.txt）：每个图像采集块登记其
+# EDF 文件名，其后紧跟计数器读数块；"Position blank:"（开放光路）为参考。
+# 每个数据文件的透过率 T = Ct0(该文件) / Ct0(blank)，一般小于 100%。
+
+_ACQ_FILE_RE = re.compile(
+    r"(?:Will save data to file|File saved as)\s*:?\s*(\S+\.edf)", re.IGNORECASE,
+)
+_POSITION_RE = re.compile(r"^\s*Position\s+([^:\s]+)\s*:", re.IGNORECASE)
+_LOG_TS_RE = re.compile(
+    r"^[A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}$",
+)
+_LOG_NUMBER_RE = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+_CT0_RE = re.compile(r"Pil\s+Ct0\s*=\s*([^\s(]+)", re.IGNORECASE)
+
+
+def _is_blank_position(label: str) -> bool:
+    """True when a Position label denotes the open-beam reading (blank)."""
+    return "blank" in str(label).strip().lower()
+
+
+def _natural_key(name: str) -> list:
+    """Digit-aware sort key so ``_00010`` sorts after ``_00009``."""
+    return [
+        int(part) if part.isdigit() else part.lower()
+        for part in re.split(r"(\d+)", name)
+    ]
+
+
+def parse_pilatus_log(path: str) -> Dict[str, Any]:
+    """Parse a beamline acquisition log for the ordered ``Pil Ct0`` readings.
+
+    The parser is a tolerant line scanner: it remembers the most recent
+    acquisition EDF name ("Will save data to file:" / "File saved as :"),
+    starts a pending reading at every ``Position <label>:`` line, attaches the
+    timestamp line and the FIRST ``Pil Ct0 = <value>`` line of that block, and
+    emits one entry per complete block:
+
+        {"position": "14", "timestamp": "Sat Oct 31 14:29:25 2026",
+         "ct0": 18421300.0, "source_file": "20261030_0_00101.edf"}
+
+    ``position`` keeps the label verbatim ("14", "15", "blank", …). The
+    returned dict also carries ``blank`` — the LAST entry whose label looks
+    like an open-beam reading (contains "blank"), or ``None``.
+
+    Raises ValueError (bilingual) for a missing/empty file or a log with no
+    complete Ct0 reading.
+    解析线站采集日志（「计算文件」）中的有序 ``Pil Ct0`` 读数。容忍式逐行扫描：
+    记住最近的采集 EDF 名（"Will save data to file:" / "File saved as :"），
+    每个 ``Position <标签>:`` 行开启一个待定读数块，附上时间戳行与该块第一条
+    ``Pil Ct0 = <值>``，每个完整块输出一个条目；``position`` 保留原始标签
+    （"14"、"blank"…）。返回值另带 ``blank``——最后一个标签含 "blank" 的条目
+    （开放光路参考），找不到则为 None。文件缺失/为空，或日志中没有任何完整
+    Ct0 读数时抛双语 ValueError。
+    """
+    path = str(path)
+    if not os.path.isfile(path):
+        raise _bad(f"Log file not found: {path}", f"日志文件不存在：{path}")
+    text = _read_text(path)
+    if not text.strip():
+        raise _bad(f"Log file is empty: {path}", f"日志文件为空：{path}")
+
+    entries: List[Dict[str, Any]] = []
+    current_edf = ""
+    pending: Optional[Dict[str, Any]] = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        pos = _POSITION_RE.match(line)
+        if pos:
+            pending = {
+                "position": pos.group(1),
+                "timestamp": "",
+                "ct0": None,
+                "source_file": current_edf,
+            }
+            continue
+        acq = _ACQ_FILE_RE.search(line)
+        if acq:
+            current_edf = _basename_any(acq.group(1))
+            continue
+        if pending is None:
+            continue
+        if not pending["timestamp"] and _LOG_TS_RE.match(line):
+            pending["timestamp"] = line
+            continue
+        if pending["ct0"] is None:
+            hit = _CT0_RE.search(line)
+            if hit:
+                value = _LOG_NUMBER_RE.search(hit.group(1))
+                if value is not None:
+                    try:
+                        pending["ct0"] = float(value.group(0))
+                    except ValueError:
+                        pending["ct0"] = None
+                    else:
+                        entries.append(pending)
+                        pending = None
+
+    if not entries:
+        raise _bad(
+            "No 'Pil Ct0 = <value>' reading found in the log — expected the "
+            "fixed-format beamline acquisition log (Position blocks).",
+            "日志中没有找到任何 'Pil Ct0 = <值>' 读数——请确认为线站固定格式"
+            "采集日志（含 Position 读数块）。",
+        )
+
+    blank = None
+    for entry in reversed(entries):
+        if _is_blank_position(entry["position"]):
+            blank = entry
+            break
+    return {"entries": entries, "blank": blank}
+
+
+def match_log_ct0(
+    data_files: List[str], entries: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Match data files to log Ct0 entries: filename first, then log order.
+
+    Blank (open-beam) entries are EXCLUDED from the donor pool — they are the
+    reference denominator, not sample readings; the renderer picks the blank
+    separately. Pass 1 (filename) matches each data file's basename against
+    the acquisition name recorded in the log (``source_file``) — exact
+    normcase hit, then one upload-conflict suffix stripped on either side
+    (same loose rule as ``match_transmission_entries``). Pass 2 (order) pairs
+    the REMAINING data files (natural-sorted by basename) with the REMAINING
+    entries in log order; such rows carry ``matched_by="order"`` so the UI
+    presents them as suggestions the user can veto in the pairing table.
+    Files left with no entry get ``ct0=None`` and a bilingual note.
+
+    按文件名优先、日志顺序兜底，把数据文件匹配到日志 Ct0 条目。blank（开放
+    光路）条目不进入供体池——它是参考分母而非样品读数，blank 由前端单独选
+    取。第一遍（文件名）：数据文件 basename 对日志登记的采集名
+    （``source_file``）精确 normcase 命中，任一侧剥一个上传冲突后缀后命中
+    也可（宽松规则与 ``match_transmission_entries`` 一致）。第二遍（顺序）：
+    剩余数据文件（按文件名自然排序）与剩余条目按日志顺序配对，标
+    ``matched_by="order"``，供前端在匹配表中作为「建议」呈现、用户可否决改
+    配。无条目可配的文件 ``ct0=None`` 并附双语说明。
+    """
+    entries = list(entries or [])
+    # Donor pool: original indices of the non-blank entries. Indexes flow
+    # through matching unchanged so every result row's ``entry_index`` points
+    # back into the ORIGINAL entries array the renderer received.
+    # 供体池：非 blank 条目的原始下标。匹配全程使用原始下标，保证结果行的
+    # ``entry_index`` 始终指回前端拿到的原始 entries 数组。
+    donors = [
+        i for i, e in enumerate(entries)
+        if not _is_blank_position(str(e.get("position", "")))
+    ]
+    index: Dict[str, int] = {}
+    loose: Dict[str, int] = {}
+    for di in donors:
+        entry = entries[di]
+        src = str(entry.get("source_file") or "")
+        if not src:
+            continue
+        key = os.path.normcase(_basename_any(src))
+        index.setdefault(key, di)
+        loose_key = os.path.normcase(_strip_conflict_suffix(_basename_any(src)))
+        if loose_key != key:
+            loose.setdefault(loose_key, di)
+
+    consumed: set = set()
+    filename_hits: Dict[int, tuple] = {}  # fi -> (entry index, fuzzy)
+    leftovers: List[int] = []
+    for fi, data_file in enumerate(data_files or []):
+        base = os.path.normcase(_basename_any(str(data_file)))
+        hit = index.get(base)
+        fuzzy = False
+        if hit is None:
+            hit = index.get(os.path.normcase(_strip_conflict_suffix(base)))
+            fuzzy = hit is not None
+        if hit is None:
+            hit = loose.get(base)
+            fuzzy = hit is not None
+        if hit is not None and hit not in consumed:
+            consumed.add(hit)
+            filename_hits[fi] = (hit, fuzzy)
+        else:
+            leftovers.append(fi)
+
+    leftovers.sort(key=lambda fi: _natural_key(_basename_any(str(data_files[fi]))))
+    free_donors = [di for di in donors if di not in consumed]
+    order_hits: Dict[int, int] = {
+        fi: free_donors[k]
+        for k, fi in enumerate(leftovers)
+        if k < len(free_donors)
+    }
+
+    results: List[Dict[str, Any]] = []
+    for fi, data_file in enumerate(data_files or []):
+        ei: Optional[int]
+        matched_by: Optional[str] = None
+        fuzzy = False
+        if fi in filename_hits:
+            ei, fuzzy = filename_hits[fi]
+            matched_by = "filename"
+        elif fi in order_hits:
+            ei = order_hits[fi]
+            matched_by = "order"
+        else:
+            ei = None
+        if ei is None:
+            results.append({
+                "data_file": str(data_file),
+                "position": "",
+                "ct0": None,
+                "timestamp": "",
+                "source_file": "",
+                "matched_by": None,
+                "note": "No log reading matched / 日志中未找到匹配读数",
+            })
+            continue
+        entry = entries[ei]
+        notes: List[str] = []
+        if fuzzy:
+            notes.append(
+                "Matched after ignoring an upload conflict suffix (_N) / "
+                "忽略上传冲突后缀(_N)后匹配"
+            )
+        if matched_by == "order":
+            notes.append(
+                "Matched by log order — verify in the pairing table / "
+                "按日志顺序匹配，请在配对表中核对"
+            )
+        results.append({
+            "data_file": str(data_file),
+            "position": str(entry.get("position", "")),
+            "ct0": _as_float(entry.get("ct0")),
+            "timestamp": str(entry.get("timestamp", "")),
+            "source_file": str(entry.get("source_file", "")),
+            # Index into the parse result's entries array — the renderer's
+            # pairing table binds its per-row selector to it directly.
+            # 指回解析结果 entries 数组的下标——前端配对表的行选择器直接绑定它。
+            "entry_index": ei,
+            "matched_by": matched_by,
             "note": "；".join(notes),
         })
     return results

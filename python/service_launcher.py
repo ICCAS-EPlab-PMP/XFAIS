@@ -30,7 +30,7 @@ import traceback
 import uuid
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 # 确保无论从哪里启动都能找到 python 包 / ensure the python package is importable
 # Must run BEFORE the `from services...` import below: importing this module
@@ -855,6 +855,31 @@ def _resolve_include_image_data(payload: dict[str, Any], default: bool = True) -
     return bool(value)
 
 
+def _session_exports_dir(payload: dict[str, Any]) -> Optional[Path]:
+    """Resolve ``<session_tmp>/exports`` for WEB-mode output defaults (2026-11-04).
+    解析 web 模式导出默认落盘目录 ``<会话临时目录>/exports``（2026-11-04）。
+
+    The session temp tree is the only tree ``/api/download`` will serve, so it is
+    the one safe default for a browser export. The derived directory is verified
+    to stay inside the session tree before it is created. Returns ``None`` when
+    the payload carries no session temp dir (nothing safe to write to).
+    会话临时目录是 ``/api/download`` 唯一可回传的目录树，因此是浏览器导出的
+    唯一安全默认目标；创建前显式校验其未越出会话目录。载荷没有会话临时目录
+    时返回 ``None``（无处可安全写入）。
+    """
+    session_tmp = str(payload.get("_session_tmp_dir") or "").strip()
+    if not session_tmp:
+        return None
+    session_root = os.path.realpath(session_tmp)
+    exports = Path(os.path.realpath(os.path.join(session_root, "exports")))
+    try:
+        exports.relative_to(session_root)
+    except ValueError:
+        return None
+    exports.mkdir(parents=True, exist_ok=True)
+    return exports
+
+
 # ── export_integration: write integration results to file ────────────
 # 导出积分结果到文件
 async def handle_export_integration(
@@ -871,9 +896,43 @@ async def handle_export_integration(
     results = payload.get("results", [])
 
     if not output_path:
-        return {"success": False, "error": "No output path specified."}
+        # WEB MODE (2026-11-04): the browser cannot pick a server-side path, so
+        # the result is written into the session's temporary tree — the ONLY
+        # tree /api/download will serve — and echoed back as ``output_files``
+        # for the renderer to fetch. Desktop callers always send a path.
+        # 浏览器模式（2026-11-04）：浏览器无法选择服务器路径，结果写入会话临时
+        # 目录（/api/download 唯一可回传的目录树），并在 output_files 中回传
+        # 供前端取回；桌面调用方始终带路径。
+        exports_dir = _session_exports_dir(payload)
+        if exports_dir is None:
+            return {"success": False, "error": "No output path specified."}
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        # Directory output only when the branch below actually writes several
+        # files (1-D/cake/azimuth separate, or a cached 2-D fiber batch).
+        # 仅当下方分支确实写多个文件时才给出目录（1D/cake/azimuth 分别导出，
+        # 或缓存型 2D fiber 批量）。
+        _multi_file = mode == "separate" and (
+            data_type in {"1d", "azimuth", "cake"}
+            or (data_type == "fiber" and bool(payload.get("batchCachePath")))
+        )
+        if _multi_file:
+            output_path = str(exports_dir / f"{data_type}_{stamp}")
+        else:
+            _ext = {"hdf5": "h5", "h5": "h5", "tiff": "tif"}.get(fmt, fmt)
+            output_path = str(exports_dir / f"{data_type}_{stamp}.{_ext}")
     # v0.3.0 hardening: single choke point for user-supplied output paths.
-    output_path = validated_output_path(output_path, field="outputPath")
+    # A rejected path is reported as a normal task error (the renderer shows
+    # it) instead of raising through the dispatcher.
+    # 用户路径在本处统一校验；被拒时以常规任务错误返回（由前端展示），
+    # 而不是穿透调度器抛异常。
+    try:
+        output_path = validated_output_path(output_path, field="outputPath")
+    except ValueError as exc:
+        return {"success": False, "error": str(exc)}
+    # A single-file export must not rely on its directory pre-existing (the
+    # default web target above is a fresh session sub-directory).
+    # 单文件导出不得依赖父目录已存在（上面的 web 默认目标是新建的会话子目录）。
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
 
     print(f"[export] type={data_type} fmt={fmt} mode={mode} path={output_path} results={len(results)}", flush=True)
     await send_progress(0.1, f"Preparing {fmt.upper()} export...")
@@ -932,7 +991,12 @@ async def handle_export_integration(
                         return {"success": False, "error": f"Unsupported format: {fmt}"}
                     written.append(str(p))
                 await send_progress(1.0, f"Exported {len(written)} files to {out_dir}")
-                return {"success": True, "path": output_path, "files": written}
+                return {
+                    "success": True,
+                    "path": output_path,
+                    "files": written,
+                    "output_files": written,
+                }
 
             if fmt == "txt":
                 content = ExportHelper.to_txt(integration_results, unit_display)
@@ -1110,7 +1174,12 @@ async def handle_export_integration(
                     if early_error:
                         return {"success": False, "error": early_error}
                     await send_progress(1.0, f"Exported {len(written)} files to {out_dir}")
-                    result_dict: dict[str, Any] = {"success": True, "path": output_path, "files": written}
+                    result_dict: dict[str, Any] = {
+                        "success": True,
+                        "path": output_path,
+                        "files": written,
+                        "output_files": written,
+                    }
                     if errors:
                         result_dict["errors"] = errors
                     return result_dict
@@ -1198,7 +1267,10 @@ async def handle_export_integration(
             return {"success": False, "error": f"Unknown data type: {data_type}"}
 
         await send_progress(1.0, f"Exported to {output_path}")
-        return {"success": True, "path": output_path}
+        # ``output_files`` is what the web renderer feeds to /api/download —
+        # the browser cannot browse the server filesystem.
+        # output_files 供 web 前端交给 /api/download 取回（浏览器无法浏览服务器）。
+        return {"success": True, "path": output_path, "output_files": [output_path]}
 
     except Exception as exc:
         import traceback
@@ -1224,6 +1296,44 @@ def _drop_empty_bins(res, drop: bool):
         radial = radial[keep]
         intensity = intensity[keep]
     return radial.tolist(), intensity.tolist()
+
+
+def _normalize_max_1d(values: Any) -> tuple[list[float], bool]:
+    """Max-intensity normalization for one 1D series: scale so max → 100.
+
+    单条一维强度序列的最大强度归一化：按自身最大值缩放到 0–100（最大值变为
+    100）。只有有限值参与最大值判定；最大值缺失（全 NaN/Inf）、非有限或 ≤0
+    的序列原样返回并标记 skipped——由调用方汇总为提示，绝不产生 NaN 崩溃。
+
+    Returns ``(values, applied)``. ``applied`` False means the series was left
+    unchanged and should be reported to the user.
+    """
+    arr = np.asarray(values, dtype=float)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return values, False
+    mx = float(finite.max())
+    if not math.isfinite(mx) or mx <= 0:
+        return values, False
+    return (arr / mx * 100.0).tolist(), True
+
+
+def _normalize_max_2d(arr: Any) -> tuple[Any, bool]:
+    """Max-intensity normalization for one 2D map: scale so max → 100.
+
+    单幅二维强度图的最大强度归一化：按自身最大值缩放到 0–100。规则与
+    ``_normalize_max_1d`` 相同——只有有限值参与判定，跳过时原样返回。
+
+    Returns ``(arr, applied)``.
+    """
+    a = np.asarray(arr, dtype=float)
+    finite = a[np.isfinite(a)]
+    if finite.size == 0:
+        return arr, False
+    mx = float(finite.max())
+    if not math.isfinite(mx) or mx <= 0:
+        return arr, False
+    return a / mx * 100.0, True
 
 
 async def _integrate1d_batch_parallel(
@@ -1293,12 +1403,21 @@ async def _integrate1d_batch_parallel(
         else:
             res = worker_ai.integrate1d(**integrate_kwargs)
         radial_list, intensity_list = _drop_empty_bins(res, opts.get("drop_empty_bins", True))
+        # Max-intensity normalization (optional, off by default).
+        # 最大强度归一化（可选，默认关闭）。
+        normalize_skipped = False
+        if opts.get("normalize_max", False):
+            intensity_list, _applied = _normalize_max_1d(intensity_list)
+            normalize_skipped = not _applied
         return {
             "radial": radial_list,
             "intensity": intensity_list,
             "label": meta.get("filename", fpath),
             "filename": meta.get("filename", fpath),
             "unit": opts.get("unit", "q_nm^-1"),
+            # Internal marker consumed by the aggregation loop below, then
+            # stripped from the response. / 下方聚合循环消费的内部标记，随后移除。
+            "_normalize_skipped": normalize_skipped,
         }
 
     try:
@@ -1312,23 +1431,43 @@ async def _integrate1d_batch_parallel(
 
     results: list[dict] = []
     failed: list[dict] = []
+    normalize_max = bool(payload.get("options", {}).get("normalize_max", False))
+    normalize_warnings: list[str] = []
     loop = asyncio.get_event_loop()
+
+    async def _run_one(fpath: str):
+        """Run one file in the pool, tagging failures with their file path.
+
+        asyncio.as_completed yields wrapper coroutines (never the original
+        futures), so file identity must travel with the result — the previous
+        fut_map[fut] lookup raised KeyError on every completion (bug since
+        v0.3.0; the path is off by default so it was never hit).
+        asyncio.as_completed 产出的是包装协程而非原 future，文件身份必须随结果
+        一起返回——此前的 fut_map[fut] 查找每次完成都触发 KeyError（v0.3.0
+        起的缺陷；该路径默认关闭故从未被触发）。
+        """
+        try:
+            return ("ok", fpath, await loop.run_in_executor(pool, _one, fpath))
+        except asyncio.CancelledError:
+            raise
+        except Exception as file_exc:  # noqa: BLE001
+            return ("error", fpath, str(file_exc))
+
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        fut_map = {
-            loop.run_in_executor(pool, _one, fpath): fpath
-            for fpath in files
-        }
         done = 0
-        for fut in asyncio.as_completed(list(fut_map.keys())):
+        for coro in asyncio.as_completed([_run_one(fpath) for fpath in files]):
             if cancel_event.is_set():
                 raise asyncio.CancelledError()
             done += 1
-            fpath = fut_map[fut]
-            try:
-                results.append(await fut)
-            except Exception as file_exc:  # noqa: BLE001
-                failed.append({"file": fpath, "reason": str(file_exc)})
-                print(f"[integrate1d][parallel] ERROR on {fpath}: {file_exc}", flush=True)
+            outcome, fpath, value = await coro
+            if outcome == "ok":
+                item = value
+                if item.pop("_normalize_skipped", False):
+                    normalize_warnings.append(str(item.get("filename", fpath)))
+                results.append(item)
+            else:
+                failed.append({"file": fpath, "reason": value})
+                print(f"[integrate1d][parallel] ERROR on {fpath}: {value}", flush=True)
             await send_progress(done / max(len(files), 1), f"Integrating ({done}/{len(files)}) [parallel]")
 
     await send_progress(1.0, "Complete")
@@ -1337,7 +1476,11 @@ async def _integrate1d_batch_parallel(
         return {"status": "error", "message": "No files provided."}
     if not results:
         return {"status": "error", "message": f"All {len(files)} file(s) failed.", "failed": failed}
-    return {"status": "ok", "results": results, "failed": failed}
+    response: dict[str, Any] = {"status": "ok", "results": results, "failed": failed}
+    if normalize_max:
+        response["normalized"] = True
+        response["normalize_warnings"] = normalize_warnings
+    return response
 
 
 async def handle_integrate1d(
@@ -1385,6 +1528,15 @@ async def handle_integrate1d(
     # 可选并行批处理（v0.3.0，默认关闭——见上方辅助函数说明）。
     if bool(payload.get("parallel", False)) and len(files) > 1:
         return await _integrate1d_batch_parallel(ai, files, payload, send_progress, cancel_event)
+
+    # Max-intensity normalization (optional, OFF by default): scale each file's
+    # curve by its own maximum so the max becomes 100. Groups with a missing,
+    # non-finite or non-positive maximum are left unchanged and reported in
+    # ``normalize_warnings`` instead of producing NaN.
+    # 最大强度归一化（可选，默认关闭）：每条曲线按自身最大值缩放，使最大值变为
+    # 100。最大值缺失/非有限/≤0 的组保持原值并记入 ``normalize_warnings``。
+    normalize_max = bool(payload.get("options", {}).get("normalize_max", False))
+    normalize_warnings: list[str] = []
 
     results: list[dict] = []
     failed: list[dict] = []
@@ -1438,6 +1590,10 @@ async def handle_integrate1d(
             radial_list, intensity_list = _drop_empty_bins(
                 res, opts.get("drop_empty_bins", True)
             )
+            if normalize_max:
+                intensity_list, _applied = _normalize_max_1d(intensity_list)
+                if not _applied:
+                    normalize_warnings.append(meta.get("filename", fpath))
             results.append({
                 "radial": radial_list,
                 "intensity": intensity_list,
@@ -1457,7 +1613,11 @@ async def handle_integrate1d(
         return {"status": "error", "message": "No files provided."}
     if not results:
         return {"status": "error", "message": f"All {len(files)} file(s) failed.", "failed": failed}
-    return {"status": "ok", "results": results, "failed": failed}
+    response = {"status": "ok", "results": results, "failed": failed}
+    if normalize_max:
+        response["normalized"] = True
+        response["normalize_warnings"] = normalize_warnings
+    return response
 
 
 async def handle_integrate_azimuth(
@@ -1479,6 +1639,10 @@ async def handle_integrate_azimuth(
         return {"status": "error", "message": "Failed to create integrator"}
 
     files = payload.get("files", [])
+    # Max-intensity normalization (optional, OFF by default) — same rules as
+    # handle_integrate1d. / 最大强度归一化（可选，默认关闭）——规则同 1D 处理。
+    normalize_max = bool(payload.get("options", {}).get("normalize_max", False))
+    normalize_warnings: list[str] = []
     results: list[dict] = []
     failed: list[dict] = []
     for i, fpath in enumerate(files):
@@ -1531,6 +1695,10 @@ async def handle_integrate_azimuth(
             radial_list, intensity_list = _drop_empty_bins(
                 res, opts.get("drop_empty_bins", True)
             )
+            if normalize_max:
+                intensity_list, _applied = _normalize_max_1d(intensity_list)
+                if not _applied:
+                    normalize_warnings.append(meta.get("filename", fpath))
             results.append({
                 "radial": radial_list,
                 "intensity": intensity_list,
@@ -1549,7 +1717,11 @@ async def handle_integrate_azimuth(
         return {"status": "error", "message": "No files provided."}
     if not results:
         return {"status": "error", "message": f"All {len(files)} file(s) failed.", "failed": failed}
-    return {"status": "ok", "results": results, "failed": failed}
+    response: dict[str, Any] = {"status": "ok", "results": results, "failed": failed}
+    if normalize_max:
+        response["normalized"] = True
+        response["normalize_warnings"] = normalize_warnings
+    return response
 
 
 async def handle_integrate_cake(
@@ -1571,6 +1743,10 @@ async def handle_integrate_cake(
         return {"status": "error", "message": "Failed to create integrator"}
 
     files = payload.get("files", [])
+    # Max-intensity normalization (optional, OFF by default) — same rules as
+    # handle_integrate1d. / 最大强度归一化（可选，默认关闭）——规则同 1D 处理。
+    normalize_max = bool(payload.get("options", {}).get("normalize_max", False))
+    normalize_warnings: list[str] = []
     traces: list[dict[str, Any]] = []
     failed: list[dict] = []
     for i, fpath in enumerate(files):
@@ -1623,6 +1799,10 @@ async def handle_integrate_cake(
             x_list, y_list = _drop_empty_bins(
                 res, opts.get("drop_empty_bins", True)
             )
+            if normalize_max:
+                y_list, _applied = _normalize_max_1d(y_list)
+                if not _applied:
+                    normalize_warnings.append(meta.get("filename", "") or Path(fpath).name)
             traces.append({
                 "x": x_list,
                 "y": y_list,
@@ -1634,7 +1814,11 @@ async def handle_integrate_cake(
             traceback.print_exc()
 
     await send_progress(1.0, "Complete")
-    return {"status": "ok", "traces": traces, "failed": failed}
+    response: dict[str, Any] = {"status": "ok", "traces": traces, "failed": failed}
+    if normalize_max:
+        response["normalized"] = True
+        response["normalize_warnings"] = normalize_warnings
+    return response
 
 
 async def handle_integrate_fiber(
@@ -1666,6 +1850,14 @@ async def handle_integrate_fiber(
     files = payload.get("files", [])
     params = payload.get("params", {})
     opts = payload.get("options", {})
+    # Max-intensity normalization (optional, OFF by default): every 2D result
+    # is scaled by its own maximum so the max becomes 100 — applied identically
+    # to the preview batch (cache + first-frame payload) and the folder export
+    # so screen and files always agree.
+    # 最大强度归一化（可选，默认关闭）：每幅 2D 结果按自身最大值缩放到 0–100——
+    # 预览批量（缓存 + 首帧载荷）与文件夹导出同等生效，保证屏幕与文件一致。
+    normalize_max = bool(opts.get("normalize_max", False))
+    normalize_warnings: list[str] = []
 
     # ── Determine mode ──
     output_path = validated_output_path_optional(payload.get("outputPath"), field="outputPath")
@@ -1730,6 +1922,11 @@ async def handle_integrate_fiber(
                 qip = result["axis_ip"]
                 qoop = result["axis_oop"]
 
+                if normalize_max:
+                    I, _applied = _normalize_max_2d(I)
+                    if not _applied:
+                        normalize_warnings.append(fpath.name)
+
                 if output_format in ("hdf5", "h5"):
                     out_file = Path(validated_output_path(out_dir / f"{stem}.h5", field="output file"))
                     out_file.write_bytes(ExportHelper.to_hdf5_2d_bytes(I, qip, qoop, unit_ip, unit_oop))
@@ -1753,12 +1950,16 @@ async def handle_integrate_fiber(
                 continue
 
         await send_progress(1.0, f"Complete: {len(generated)} files written")
-        return {
+        response: dict[str, Any] = {
             "status": "ok",
             "generated": generated,
             "errors": errors,
             "count": len(generated),
         }
+        if normalize_max:
+            response["normalized"] = True
+            response["normalize_warnings"] = normalize_warnings
+        return response
 
     # ═══════════════════════════════════════════════════════════════
     # PREVIEW MODE: batch → .npz cache → return first result
@@ -1788,6 +1989,20 @@ async def handle_integrate_fiber(
 
     batch_results, preview_errors = await _run_blocking(_batch)
 
+    if normalize_max:
+        # Normalize every cached 2D result (previews, thumbnails and PNG/npz
+        # exports all read from this cache → display and export stay in sync).
+        # 归一化全部缓存 2D 结果（预览、缩略图与 PNG/npz 导出都读该缓存 →
+        # 屏幕与导出始终一致）。
+        for item in batch_results:
+            intensity = item.get("intensity")
+            if intensity is None:
+                continue
+            norm, applied = _normalize_max_2d(intensity)
+            item["intensity"] = norm
+            if not applied:
+                normalize_warnings.append(str(item.get("filename", item.get("stem", ""))))
+
     if not batch_results:
         detail = "; ".join(preview_errors[:5]) if preview_errors else "unknown errors"
         return {"status": "error", "message": f"No fiber integration results were produced: {detail}"}
@@ -1813,7 +2028,7 @@ async def handle_integrate_fiber(
 
     first = batch_results[0]
     await send_progress(1.0, "Complete")
-    return {
+    response = {
         "status": "ok",
         "intensity": _serialize_image_data(first.get("intensity")) if first.get("intensity") is not None else [],
         "axisIp": first.get("axis_ip").tolist() if first.get("axis_ip") is not None else [],
@@ -1824,6 +2039,10 @@ async def handle_integrate_fiber(
         "results_summary": serialized,
         "batchCachePath": cache_path,
     }
+    if normalize_max:
+        response["normalized"] = True
+        response["normalize_warnings"] = normalize_warnings
+    return response
 
 
 async def handle_viewer_config(
@@ -2170,6 +2389,15 @@ async def handle_viewer_config(
                 width=width, aggregate=aggregate, n_samples=n_samples_user,
             )
             intensity = sampled["intensity"]
+            # Max-intensity normalization (optional, OFF by default): scale this
+            # profile by its own maximum so the max becomes 100. A profile with
+            # a missing/non-finite/non-positive maximum is reported, not mangled.
+            # 最大强度归一化（可选，默认关闭）：按自身最大值缩放使最大值为 100。
+            # 最大值缺失/非有限/≤0 的剖面原样返回并提示，不做破坏性修改。
+            normalize_max = bool(pl.get("normalizeMax", False))
+            normalize_applied = True
+            if normalize_max:
+                intensity, normalize_applied = _normalize_max_1d(intensity)
             distance_px = sampled["distance_px"]
             rows_grid = sampled["grid_rows"]
             cols_grid = sampled["grid_cols"]
@@ -2227,9 +2455,13 @@ async def handle_viewer_config(
                 "unit": "q_A^-1",
                 "shape": [rows, cols],
             }
+            if normalize_max:
+                result["normalized"] = True
+                result["normalize_applied"] = normalize_applied
             print(
                 f"[line_profile] ({row0},{col0})->({row1},{col1}) L={length_px:.1f}px "
-                f"n={n_samples} w={width} agg={aggregate} geo={has_geometry}",
+                f"n={n_samples} w={width} agg={aggregate} geo={has_geometry} "
+                f"norm={'on/applied' if normalize_max and normalize_applied else ('on/skipped' if normalize_max else 'off')}",
                 flush=True,
             )
             return result
@@ -3327,12 +3559,32 @@ async def handle_viewer_config(
         mask = np.frombuffer(mask_bytes, dtype=np.uint8).reshape(
             payload["height"], payload["width"]
         )
+        export_fmt = str(payload.get("format") or "edf")
+        # WEB MODE (2026-11-04): no save dialog exists, so an empty save_path
+        # lands in the session's temporary tree — the only tree /api/download
+        # serves — and the path is echoed back via ``output_files``.
+        # 浏览器模式（2026-11-04）：没有保存对话框，save_path 为空时写入会话
+        # 临时目录（/api/download 唯一可回传的目录），并经 output_files 回传。
+        save_path = validated_output_path_optional(
+            payload.get("save_path") or payload.get("savePath") or "", field="save_path"
+        )
+        if not save_path:
+            exports_dir = _session_exports_dir(payload)
+            if exports_dir is None:
+                return {"status": "error", "message": "Missing save_path"}
+            ext = {"tif": "tif", "tiff": "tif", "hdf5": "h5", "h5": "h5", "nxs": "h5"}.get(
+                export_fmt, export_fmt
+            )
+            save_path = str(exports_dir / f"mask_{time.strftime('%Y%m%d_%H%M%S')}.{ext}")
+        Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         result = MaskBuilder.export_mask(
             mask,
-            payload["format"],
-            payload["save_path"],
+            export_fmt,
+            save_path,
             header=payload.get("header"),
         )
+        if isinstance(result, dict) and result.get("status") == "ok":
+            result["output_files"] = [save_path]
         return result
 
     # ── mask-maker: load existing mask ──────────────────────────────────
@@ -3397,6 +3649,12 @@ async def handle_viewer_config(
         abs_intensity = bool(payload.get("absoluteIntensity", False))
         pos_q_only = bool(payload.get("positiveQOnly", False))
         correct_sa = bool(payload.get("correctSolidAngle", True))
+        # Max-intensity normalization (optional, OFF by default): each file's
+        # OOP and IP profiles are scaled independently by their own maxima.
+        # 最大强度归一化（可选，默认关闭）：每个文件的面外/面内剖面各自独立
+        # 按自身最大值缩放到 0–100。
+        normalize_max = bool(payload.get("normalizeMax", False))
+        normalize_warnings: list[str] = []
 
         all_results: list[dict[str, Any]] = []
         n_files = len(target_files)
@@ -3478,6 +3736,12 @@ async def handle_viewer_config(
                 res_ip = await _run_blocking(_run_1d, raw_data, final_mask, False)
                 r_ip, i_ip, s_ip = _post_1d(res_ip)
 
+                if normalize_max:
+                    i_oop, _applied_oop = _normalize_max_1d(i_oop)
+                    i_ip, _applied_ip = _normalize_max_1d(i_ip)
+                    if not (_applied_oop and _applied_ip):
+                        normalize_warnings.append(fname)
+
                 all_results.append({
                     "filename": fname,
                     # X = qoop / 面外剖面（兼容旧前端字段名）
@@ -3493,7 +3757,7 @@ async def handle_viewer_config(
                 all_results.append({"filename": fname, "error": str(exc)})
 
         await send_progress(1.0, f"1D ROI integration complete ({len(all_results)} files)")
-        return {
+        response: dict[str, Any] = {
             "status": "ok",
             "results": all_results,
             "unit": unit_oop,   # X axis of radial/intensity (vertical integration)
@@ -3501,6 +3765,10 @@ async def handle_viewer_config(
             "ipRange": list(ip_range),
             "oopRange": list(oop_range),
         }
+        if normalize_max:
+            response["normalized"] = True
+            response["normalize_warnings"] = normalize_warnings
+        return response
 
     # ── default fallback: scan datasets ─────────────────────────────────
     await send_progress(0.0, "Inspecting files...")
@@ -4433,6 +4701,30 @@ async def _handle_bg_ionchamber_match(
     bg_ionchamber_path = payload.get("bg_ionchamber_path", "")
     ionchamber_channel = payload.get("ionchamber_channel", "Ionchamber0")
     ionchamber_method = payload.get("ionchamber_method", "median")
+    # Dual-channel (before/after) transmission mode / 前后通道透射模式（2026-11-04）
+    ionchamber_mode = payload.get("ionchamber_mode", "single")
+    sample_before = payload.get("ionchamber_sample_before", "Ionchamber0")
+    sample_after = payload.get("ionchamber_sample_after", "Ionchamber1")
+    bg_before = payload.get("ionchamber_bg_before", "Ionchamber0")
+    bg_after = payload.get("ionchamber_bg_after", "Ionchamber1")
+    if ionchamber_mode not in ("single", "dual"):
+        return {
+            "status": "error",
+            "message": (
+                f"Invalid ionchamber_mode '{ionchamber_mode}' "
+                f"(expected 'single' or 'dual'). / 无效的电离室模式。"
+            ),
+        }
+    if ionchamber_mode == "dual" and (sample_before == sample_after
+                                      or bg_before == bg_after):
+        return {
+            "status": "error",
+            "message": (
+                "Dual-channel mode requires different before/after channels "
+                "for both sample and background. / 前后通道模式下，样品与背景"
+                "的前后通道必须各自不同，否则公式恒为 1。"
+            ),
+        }
 
     if not data_files:
         sample_folder = payload.get("sample_folder", "")
@@ -4576,10 +4868,19 @@ async def _handle_bg_ionchamber_match(
                     entry["transmission_computed"] = False
                     failed_count += 1
                 else:
-                    transmission = await _run_blocking(
-                        BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
-                        ionchamber_channel, ionchamber_method,
-                    )
+                    if ionchamber_mode == "dual":
+                        transmission = await _run_blocking(
+                            BgSubtractor.calc_transmission_dual,
+                            sample_ion_df, bg_ion_df,
+                            sample_before, sample_after,
+                            bg_before, bg_after,
+                            ionchamber_method,
+                        )
+                    else:
+                        transmission = await _run_blocking(
+                            BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
+                            ionchamber_channel, ionchamber_method,
+                        )
                     entry["transmission"] = float(transmission)
                     entry["transmission_computed"] = True
                     computed_count += 1
@@ -4713,6 +5014,164 @@ async def _handle_bg_transmission_file_match(
     return {"status": "ok", "matches": matches, "count": len(matches)}
 
 
+async def _handle_bg_log_ct0_parse(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Parse a beamline acquisition log ("计算文件") and suggest Ct0 pairings.
+
+    Step 1 of the log-import flow: parse the fixed-format log (ordered
+    ``Pil Ct0`` readings per Position block, plus the blank/open-beam
+    reference), and when ``data_files`` / ``sample_folder`` are supplied also
+    return auto-matched suggestions (filename first, log order as a flagged
+    fallback — see ``services.transmission.match_log_ct0``). The user reviews
+    and adjusts the pairing in the UI, then confirms via ``log_ct0_transmission``.
+    日志导入流程第一步：解析固定格式采集日志（各 Position 块的有序 ``Pil Ct0``
+    读数 + blank 开放光路参考），若提供 ``data_files`` / ``sample_folder`` 则
+    一并给出自动匹配建议（文件名优先、日志顺序兜底并标注——见
+    ``services.transmission.match_log_ct0``）。用户在配对表中核对/调整后经
+    ``log_ct0_transmission`` 确认计算。
+    """
+    await send_progress(0.0, "Reading acquisition log...")
+    data_files = payload.get("data_files", [])
+    if not data_files:
+        sample_folder = payload.get("sample_folder", "")
+        if sample_folder and os.path.isdir(sample_folder):
+            image_exts = {".edf", ".tif", ".tiff", ".h5", ".hdf5"}
+            data_files = [
+                os.path.join(sample_folder, fn)
+                for fn in sorted(os.listdir(sample_folder))
+                if os.path.isfile(os.path.join(sample_folder, fn))
+                and os.path.splitext(fn)[1].lower() in image_exts
+            ]
+
+    log_file = payload.get("log_file", "")
+    if not log_file:
+        return {"status": "error", "message": "Missing log_file"}
+    if not os.path.isfile(log_file):
+        return {"status": "error", "message": f"Log file not found: {log_file}"}
+
+    try:
+        parsed = await _run_blocking(Transmission.parse_pilatus_log, log_file)
+    except Exception as exc:
+        return {
+            "status": "error",
+            "message": f"Failed to read acquisition log: {exc}",
+        }
+
+    if cancel_event.is_set():
+        return {"status": "cancelled", "message": "Cancelled by user"}
+
+    matches: list[dict[str, Any]] = []
+    file_list = [str(f) for f in data_files if f]
+    if file_list:
+        try:
+            matches = await _run_blocking(
+                Transmission.match_log_ct0, file_list, parsed["entries"],
+            )
+        except Exception as exc:
+            return {
+                "status": "error",
+                "message": f"Failed to match log readings: {exc}",
+            }
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "entries": parsed["entries"],
+        "blank": parsed["blank"],
+        "matches": matches,
+        "count": len(parsed["entries"]),
+    }
+
+
+async def _handle_bg_log_ct0_transmission(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Compute transmissions from user-confirmed log Ct0 assignments.
+
+    Step 2 of the log-import flow. Input: ``assignments`` =
+    ``[{"data_file", "ct0", "position"?}, ...]`` (as confirmed in the pairing
+    table) and ``blank_ct0`` (the open-beam reference value). Every ct0 must
+    be a finite positive number; T = ct0 / blank_ct0 — generally below 100%,
+    and a result above 100% is reported in the row's note rather than
+    silently accepted. Rows keep their data_file identity so the renderer can
+    merge the values into its per-file transmission map.
+    日志导入流程第二步。输入：``assignments`` = ``[{"data_file", "ct0",
+    "position"?}, ...]``（配对表确认结果）与 ``blank_ct0``（开放光路参考值）。
+    每个 ct0 必须为有限正数；T = ct0 / blank_ct0——一般小于 100%，结果 >100%
+    时在该行 note 中提示而非静默接受。行保留 data_file 标识，渲染层据此并入
+    逐文件透过率表。
+    """
+    await send_progress(0.0, "Computing log transmissions...")
+
+    blank_ct0 = payload.get("blank_ct0")
+    try:
+        blank_value = float(blank_ct0)
+    except (TypeError, ValueError):
+        blank_value = float("nan")
+    if not math.isfinite(blank_value) or blank_value <= 0.0:
+        return {
+            "status": "error",
+            "message": (
+                "Missing or invalid blank Ct0 reference (open-beam reading "
+                "must be a finite positive number). / 缺少或无效的 blank Ct0 "
+                "参考值（开放光路读数必须为有限正数）。"
+            ),
+        }
+
+    assignments = payload.get("assignments")
+    if not isinstance(assignments, list) or not assignments:
+        return {"status": "error", "message": "Missing assignments"}
+
+    matches: list[dict[str, Any]] = []
+    computed_count = 0
+    for i, item in enumerate(assignments):
+        if not isinstance(item, dict):
+            continue
+        data_file = str(item.get("data_file", ""))
+        position = str(item.get("position", ""))
+        try:
+            ct0 = float(item.get("ct0"))
+        except (TypeError, ValueError):
+            ct0 = float("nan")
+        entry: dict[str, Any] = {
+            "data_file": data_file,
+            "position": position,
+            "ct0": ct0 if math.isfinite(ct0) else None,
+            "transmission": None,
+            "note": "",
+        }
+        if not data_file:
+            entry["note"] = "Row has no data file / 该行缺少数据文件"
+        elif not math.isfinite(ct0) or ct0 <= 0.0:
+            entry["note"] = (
+                "Invalid Ct0 reading (must be a finite positive number) / "
+                "Ct0 读数无效（必须为有限正数）"
+            )
+        else:
+            entry["transmission"] = ct0 / blank_value
+            computed_count += 1
+            if entry["transmission"] > 1.0:
+                entry["note"] = (
+                    "Transmission above 100% — check the pairing or the "
+                    "blank reference / 透过率大于 100%，请核对配对或 blank 参考"
+                )
+        matches.append(entry)
+
+    await send_progress(1.0, "Complete")
+    return {
+        "status": "ok",
+        "matches": matches,
+        "blank_ct0": blank_value,
+        "count": len(matches),
+        "computed_count": computed_count,
+    }
+
+
 async def _handle_bg_subtract_batch(
     payload: dict[str, Any],
     send_progress: Callable[[float, str], Awaitable[None]],
@@ -4732,6 +5191,30 @@ async def _handle_bg_subtract_batch(
     bg_ionchamber_path = payload.get("bg_ionchamber_path", "")
     ionchamber_channel = payload.get("ionchamber_channel", "Ionchamber0")
     ionchamber_method = payload.get("ionchamber_method", "median")
+    # Dual-channel (before/after) transmission mode / 前后通道透射模式（2026-11-04）
+    ionchamber_mode = payload.get("ionchamber_mode", "single")
+    sample_before = payload.get("ionchamber_sample_before", "Ionchamber0")
+    sample_after = payload.get("ionchamber_sample_after", "Ionchamber1")
+    bg_before = payload.get("ionchamber_bg_before", "Ionchamber0")
+    bg_after = payload.get("ionchamber_bg_after", "Ionchamber1")
+    if ionchamber_mode not in ("single", "dual"):
+        return {
+            "status": "error",
+            "message": (
+                f"Invalid ionchamber_mode '{ionchamber_mode}' "
+                f"(expected 'single' or 'dual'). / 无效的电离室模式。"
+            ),
+        }
+    if ionchamber_mode == "dual" and (sample_before == sample_after
+                                      or bg_before == bg_after):
+        return {
+            "status": "error",
+            "message": (
+                "Dual-channel mode requires different before/after channels "
+                "for both sample and background. / 前后通道模式下，样品与背景"
+                "的前后通道必须各自不同，否则公式恒为 1。"
+            ),
+        }
     output_dir = validated_output_path_optional(payload.get("output_dir", ""), field="output_dir")
     transmission = float(payload.get("transmission", 1.0))
     output_format = payload.get("output_format", "h5")
@@ -4890,10 +5373,19 @@ async def _handle_bg_subtract_batch(
                              f"cannot parse {os.path.basename(str(ion_path))}")
                         )
                     continue
-                t = await _run_blocking(
-                    BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
-                    ionchamber_channel, ionchamber_method,
-                )
+                if ionchamber_mode == "dual":
+                    t = await _run_blocking(
+                        BgSubtractor.calc_transmission_dual,
+                        sample_ion_df, bg_ion_df,
+                        sample_before, sample_after,
+                        bg_before, bg_after,
+                        ionchamber_method,
+                    )
+                else:
+                    t = await _run_blocking(
+                        BgSubtractor.calc_transmission, sample_ion_df, bg_ion_df,
+                        ionchamber_channel, ionchamber_method,
+                    )
                 transmissions[data_f] = float(t)
             except Exception as exc:
                 if data_f not in transmissions:
@@ -5527,6 +6019,10 @@ async def handle_bg_subtract(
         return await _handle_bg_subtract_preview(payload, send_progress, cancel_event)
     elif action == "ionchamber_match":
         return await _handle_bg_ionchamber_match(payload, send_progress, cancel_event)
+    elif action == "log_ct0_parse":
+        return await _handle_bg_log_ct0_parse(payload, send_progress, cancel_event)
+    elif action == "log_ct0_transmission":
+        return await _handle_bg_log_ct0_transmission(payload, send_progress, cancel_event)
     elif action == "transmission_file_match":
         return await _handle_bg_transmission_file_match(
             payload, send_progress, cancel_event,
@@ -5632,7 +6128,21 @@ async def _handle_poni_importer_export(
                     default_name = f"calibration_{int(time.time())}.poni"
                     output_path = os.path.join(output_dir, default_name)
                 else:
-                    output_path = "exported.poni"
+                    # WEB MODE (2026-11-04): no save dialog — write into the
+                    # session's temporary tree so the renderer can fetch it
+                    # through /api/download. The old literal "exported.poni"
+                    # landed in the SERVER CWD, unreachable from the browser.
+                    # 浏览器模式（2026-11-04）：没有保存对话框，写入会话临时目录
+                    # 供前端经 /api/download 取回；旧的 "exported.poni" 落在
+                    # 服务器当前目录，浏览器取不到。
+                    exports_dir = _session_exports_dir(payload)
+                    if exports_dir is None:
+                        output_path = "exported.poni"
+                    else:
+                        import time
+                        output_path = str(
+                            exports_dir / f"calibration_{int(time.time())}.poni"
+                        )
             exported_path = await _run_blocking(PoniImporter.export_to_poni, poni_data, output_path)
             result["exported_path"] = exported_path
         elif export_format == "params":

@@ -65,6 +65,7 @@
 
     <!-- Export dialog -->
     <MaskExportDialog
+      ref="exportDialogRef"
       :visible="showExportDialog"
       @close="showExportDialog = false"
       @export="handleExport"
@@ -96,6 +97,7 @@ import MaskCanvas from '@/components/mask/MaskCanvas.vue'
 import MaskToolbar from '@/components/mask/MaskToolbar.vue'
 import MaskProperties from '@/components/mask/MaskProperties.vue'
 import MaskExportDialog from '@/components/mask/MaskExportDialog.vue'
+import { downloadServerPaths } from '@/lib/download'
 
 const { t } = useI18n()
 const transport = useTransport()
@@ -117,6 +119,12 @@ const maskMode = ref<MaskMode>('mask')
 const store = ref<MaskStore | null>(null)
 const showExportDialog = ref(false)
 const canvasRef = ref<InstanceType<typeof MaskCanvas> | null>(null)
+// Export dialog handle — used to clear its stuck "exporting" state when the
+// backend task settles (success or error), so the button is re-enabled even
+// while the dialog stays open on failure.
+// 导出对话框句柄——后端任务结算（成功或失败）时清除其“导出中”状态，
+// 失败路径上对话框不关闭也能重新点导出。
+const exportDialogRef = ref<InstanceType<typeof MaskExportDialog> | null>(null)
 
 // Bump counter: each store mutation increments this so MaskCanvas can re-render overlay.
 // Since store.getMask() returns the same Uint8Array reference, Vue's watch cannot detect
@@ -649,15 +657,39 @@ async function handleExport(payload: {
 
     transport.onTaskResult(taskId, (result) => {
       const data = result.data as MaskExportResponse
+      // Settle the dialog's exporting state first (it stays mounted even after
+      // being hidden — see MaskExportDialog), then close it.
+      // 先结算对话框的“导出中”状态（对话框隐藏后组件仍挂载，见
+      // MaskExportDialog），再关闭。
+      exportDialogRef.value?.finishExport()
       showExportDialog.value = false
+      const webFiles = transport.isDesktop() ? [] : data.output_files ?? []
       toast.push({
         title: t('maskMaker.messages.exportSuccess'),
-        message: data.path,
+        message: webFiles.length
+          ? t('business.downloads.exportedFiles', { count: webFiles.length })
+          : data.path,
         tone: 'success',
       })
+      downloadServerPaths(
+        webFiles,
+        (serverPath, name) => transport.downloadFile(serverPath, name),
+        (_serverPath, name) => {
+          toast.push({
+            title: t('maskMaker.errors.exportFailed'),
+            message: t('business.downloads.failed', { name }),
+            tone: 'error',
+          })
+        },
+      )
     })
 
     transport.onTaskError(taskId, (err) => {
+      // The dialog stays open on error — re-enable its button so the user can
+      // retry (this was the "exporting forever" bug on the failure path).
+      // 失败时对话框保持打开——重新启用按钮以便重试（即失败路径上
+      // “一直显示导出中”的 bug 根源）。
+      exportDialogRef.value?.finishExport()
       toast.push({
         title: t('maskMaker.errors.exportFailed'),
         message: err.error,
@@ -665,6 +697,9 @@ async function handleExport(payload: {
       })
     })
   } catch (err) {
+    // submitTask itself threw (e.g. transport not connected) — settle too.
+    // submitTask 本身抛错（如传输未连接）——同样结算。
+    exportDialogRef.value?.finishExport()
     toast.push({
       title: t('maskMaker.errors.exportFailed'),
       message: (err as Error).message,
@@ -704,6 +739,32 @@ function base64ToUint8Array(b64: string): Uint8Array {
   min-width: 0;
   display: flex;
   flex-direction: column;
+}
+
+/* 矮视口滚动修复（2026-11-04）：.app-shell 是 overflow:hidden，三栏原本都
+   没有滚动容器——左工具栏 / 右属性栏内容超高被直接裁掉且滚轮无效（文档级
+   滚动条永不出现）。与 CalibrationView 的 .cv-center 同方案：三栏各自
+   overflow-y:auto + min-height:0，中栏子项不被压扁、画布保底 420px，
+   矮视口下滚轮即可看到全部内容。 */
+.mask-maker-view > :deep(.mask-toolbar),
+.mask-maker-view > :deep(.mask-properties) {
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.mc-center {
+  overflow-y: auto;
+  min-height: 0;
+  padding-right: 4px;
+}
+
+.mc-center > * {
+  flex-shrink: 0;
+}
+
+.mc-center > :deep(.mask-canvas) {
+  flex: 1 1 auto;
+  min-height: 420px;
 }
 
 @media (max-width: 1100px) {

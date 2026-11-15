@@ -131,4 +131,6 @@ export interface MaskExportResponse {
   shape: number[]
   dtype: string
   masked_pixels: number
+  /** Absolute paths actually written (web mode defaults to the session tmp). */
+  output_files?: string[]
 }
