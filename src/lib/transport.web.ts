@@ -55,7 +55,14 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   lamellar_analysis: '/api/lamellar_analysis',
   curve_fitting: '/api/curve_fitting',
   // v0.3.0: built-in calibration wizard / 内置校正向导
-  calibration: '/api/calibration'
+  calibration: '/api/calibration',
+  // SFTP 远程数据下载（桌面版专用；web 模式后端将拒绝）/ SFTP remote-data download
+  remoteData: '/api/remote_data',
+  // v0.5.0 数据无损压缩（TIFF Deflate / HDF5 Bitshuffle+LZ4）/ Lossless compression
+  compress: '/api/compress',
+  // v0.5.0 服务器开放目录浏览/下载暂存（web 专用；桌面用本地对话框）
+  // Admin-opened server folders browse & download staging (web-only)
+  serverFs: '/api/server_fs'
 }
 
 // ── Internal types ────────────────────────────────────────────────────────────
@@ -619,6 +626,12 @@ export class WebTransport implements ITransport {
   async selectFolder(_defaultPath?: string): Promise<string | null> {
     // Folder selection not available in browser mode
     return null
+  }
+
+  async openPath(_target: string): Promise<boolean> {
+    // Opening local folders requires the desktop shell; unavailable in browser mode
+    // 浏览器模式无法打开本地目录
+    return false
   }
 
   async selectSavePath(_options?: DialogSaveFileOptions): Promise<string | null> {

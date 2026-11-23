@@ -64,6 +64,10 @@ export class ElectronTransport implements ITransport {
     return window.desktop.dialog.saveFile(options)
   }
 
+  openPath(target: string): Promise<boolean> {
+    return window.desktop.openPath(target)
+  }
+
   // ── Python service ──────────────────────────────────────────────────────────
 
   getPythonStatus(): Promise<PythonStatus | null> {

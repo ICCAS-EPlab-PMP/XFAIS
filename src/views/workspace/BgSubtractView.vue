@@ -45,6 +45,12 @@
               <button type="button" class="bgs-btn" data-ai-id="bg:files" @click="handleChooseSampleFiles">
                 {{ t('bgSubtract.selectFiles') }}
               </button>
+              <RemotePickerButton mode="files" @picked="paths => applySampleFilePaths(paths)" />
+              <ServerPickerButton
+                v-if="!transport.isDesktop()"
+                mode="files"
+                @picked="paths => applySampleFilePaths(paths)"
+              />
               <div class="bgs-import-mode">
                 <span class="bgs-import-mode-label">{{ t('bgSubtract.importMode') }}</span>
                 <label class="bgs-radio-label">
@@ -783,6 +789,8 @@ import { createImportDropZone, extensionsFromFilters } from '@/lib/fileDrop'
 import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import NumberField from '@/components/common/NumberField.vue'
 import ResultSummary from '@/components/business/ResultSummary.vue'

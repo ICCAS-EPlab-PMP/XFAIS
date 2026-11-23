@@ -3,6 +3,7 @@ matplotlib
 pyFAI
 fabio
 h5py
+hdf5plugin
 Pillow
 pandas
 scipy
@@ -10,3 +11,4 @@ tifffile
 psutil
 pytest
 websockets
+paramiko

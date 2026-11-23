@@ -122,6 +122,12 @@
               >
                 {{ t('business.fileSelection.importFolder') }}
               </button>
+              <RemotePickerButton mode="files" @picked="paths => applySelectedFilePaths(paths)" />
+              <ServerPickerButton
+                v-if="!transport.isDesktop()"
+                mode="files"
+                @picked="paths => applySelectedFilePaths(paths)"
+              />
               <label class="i1d-toggle-label">
                 <input v-model="isRecursive" type="checkbox" />
                 <span>{{ t('business.fileSelection.recursive') }}</span>
@@ -334,6 +340,8 @@ import type { ColormapName } from '@/lib/chart-utils'
 
 import GeometryForm from '@/components/business/GeometryForm.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
 import PolarizationForm from '@/components/business/PolarizationForm.vue'

@@ -101,18 +101,25 @@
     <div id="region-integration" class="card-section">
       <h2 class="section-header">{{ t('home.sections.commonIntegration') }}</h2>
       <div class="card-row">
-        <router-link
+        <component
           v-for="card in integrationCards"
           :key="card.key"
-          :to="card.route"
+          :is="isWebDisabledCard(card.key) ? 'span' : RouterLink"
+          v-bind="isWebDisabledCard(card.key) ? {} : { to: card.route }"
           class="feature-card"
+          :class="{ 'feature-card--web-disabled': isWebDisabledCard(card.key) }"
           :data-testid="`home-card-${card.key}`"
           :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
           <p>{{ t(`home.cards.${card.key}.description`) }}</p>
-        </router-link>
+          <span
+            v-if="isWebDisabledCard(card.key)"
+            class="feature-card-badge"
+            :data-testid="`home-card-badge-${card.key}`"
+          >{{ t('home.cards.desktopOnlyBadge') }}</span>
+        </component>
       </div>
     </div>
 
@@ -120,18 +127,25 @@
     <div id="region-giwaxs" class="card-section">
       <h2 class="section-header">{{ t('home.sections.giwaxs') }}</h2>
       <div class="card-row">
-        <router-link
+        <component
           v-for="card in fiberCards"
           :key="card.key"
-          :to="card.route"
+          :is="isWebDisabledCard(card.key) ? 'span' : RouterLink"
+          v-bind="isWebDisabledCard(card.key) ? {} : { to: card.route }"
           class="feature-card"
+          :class="{ 'feature-card--web-disabled': isWebDisabledCard(card.key) }"
           :data-testid="`home-card-${card.key}`"
           :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
           <p>{{ t(`home.cards.${card.key}.description`) }}</p>
-        </router-link>
+          <span
+            v-if="isWebDisabledCard(card.key)"
+            class="feature-card-badge"
+            :data-testid="`home-card-badge-${card.key}`"
+          >{{ t('home.cards.desktopOnlyBadge') }}</span>
+        </component>
       </div>
     </div>
 
@@ -139,18 +153,25 @@
     <div id="region-imageTools" class="card-section">
       <h2 class="section-header">{{ t('home.sections.imageTools') }}</h2>
       <div class="card-row">
-        <router-link
+        <component
           v-for="card in imageCards"
           :key="card.key"
-          :to="card.route"
+          :is="isWebDisabledCard(card.key) ? 'span' : RouterLink"
+          v-bind="isWebDisabledCard(card.key) ? {} : { to: card.route }"
           class="feature-card"
+          :class="{ 'feature-card--web-disabled': isWebDisabledCard(card.key) }"
           :data-testid="`home-card-${card.key}`"
           :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
           <p>{{ t(`home.cards.${card.key}.description`) }}</p>
-        </router-link>
+          <span
+            v-if="isWebDisabledCard(card.key)"
+            class="feature-card-badge"
+            :data-testid="`home-card-badge-${card.key}`"
+          >{{ t('home.cards.desktopOnlyBadge') }}</span>
+        </component>
       </div>
     </div>
 
@@ -158,18 +179,25 @@
     <div id="region-background" class="card-section">
       <h2 class="section-header">{{ t('home.sections.backgroundSubtraction') }}</h2>
       <div class="card-row">
-        <router-link
+        <component
           v-for="card in bgSubtractCards"
           :key="card.key"
-          :to="card.route"
+          :is="isWebDisabledCard(card.key) ? 'span' : RouterLink"
+          v-bind="isWebDisabledCard(card.key) ? {} : { to: card.route }"
           class="feature-card"
+          :class="{ 'feature-card--web-disabled': isWebDisabledCard(card.key) }"
           :data-testid="`home-card-${card.key}`"
           :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
           <p>{{ t(`home.cards.${card.key}.description`) }}</p>
-        </router-link>
+          <span
+            v-if="isWebDisabledCard(card.key)"
+            class="feature-card-badge"
+            :data-testid="`home-card-badge-${card.key}`"
+          >{{ t('home.cards.desktopOnlyBadge') }}</span>
+        </component>
       </div>
     </div>
 
@@ -177,18 +205,25 @@
     <div id="region-application" class="card-section">
       <h2 class="section-header">{{ t('home.sections.applicationZone') }}</h2>
       <div class="card-row">
-        <router-link
+        <component
           v-for="card in applicationCards"
           :key="card.key"
-          :to="card.route"
+          :is="isWebDisabledCard(card.key) ? 'span' : RouterLink"
+          v-bind="isWebDisabledCard(card.key) ? {} : { to: card.route }"
           class="feature-card"
+          :class="{ 'feature-card--web-disabled': isWebDisabledCard(card.key) }"
           :data-testid="`home-card-${card.key}`"
           :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
           <p>{{ t(`home.cards.${card.key}.description`) }}</p>
-        </router-link>
+          <span
+            v-if="isWebDisabledCard(card.key)"
+            class="feature-card-badge"
+            :data-testid="`home-card-badge-${card.key}`"
+          >{{ t('home.cards.desktopOnlyBadge') }}</span>
+        </component>
       </div>
     </div>
 
@@ -196,18 +231,25 @@
     <div id="region-pyfai" class="card-section">
       <h2 class="section-header">{{ t('home.sections.pyfaiTools') }}</h2>
       <div class="card-row">
-        <router-link
+        <component
           v-for="card in pyfaiCards"
           :key="card.key"
-          :to="card.route"
+          :is="isWebDisabledCard(card.key) ? 'span' : RouterLink"
+          v-bind="isWebDisabledCard(card.key) ? {} : { to: card.route }"
           class="feature-card"
+          :class="{ 'feature-card--web-disabled': isWebDisabledCard(card.key) }"
           :data-testid="`home-card-${card.key}`"
           :data-ai-id="`home:card:${card.key}`"
         >
           <span class="feature-icon">{{ card.icon }}</span>
           <h2>{{ t(`home.cards.${card.key}.title`) }}</h2>
           <p>{{ t(`home.cards.${card.key}.description`) }}</p>
-        </router-link>
+          <span
+            v-if="isWebDisabledCard(card.key)"
+            class="feature-card-badge"
+            :data-testid="`home-card-badge-${card.key}`"
+          >{{ t('home.cards.desktopOnlyBadge') }}</span>
+        </component>
       </div>
     </div>
 
@@ -248,6 +290,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { RouterLink } from 'vue-router'
 import { useToast } from '@/lib/toast'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
@@ -262,6 +305,16 @@ import {
 const { t } = useI18n()
 const toast = useToast()
 const transport = useTransport()
+
+/** web 模式置灰的卡片：SFTP 远程数据同步与 pyFAI-calib2 启动器仅桌面版可用。
+ *  置灰卡片渲染为 span（不渲染 router-link），导航从根源上不发生。
+ *  Cards greyed out in web mode: SFTP sync and the pyFAI-calib2 launcher are
+ *  desktop-only capabilities; disabled cards render as a plain <span> so no
+ *  navigation happens at all. */
+const WEB_DISABLED_CARDS: readonly string[] = ['remoteData', 'pyfaiCalib']
+function isWebDisabledCard(key: string): boolean {
+  return !transport.isDesktop() && WEB_DISABLED_CARDS.includes(key)
+}
 
 interface FeatureCard {
   key: string
@@ -319,6 +372,16 @@ const applicationCards: FeatureCard[] = [
     key: 'curveFitting',
     route: '/workspace/curve-fitting',
     icon: 'ƒ'
+  },
+  {
+    key: 'remoteData',
+    route: '/workspace/remote-data',
+    icon: '⇅'
+  },
+  {
+    key: 'compressArchive',
+    route: '/workspace/compress',
+    icon: '⇲'
   }
 ]
 
@@ -946,6 +1009,27 @@ function openFabIOCitation(): void {
   transform: none;
   box-shadow: var(--shadow-card);
   border-color: rgba(226, 232, 240, 0.9);
+}
+
+/* Web-mode greyed card (desktop-only capability, visible but inert) */
+.feature-card--web-disabled {
+  opacity: 0.45;
+}
+
+.feature-card--web-disabled:hover {
+  transform: none;
+  box-shadow: var(--shadow-card);
+  border-color: rgba(226, 232, 240, 0.9);
+}
+
+.feature-card-badge {
+  margin-top: auto;
+  align-self: flex-start;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(100, 116, 139, 0.14);
+  color: #475569;
 }
 
 .badge-coming-soon {

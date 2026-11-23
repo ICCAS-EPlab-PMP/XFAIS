@@ -46,7 +46,13 @@ if str(_PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_ROOT))
 
 from services.export_helper import ExportHelper, IntegrationResult  # noqa: E402
-from services.paths import validated_output_path, validated_output_path_optional  # noqa: E402
+from services.paths import (  # noqa: E402
+    audit_payload_read_paths,
+    configured_input_roots,
+    validate_server_read_path,
+    validated_output_path,
+    validated_output_path_optional,
+)
 
 SERVICE_NAME = "waxs_saxs_embedded_runtime"
 
@@ -84,6 +90,9 @@ API_ROUTES: list[str] = [
     "/api/install_pyfai",
     "/api/export_bat_pyfai",
     "/api/calibration",
+    "/api/remote_data",
+    "/api/compress",
+    "/api/server_fs",
 ]
 
 THUMBNAIL_CHUNK_SIZE = 24
@@ -300,6 +309,92 @@ class SessionManager:
         with self._lock:
             return len(self._sessions)
 
+    def live_tmp_dirs(self) -> set[str]:
+        """Real paths of every live session's temp dir (for the reaper).
+        所有活跃会话临时目录的 real path（供清扫线程判活）。"""
+        with self._lock:
+            return {
+                os.path.realpath(s["tmp_dir"])
+                for s in self._sessions.values()
+                if s.get("tmp_dir")
+            }
+
+
+# ---------------------------------------------------------------------------
+# Session TTL reaper (server mode) / 会话 TTL 清扫线程（服务器模式）
+# ---------------------------------------------------------------------------
+
+SESSION_REAPER_INTERVAL_S = 60.0
+_SESSION_TTL_ENV = "XFAIS_SESSION_TTL_MINUTES"
+_DEFAULT_SESSION_TTL_MIN = 120.0
+
+
+def _session_ttl_minutes() -> float:
+    """TTL for leaked session temp dirs; 0 disables the reaper.
+    泄漏会话临时目录的 TTL；0 表示关闭清扫线程。"""
+    raw = os.environ.get(_SESSION_TTL_ENV, "").strip()
+    if not raw:
+        return _DEFAULT_SESSION_TTL_MIN
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_SESSION_TTL_MIN
+    return max(0.0, value)
+
+
+def sweep_session_dirs(session_manager: SessionManager, ttl_seconds: float) -> None:
+    """One reaper pass: delete non-live ``xfais_session_*`` dirs older than TTL.
+    清扫一轮：删除超过 TTL 且不属于任何活跃会话的会话临时目录。"""
+    now = time.time()
+    live = session_manager.live_tmp_dirs()
+    tmp_root = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp_root)
+    except OSError:
+        return
+    for name in names:
+        if not name.startswith("xfais_session_"):
+            continue
+        path = os.path.join(tmp_root, name)
+        if not os.path.isdir(path):
+            continue
+        if os.path.realpath(path) in live:
+            continue
+        try:
+            if now - os.path.getmtime(path) < ttl_seconds:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def start_session_reaper(session_manager: SessionManager) -> Optional[threading.Thread]:
+    """Sweep session temp dirs that no longer belong to a live session.
+
+    Sessions are destroyed when their WebSocket disconnects, but abnormal
+    exits can still leak ``xfais_session_*`` dirs. The reaper deletes dirs
+    older than the TTL that are not live — the "timeout" half of the
+    download-staging lifecycle (the disconnect half already exists).
+    ``XFAIS_SESSION_TTL_MINUTES`` overrides the TTL; 0 disables the thread.
+    会话临时目录随 WS 断连销毁，异常退出仍可能泄漏；清扫线程删除超过 TTL
+    且不属于任何活跃会话的目录（下载暂存生命周期的"超时"半边）。
+    """
+    ttl_minutes = _session_ttl_minutes()
+    if ttl_minutes <= 0:
+        return None
+
+    def _loop() -> None:
+        while True:
+            time.sleep(SESSION_REAPER_INTERVAL_S)
+            try:
+                sweep_session_dirs(session_manager, ttl_minutes * 60.0)
+            except Exception:  # noqa: BLE001
+                pass
+
+    thread = threading.Thread(target=_loop, name="xfais-session-reaper", daemon=True)
+    thread.start()
+    return thread
+
 
 class WebSocketService:
     """Manages WebSocket connections, task lifecycle and route dispatch.
@@ -466,6 +561,29 @@ class WebSocketService:
         """Execute a registered route handler, emitting progress / complete / error."""
         try:
             handler = self.routes[route]
+
+            if not bool(payload.get("_is_desktop", False)):
+                # Server-mode defence-in-depth: the unauthenticated server API
+                # must never read files outside the admin whitelist ∪ session
+                # workspace. Desktop payloads carry _is_desktop and skip this.
+                # 服务器模式纵深防御：未鉴权 API 不得读取管理员白名单与会话
+                # 工作区之外的文件；桌面载荷带 _is_desktop，整体放行。
+                try:
+                    audit_payload_read_paths(
+                        payload, session_tmp=payload.get("_session_tmp_dir") or None
+                    )
+                except ValueError as exc:
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "type": "task_error",
+                                "task_id": task_id,
+                                "error": str(exc),
+                                "code": "PATH_DENIED",
+                            }
+                        )
+                    )
+                    return
 
             async def send_progress(progress: float, message: str = "") -> None:
                 await ws.send(
@@ -7261,10 +7379,22 @@ async def handle_launch_pyfai(
     send_progress: Callable[[float, str], Awaitable[None]],
     cancel_event: asyncio.Event,
 ) -> dict[str, Any]:
-    """Launch pyFAI-calib2 from the backend interpreter (web mode).
+    """Launch pyFAI-calib2 from the backend interpreter (desktop loopback only).
 
-    从后端解释器启动 pyFAI-calib2（Web 模式）。
+    从后端解释器启动 pyFAI-calib2（仅桌面回环链路）。服务器（web）模式明确
+    禁用：GUI 进程只会出现在服务器主机上，浏览器端既看不到也无法操作。
     """
+    if not bool(payload.get("_is_desktop", False)):
+        return {
+            "status": "error",
+            "code": "DESKTOP_ONLY",
+            "message": (
+                "pyFAI-calib2 launcher is desktop-only and disabled in server mode; "
+                "use the exported launcher script on your own machine instead. "
+                "/ pyFAI-calib2 启动器仅桌面版可用（服务器模式已禁用），"
+                "请使用「导出启动脚本」在本机运行。"
+            ),
+        }
     import subprocess as _sp
 
     cur = await _run_blocking(_pyfai_current_env)
@@ -7327,11 +7457,20 @@ async def handle_install_pyfai(
     send_progress: Callable[[float, str], Awaitable[None]],
     cancel_event: asyncio.Event,
 ) -> dict[str, Any]:
-    """Install/repair pyFAI + PySide6 into the backend env via pip (web mode).
+    """Install/repair pyFAI + PySide6 into the backend env via pip (desktop only).
 
-    通过 pip 在后端环境安装/修复 pyFAI + PySide6（Web 模式）。下载量较大
-    （PySide6 数百 MB），运行中通过进度消息反馈。
+    通过 pip 安装/修复 pyFAI + PySide6（仅桌面回环链路）。服务器（web）模式
+    明确禁用：不允许通过未鉴权 API 改动服务器 Python 环境。
     """
+    if not bool(payload.get("_is_desktop", False)):
+        return {
+            "status": "error",
+            "code": "DESKTOP_ONLY",
+            "message": (
+                "Installing pyFAI into the server environment is disabled in server mode. "
+                "/ 服务器模式禁止改动服务器 Python 环境（安装 pyFAI 仅桌面版可用）。"
+            ),
+        }
     await send_progress(0.05, "Running pip install... / 正在执行 pip install...")
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -7750,6 +7889,285 @@ async def handle_calibration(
     return await _run(payload, send_progress, cancel_event)
 
 
+async def handle_remote_data(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """SFTP remote-data download service (desktop-only, v0.3.x).
+
+    Thin forwarder — the engine lives in services/remote_data.py so the
+    paramiko import stays out of this module's import path.
+    SFTP 远程数据下载服务（桌面版专用）。仅做转发——引擎位于
+    services/remote_data.py，paramiko 导入不进入本模块导入路径。
+    """
+    from services.remote_data import handle_remote_data as _run
+
+    return await _run(payload, send_progress, cancel_event)
+
+
+async def handle_compress(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Lossless data compression (TIFF Deflate / HDF5 Bitshuffle+LZ4), v0.5.0.
+
+    Thin forwarder — the engine lives in services/compressor.py so the
+    tifffile/hdf5plugin imports stay out of this module's import path.
+    数据无损压缩（TIFF Deflate / HDF5 Bitshuffle+LZ4，v0.5.0）。仅做转发——
+    引擎位于 services/compressor.py，tifffile/hdf5plugin 导入不进入本模块
+    导入路径。
+    """
+    from services.compressor import handle_compress as _run
+
+    return await _run(payload, send_progress, cancel_event)
+
+
+SERVER_FS_MAX_ENTRIES = 5000
+SERVER_FS_MAX_TOTAL_BYTES = 64 * 1024 * 1024 * 1024
+
+
+async def handle_server_fs(
+    payload: dict[str, Any],
+    send_progress: Callable[[float, str], Awaitable[None]],
+    cancel_event: asyncio.Event,
+) -> dict[str, Any]:
+    """Browse admin-opened server folders and stage downloads (server mode).
+
+    Read-only surface over ``XFAIS_INPUT_ROOTS``: list the roots, list a
+    folder, and stage selected files into the session workspace (optionally
+    with lossless compression) so ``/api/download`` can serve them. Paths are
+    re-validated here AND swept by the dispatch audit; nothing outside the
+    whitelist/session workspace is ever touched. Desktop mode uses native
+    dialogs and never calls this route.
+    服务器模式浏览管理员开放目录并暂存下载（只读）：列出根目录、浏览子
+    目录、把所选文件暂存进会话工作区（可选无损压缩）后经 /api/download
+    回传。路径在此处与分发审计双重校验；白名单/会话工作区之外一律不碰。
+    桌面模式使用本地对话框，不经过本路由。
+    """
+    action = str(payload.get("action") or "")
+
+    if action == "list_roots":
+        roots = [r for r in configured_input_roots() if os.path.isdir(r)]
+        return {
+            "status": "ok",
+            "configured": bool(roots),
+            "roots": [
+                {"path": root, "name": os.path.basename(root) or root}
+                for root in roots
+            ],
+        }
+
+    session_tmp = payload.get("_session_tmp_dir") or None
+
+    if action == "list":
+        try:
+            target = validate_server_read_path(
+                payload.get("path", ""), session_tmp=session_tmp, field="path"
+            )
+        except ValueError as exc:
+            return {"status": "error", "code": "PATH_DENIED", "message": str(exc)}
+        if not os.path.isdir(target):
+            return {
+                "status": "error",
+                "code": "NOT_A_DIRECTORY",
+                "message": f"Not a directory: {target} / 不是目录：{target}",
+            }
+        try:
+            names = os.listdir(target)
+        except OSError as exc:
+            return {"status": "error", "code": "LIST_FAILED", "message": str(exc)}
+        names.sort(key=str.lower)
+        dirs: list[dict[str, Any]] = []
+        files: list[dict[str, Any]] = []
+        truncated = False
+        for name in names:
+            if len(dirs) + len(files) >= SERVER_FS_MAX_ENTRIES:
+                truncated = True
+                break
+            full = os.path.join(target, name)
+            try:
+                if os.path.isdir(full):
+                    dirs.append({"name": name, "kind": "dir"})
+                    continue
+                size = os.path.getsize(full)
+            except OSError:
+                continue
+            files.append({"name": name, "kind": "file", "size": size})
+        return {
+            "status": "ok",
+            "path": target,
+            "entries": dirs + files,
+            "truncated": truncated,
+        }
+
+    if action == "download_prepare":
+        raw_paths = payload.get("paths")
+        if not isinstance(raw_paths, list) or not raw_paths:
+            return {
+                "status": "error",
+                "code": "NO_FILES",
+                "message": "No files selected / 未选择文件",
+            }
+        compress = bool(payload.get("compress", False))
+        validated: list[str] = []
+        try:
+            for raw in raw_paths:
+                validated.append(
+                    validate_server_read_path(raw, session_tmp=session_tmp, field="file path")
+                )
+        except ValueError as exc:
+            return {"status": "error", "code": "PATH_DENIED", "message": str(exc)}
+        regular = [p for p in validated if os.path.isfile(p)]
+        missing = len(validated) - len(regular)
+        if not regular:
+            return {
+                "status": "error",
+                "code": "NO_FILES",
+                "message": "None of the selected paths is a regular file / 所选路径中没有普通文件",
+            }
+
+        session_root = os.path.realpath(session_tmp) if session_tmp else ""
+        if not session_root or not os.path.isdir(session_root):
+            return {
+                "status": "error",
+                "code": "NO_SESSION",
+                "message": "Session not initialized / 会话未初始化",
+            }
+        stage_root = os.path.join(session_root, "downloads", time.strftime("%Y%m%d-%H%M%S"))
+
+        total_bytes = 0
+        for src in regular:
+            try:
+                total_bytes += os.path.getsize(src)
+            except OSError:
+                pass
+        if total_bytes > SERVER_FS_MAX_TOTAL_BYTES:
+            return {
+                "status": "error",
+                "code": "TOO_LARGE",
+                "message": (
+                    "Selection exceeds the staging budget "
+                    f"({SERVER_FS_MAX_TOTAL_BYTES} bytes) / 所选文件总体积超过暂存上限"
+                ),
+            }
+
+        os.makedirs(stage_root, exist_ok=True)
+
+        if compress:
+            # Lossless compression via the v0.5.0 engine (TIFF→Deflate,
+            # HDF5→Bitshuffle+LZ4). Unsupported formats (EDF…) are reported
+            # by the compressor as skipped; the destination is backend-chosen
+            # inside the session workspace, so the user-output gate does not
+            # apply (containment is enforced by this handler).
+            # 经 v0.5.0 无损压缩引擎处理（TIFF→Deflate、HDF5→Bitshuffle+LZ4）；
+            # 不支持的格式（EDF 等）由压缩器计为跳过。输出目录由后端自选
+            # （会话工作区内），不适用用户输出路径门，containment 由本函数保证。
+            from services.compressor import compress_files_for_staging
+
+            report = await compress_files_for_staging(
+                regular, stage_root, send_progress, cancel_event
+            )
+            if report.get("status") == "error":
+                return report
+            out_files = []
+            for item in report.get("files", []):
+                out_path = item.get("outputPath")
+                if item.get("status") == "ok" and out_path and os.path.isfile(out_path):
+                    out_files.append(
+                        {
+                            "path": out_path,
+                            "filename": os.path.basename(out_path),
+                            "size": os.path.getsize(out_path),
+                        }
+                    )
+            if not out_files:
+                return {
+                    "status": "error",
+                    "code": "NOTHING_STAGED",
+                    "message": (
+                        "No compressible file produced output (only TIFF/HDF5 are supported) "
+                        "/ 没有产生可下载的压缩结果（仅支持 TIFF/HDF5）"
+                    ),
+                }
+            return {
+                "status": "ok",
+                "compressed": True,
+                "outputDir": stage_root,
+                "files": out_files,
+                "skippedUnsupported": missing,
+                "report": {
+                    "total": report.get("total"),
+                    "success": report.get("success"),
+                    "failed": report.get("failed"),
+                    "skipped": report.get("skipped"),
+                    "ratio": report.get("ratio"),
+                },
+            }
+
+        # Plain staging copy (no compression): same lifecycle as compressed
+        # staging — inside the session workspace, destroyed on disconnect/TTL.
+        # 纯暂存拷贝（不压缩）：与压缩暂存同一生命周期——会话工作区内，
+        # 断连/TTL 即销毁。
+        staged: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        used_names: set[str] = set()
+        for idx, src in enumerate(regular):
+            if cancel_event.is_set():
+                return {"status": "error", "code": "CANCELLED", "message": "Cancelled / 已取消"}
+            base = os.path.basename(src)
+            stem, suffix = os.path.splitext(base)
+            dest = os.path.join(stage_root, base)
+            counter = 1
+            while dest in used_names or os.path.exists(dest):
+                dest = os.path.join(stage_root, f"{stem}_{counter}{suffix}")
+                counter += 1
+            used_names.add(dest)
+            await send_progress(
+                idx / max(1, len(regular)),
+                f"staging {base} / 正在暂存 {base}",
+            )
+            try:
+                fd, tmp_path = tempfile.mkstemp(dir=stage_root, prefix="stage-", suffix=suffix)
+                try:
+                    with os.fdopen(fd, "wb") as dst_fh, open(src, "rb") as src_fh:
+                        shutil.copyfileobj(src_fh, dst_fh)
+                    os.replace(tmp_path, dest)
+                except Exception:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
+                    raise
+            except OSError as exc:
+                failed.append({"path": src, "message": str(exc)})
+                continue
+            staged.append(
+                {"path": dest, "filename": os.path.basename(dest), "size": os.path.getsize(dest)}
+            )
+        if not staged:
+            return {
+                "status": "error",
+                "code": "NOTHING_STAGED",
+                "message": "; ".join(f["message"] for f in failed[:3]) or "staging failed",
+            }
+        return {
+            "status": "ok",
+            "compressed": False,
+            "outputDir": stage_root,
+            "files": staged,
+            "failed": failed,
+            "skippedUnsupported": missing,
+        }
+
+    return {
+        "status": "error",
+        "code": "UNKNOWN_ACTION",
+        "message": f"Unknown action: {action!r} / 未知操作：{action!r}",
+    }
+
+
 # Route → handler mapping / 路由→处理函数映射
 ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/integrate1d": handle_integrate1d,
@@ -7780,6 +8198,9 @@ ROUTE_HANDLERS: dict[str, RouteHandler] = {
     "/api/install_pyfai": handle_install_pyfai,
     "/api/export_bat_pyfai": handle_export_bat_pyfai,
     "/api/calibration": handle_calibration,
+    "/api/remote_data": handle_remote_data,
+    "/api/compress": handle_compress,
+    "/api/server_fs": handle_server_fs,
 }
 
 
@@ -8137,6 +8558,25 @@ class WebHealthHandler(BaseHTTPRequestHandler):
                                 "code": "UNKNOWN_ROUTE",
                             }))
                             continue
+
+                        if not bool(payload.get("_is_desktop", False)):
+                            # Server-mode read-whitelist sweep (see paths.py):
+                            # mirror of WebSocketService._run_task.
+                            # 服务器模式读取白名单扫描（见 paths.py），与
+                            # WebSocketService._run_task 保持一致。
+                            try:
+                                audit_payload_read_paths(
+                                    payload,
+                                    session_tmp=payload.get("_session_tmp_dir") or None,
+                                )
+                            except ValueError as exc:
+                                self._ws_send(json.dumps({
+                                    "type": "task_error",
+                                    "task_id": task_id,
+                                    "error": str(exc),
+                                    "code": "PATH_DENIED",
+                                }))
+                                continue
 
                         async def _send_progress(pct: float, msg: str = "") -> None:
                             if task_ok:
@@ -8640,6 +9080,16 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
             continue
         ws_service.register_route(route, handler_fn)
 
+    # Session reaper: leaked session dirs (abnormal exits) are reclaimed after
+    # the TTL; live sessions are never touched. XFAIS_SESSION_TTL_MINUTES.
+    # 会话清扫：异常退出泄漏的目录按 TTL 回收，活跃会话不受影响。
+    reaper_thread = start_session_reaper(session_mgr)
+    if reaper_thread is None:
+        print(
+            "[web-server] Session TTL reaper disabled (XFAIS_SESSION_TTL_MINUTES=0).",
+            flush=True,
+        )
+
     cached_report = dict(report)
     cached_report["ws_port"] = None
 
@@ -8660,6 +9110,19 @@ def run_web_server(host: str, port: int, requirements_lock: str | None = None) -
     print(f"[web-server] HTTP + WebSocket on {host}:{port} (single-port mode)", flush=True)
     print(f"[web-server] Session isolation enabled. Each client gets isolated temp directory.", flush=True)
     print(f"[web-server] No pyFAI-calib2 launcher — server mode only.", flush=True)
+    input_roots = configured_input_roots()
+    if input_roots:
+        print(
+            f"[web-server] Input roots (XFAIS_INPUT_ROOTS): {len(input_roots)} folder(s) "
+            "opened for server-mode reads.",
+            flush=True,
+        )
+    else:
+        print(
+            "[web-server] No input roots configured (XFAIS_INPUT_ROOTS) — "
+            "server mode reads session uploads only.",
+            flush=True,
+        )
 
     threading.Thread(target=_warm_viewer_runtime, daemon=True).start()
 

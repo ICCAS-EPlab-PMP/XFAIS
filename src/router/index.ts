@@ -103,6 +103,26 @@ const router = createRouter({
       }
     },
     {
+      path: '/workspace/remote-data',
+      name: 'remote-data',
+      component: () => import('@/views/workspace/RemoteDataView.vue'),
+      meta: {
+        titleKey: 'remoteData.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'remoteData.subtitle'
+      }
+    },
+    {
+      path: '/workspace/compress',
+      name: 'compress',
+      component: () => import('@/views/workspace/CompressView.vue'),
+      meta: {
+        titleKey: 'compress.title',
+        sectionKey: 'shell.sections.workspace',
+        descriptionKey: 'compress.subtitle'
+      }
+    },
+    {
       path: '/settings',
       name: 'settings',
       component: () => import('@/views/SettingsView.vue'),

@@ -134,6 +134,13 @@ export interface ITransport {
    */
   selectSavePath(options?: DialogSaveFileOptions): Promise<string | null>
 
+  /**
+   * Reveal a local directory in the OS file manager (desktop only;
+   * web mode resolves false). 在资源管理器中打开本地目录（仅桌面版）。
+   * @param target  Absolute directory path
+   */
+  openPath(target: string): Promise<boolean>
+
   // ── Python service ──────────────────────────────────────────────────────────
 
   /** Get the current Python service status. */

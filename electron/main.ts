@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell } from 'electron'
 import { execSync, spawn, type SpawnOptions } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, writeFileSync, appendFileSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
@@ -203,6 +203,76 @@ const registerDialogHandlers = (): void => {
       }
       const { readFile } = await import('node:fs/promises')
       return readFile(filePath, 'utf-8')
+    }
+  )
+
+  // SFTP remembered secrets — DPAPI-encrypted via safeStorage, one file per
+  // server profile under userData (outside any repository). The plaintext
+  // secret never touches disk or logs; store/load/delete only ever see the
+  // ciphertext. `key` is the server profile id (strict charset allowlist —
+  // it becomes part of the filename); empty key addresses the legacy
+  // single-slot file from the pre-multi-server era.
+  // SFTP 记住的口令——按服务器档案分文件，经 safeStorage（DPAPI）加密存
+  // userData（仓库之外）。key 为档案 id（严格字符白名单，用于拼文件名）；
+  // 空 key 指向旧单档案时代的文件（迁移兼容）。
+  const sftpSecretFile = (key: string): string =>
+    key
+      ? path.join(app.getPath('userData'), `remote-sftp-${key}.secret`)
+      : path.join(app.getPath('userData'), 'remote-sftp.secret')
+  const validSecretKey = (key: unknown): key is string =>
+    typeof key === 'string' && /^[A-Za-z0-9-]{0,64}$/.test(key)
+  ipcMain.handle(
+    IPC_CHANNELS.sftpSecretStore,
+    async (_event, key: unknown, value?: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        if (!validSecretKey(key)) {
+          return { ok: false, error: 'invalid server key / 服务器标识非法' }
+        }
+        if (typeof value !== 'string' || !value) {
+          return { ok: false, error: 'empty value / 空值' }
+        }
+        if (!safeStorage.isEncryptionAvailable()) {
+          return { ok: false, error: 'OS encryption unavailable / 系统加密不可用' }
+        }
+        const { writeFile } = await import('node:fs/promises')
+        await writeFile(sftpSecretFile(key), safeStorage.encryptString(value))
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: String(err) }
+      }
+    }
+  )
+  ipcMain.handle(IPC_CHANNELS.sftpSecretLoad, async (_event, key?: unknown): Promise<string | null> => {
+    try {
+      if (!validSecretKey(key)) return null
+      const { readFile } = await import('node:fs/promises')
+      const buf = await readFile(sftpSecretFile(key))
+      return safeStorage.decryptString(buf)
+    } catch {
+      return null
+    }
+  })
+  ipcMain.handle(IPC_CHANNELS.sftpSecretDelete, async (_event, key?: unknown): Promise<{ ok: boolean }> => {
+    try {
+      if (validSecretKey(key)) {
+        const { rm } = await import('node:fs/promises')
+        await rm(sftpSecretFile(key), { force: true })
+      }
+    } catch {
+      // best-effort cleanup / 尽力清理
+    }
+    return { ok: true }
+  })
+
+  // Reveal a directory (e.g. the SFTP download destination) in the OS file
+  // manager. Rejects non-string/empty targets outright.
+  // 在系统资源管理器中打开目录（如 SFTP 下载目录）。非字符串/空目标直接拒绝。
+  ipcMain.handle(
+    IPC_CHANNELS.shellOpenPath,
+    async (_event, target?: string): Promise<boolean> => {
+      if (typeof target !== 'string' || !target) return false
+      const errorMessage = await shell.openPath(target)
+      return errorMessage === ''
     }
   )
 }
@@ -886,7 +956,11 @@ const COMMAND_ROUTE_MAP: Record<string, string> = {
   lamellar_analysis: '/api/lamellar_analysis',
   curve_fitting: '/api/curve_fitting',
   poni_importer: '/api/poni_importer',
-  calibration: '/api/calibration'
+  calibration: '/api/calibration',
+  // SFTP 远程数据下载（桌面版专用）/ SFTP remote-data download (desktop-only)
+  remoteData: '/api/remote_data',
+  // v0.5.0: 数据无损压缩（TIFF Deflate / HDF5 Bitshuffle+LZ4）
+  compress: '/api/compress'
 }
 
 

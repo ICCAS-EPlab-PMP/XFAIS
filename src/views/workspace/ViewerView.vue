@@ -45,6 +45,12 @@
             >
               {{ t('viewer.selectFolder') }}
             </button>
+            <RemotePickerButton mode="files" @picked="paths => applySelectedFilePaths(paths)" />
+            <ServerPickerButton
+              v-if="!transport.isDesktop()"
+              mode="files"
+              @picked="paths => applySelectedFilePaths(paths)"
+            />
             <span v-if="importFolder" class="vw-file-summary vw-file-summary--path">
               {{ importFolderDisplay }}
             </span>
@@ -637,6 +643,8 @@ import LineChart from '@/components/charts/LineChart.vue'
 import type { LineTrace } from '@/components/charts/LineChart.vue'
 import GeometryForm from '@/components/business/GeometryForm.vue'
 import type { GeometryParams } from '@/components/business/GeometryForm.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
 
 // === Types / 类型定义 ===
 

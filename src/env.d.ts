@@ -90,6 +90,12 @@ interface PyfaiCheckResult {
 interface Window {
   desktop: {
     getAppMeta: () => Promise<DesktopAppMeta>
+    openPath: (target: string) => Promise<boolean>
+    sftpSecret: {
+      store: (key: string, value: string) => Promise<{ ok: boolean; error?: string }>
+      load: (key: string) => Promise<string | null>
+      delete: (key: string) => Promise<{ ok: boolean }>
+    }
     dialog: {
       openFile: (options?: DialogOpenFileOptions) => Promise<string | null>
       saveFile: (options?: DialogSaveFileOptions) => Promise<string | null>

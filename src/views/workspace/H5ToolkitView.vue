@@ -12,6 +12,12 @@
         :label="t('h5toolkit.sourceDir')"
         :data-testid="testIds.h5convertSourceDir"
       />
+      <RemotePickerButton mode="folder" @picked-folder="dir => sourceDir = dir" />
+      <ServerPickerButton
+        v-if="!transport.isDesktop()"
+        mode="folder"
+        @picked-folder="dir => sourceDir = dir"
+      />
       <label class="h5t-checkbox-label">
         <input v-model="recursive" type="checkbox" />
         {{ t('h5toolkit.recursive') }}
@@ -402,6 +408,8 @@
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ResultSummary from '@/components/business/ResultSummary.vue'
 import type { ResultSummaryData } from '@/components/business/ResultSummary.vue'

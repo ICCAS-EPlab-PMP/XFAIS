@@ -17,9 +17,24 @@ export interface PerformanceSettings {
   ompThreads: 'auto' | number
 }
 
+/** 下载无损压缩缓存池 / lossless-compressed download cache pool. */
+export interface RemoteCacheSettings {
+  /** 「远端选择」下载入池时无损压缩（TIFF/HDF5），默认开 / compress downloads into the pool (default on) */
+  compress: boolean
+  /** 缓存保留时长（分钟），默认 1440 = 1 天 / retention in minutes (default 1 day) */
+  ttlMinutes: number
+  /** 缓存池根目录；空 = 系统临时目录/xfais-cache-pool / pool root (empty = system temp default) */
+  dir: string
+}
+
+export interface RemoteSyncSettings {
+  cache: RemoteCacheSettings
+}
+
 export interface AppSettings {
   locale: 'zh' | 'en'
   performance: PerformanceSettings
+  remoteSync: RemoteSyncSettings
 }
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -29,5 +44,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
     batchParallel: false,
     batchWorkers: 4,
     ompThreads: 'auto'
+  },
+  remoteSync: {
+    cache: {
+      compress: true,
+      ttlMinutes: 1440,
+      dir: ''
+    }
   }
 }

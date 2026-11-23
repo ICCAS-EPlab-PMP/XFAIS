@@ -27,6 +27,12 @@
 
     <!-- Center: Canvas -->
     <div class="mc-center">
+      <RemotePickerButton mode="files" @picked="paths => paths[0] && openImagePath(paths[0])" />
+      <ServerPickerButton
+        v-if="!transport.isDesktop()"
+        mode="files"
+        @picked="paths => paths[0] && openImagePath(paths[0])"
+      />
       <MaskCanvas
         ref="canvasRef"
         :image-src="imageSrc"
@@ -94,6 +100,8 @@ import type {
   MaskExportResponse,
 } from '@/types/mask'
 import MaskCanvas from '@/components/mask/MaskCanvas.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
 import MaskToolbar from '@/components/mask/MaskToolbar.vue'
 import MaskProperties from '@/components/mask/MaskProperties.vue'
 import MaskExportDialog from '@/components/mask/MaskExportDialog.vue'

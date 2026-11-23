@@ -28,6 +28,13 @@ export const IPC_CHANNELS = {
   pyfaiInstall: 'pyfai:install',
   pyfaiInstallDeps: 'pyfai:installDeps',
   pyfaiExportBat: 'pyfai:exportBat',
+  // SFTP 记住密码（safeStorage/DPAPI 加密，存 userData，不入仓库）
+  // SFTP remembered secret (safeStorage/DPAPI encrypted, lives in userData)
+  sftpSecretStore: 'sftpSecret:store',
+  sftpSecretLoad: 'sftpSecret:load',
+  sftpSecretDelete: 'sftpSecret:delete',
+  // 在系统资源管理器中打开目录 / reveal a directory in the OS file manager
+  shellOpenPath: 'shell:openPath',
   // 设置 → 主进程启动环境覆盖（OMP 线程数等）/ Settings → main-process launch env overrides
   settingsSetPythonLaunchEnv: 'settings:setPythonLaunchEnv'
 } as const

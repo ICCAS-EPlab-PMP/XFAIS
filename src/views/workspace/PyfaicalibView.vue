@@ -132,6 +132,11 @@
       </div>
     </div>
 
+    <!-- Web mode: launcher & in-env install are disabled server-side (desktop only) -->
+    <div v-if="!isDesktop" class="pc-action-section pc-web-notice">
+      {{ t('pyfaiCalib.webDisabledHint') }}
+    </div>
+
     <!-- Action section: direct launch (detect → open) / 直接启动（检测→打开） -->
     <div v-if="canLaunch" class="pc-action-section">
       <hr class="pc-divider">
@@ -140,7 +145,9 @@
         <button
           type="button"
           class="pc-launch-btn"
-          :disabled="launching"
+          :class="{ 'pc-btn--web-disabled': !isDesktop }"
+          :disabled="launching || !isDesktop"
+          :title="!isDesktop ? t('pyfaiCalib.webDisabledHint') : ''"
           @click="handleLaunch"
         >
           {{ launching ? t('pyfaiCalib.launching') : t('pyfaiCalib.launchBtn') }}
@@ -171,7 +178,9 @@
         <button
           type="button"
           class="pc-launch-btn"
-          :disabled="installing"
+          :class="{ 'pc-btn--web-disabled': !isDesktop }"
+          :disabled="installing || !isDesktop"
+          :title="!isDesktop ? t('pyfaiCalib.webDisabledHint') : ''"
           @click="handleInstallDeps"
         >
           {{ installing ? t('pyfaiCalib.installing') : t('pyfaiCalib.installBtn') }}
@@ -242,6 +251,8 @@ import { useTransport } from '@/lib/transport'
 
 const { t } = useI18n()
 const transport = useTransport()
+// web 模式：启动器与在线安装被后端门禁禁用（仅桌面回环链路可执行）。
+const isDesktop = transport.isDesktop()
 
 interface PyfaiCheckResult {
   embedded: { available: boolean; version: string | null; calib2Path: string | null; hasQtBinding: boolean }
@@ -594,6 +605,17 @@ handleCheck()
   gap: 12px;
   flex-wrap: wrap;
   align-items: center;
+}
+
+.pc-web-notice {
+  font-size: 12.5px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: rgba(234, 179, 8, 0.12);
+}
+
+.pc-btn--web-disabled {
+  opacity: 0.45;
 }
 
 .pc-launch-btn {

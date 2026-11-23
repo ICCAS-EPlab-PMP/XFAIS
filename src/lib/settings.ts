@@ -41,7 +41,13 @@ const stored = migrateLocale(readStored())
 const state = reactive<AppSettings>({
   ...DEFAULT_SETTINGS,
   ...stored,
-  performance: { ...DEFAULT_SETTINGS.performance, ...(stored.performance ?? {}) }
+  performance: { ...DEFAULT_SETTINGS.performance, ...(stored.performance ?? {}) },
+  remoteSync: {
+    cache: {
+      ...DEFAULT_SETTINGS.remoteSync.cache,
+      ...(stored.remoteSync?.cache ?? {})
+    }
+  }
 })
 
 /** Push the OMP override to the Electron main process (best-effort, web-safe). */

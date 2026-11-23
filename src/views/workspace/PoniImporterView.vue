@@ -60,6 +60,17 @@
               >
                 {{ importingPoni ? t('poniImporter.importPoni.loading') : t('poniImporter.importPoni.btn') }}
               </button>
+              <ServerPickerButton
+                v-if="!transport.isDesktop()"
+                mode="files"
+                :extensions="['poni']"
+                @picked="paths => paths[0] && importPoniPath(paths[0])"
+              />
+              <RemotePickerButton
+                mode="files"
+                :extensions="['poni']"
+                @picked="paths => paths[0] && importPoniPath(paths[0])"
+              />
               <button
                 type="button"
                 class="pi-btn"
@@ -459,6 +470,8 @@ import { matchesExtensions, useDropZone } from '@/lib/fileDrop'
 import { downloadText, fileNameFromPath } from '@/lib/download'
 import { COLORMAP_PRESETS, resolveColorbarGradient } from '@/lib/chart-utils'
 import ImagePreview from '@/components/charts/ImagePreview.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
 import type { Overlay } from '@/components/charts/ImagePreview.vue'
 import NumberField from '@/components/common/NumberField.vue'
 import H5Selector from '@/components/business/H5Selector.vue'

@@ -32,6 +32,17 @@
         :data-testid="testIds.geometryPoniInput"
         @update:model-value="onPoniPathChange"
       />
+      <ServerPickerButton
+        v-if="!transport.isDesktop()"
+        mode="files"
+        :extensions="['poni']"
+        @picked="paths => paths[0] && onPoniPathChange(paths[0])"
+      />
+      <RemotePickerButton
+        mode="files"
+        :extensions="['poni']"
+        @picked="paths => paths[0] && onPoniPathChange(paths[0])"
+      />
       <!-- Geometry summary of the selected PONI: makes the active calibration
            (distance / wavelength / pixel / beam center) visible so a SAXS PONI
            can't silently masquerade as WAXS.
@@ -129,6 +140,8 @@ import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { testIds } from '@/lib/testIds'
 import { useTransport } from '@/lib/transport'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
 import FileDialogButton from './FileDialogButton.vue'
 import NumberField from '@/components/common/NumberField.vue'
 

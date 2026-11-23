@@ -34,6 +34,12 @@
             >
               {{ t('transmission.selectFiles') }}
             </button>
+            <RemotePickerButton mode="files" @picked="paths => applyFilePaths(paths)" />
+            <ServerPickerButton
+              v-if="!transport.isDesktop()"
+              mode="files"
+              @picked="paths => applyFilePaths(paths)"
+            />
             <span v-if="files.length" class="trans-file-summary" data-testid="trans-file-count">
               {{ t('transmission.fileCount', { count: files.length }) }}
             </span>
@@ -344,6 +350,8 @@ import { COLORMAP_PRESETS } from '@/lib/chart-utils'
 import CalibCanvas from '@/components/calibration/CalibCanvas.vue'
 import type { CalibPeak, CalibRegion, CalibRing } from '@/components/calibration/CalibCanvas.vue'
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ThumbnailStrip from '@/components/business/ThumbnailStrip.vue'
 import type { ThumbnailItem } from '@/components/business/ThumbnailStrip.vue'

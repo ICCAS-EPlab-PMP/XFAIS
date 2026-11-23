@@ -36,6 +36,20 @@ const desktopApi = {
   // Resolve the absolute path of a dragged-in File (File.path was removed in Electron 32+).
   // 解析拖入 File 对象的绝对路径（Electron 32+ 已移除 File.path）。
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+  // Reveal a local directory in the OS file manager (SFTP download folder etc.).
+  // 在系统资源管理器中打开本地目录（如 SFTP 下载目录）。
+  openPath: (target: string): Promise<boolean> =>
+    ipcRenderer.invoke(IPC_CHANNELS.shellOpenPath, target) as Promise<boolean>,
+  // SFTP remembered secret — safeStorage/DPAPI encrypted in userData, never
+  // in localStorage plaintext. Keyed per server profile. / 按服务器记住的口令。
+  sftpSecret: {
+    store: (key: string, value: string): Promise<{ ok: boolean; error?: string }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.sftpSecretStore, key, value) as Promise<{ ok: boolean; error?: string }>,
+    load: (key: string): Promise<string | null> =>
+      ipcRenderer.invoke(IPC_CHANNELS.sftpSecretLoad, key) as Promise<string | null>,
+    delete: (key: string): Promise<{ ok: boolean }> =>
+      ipcRenderer.invoke(IPC_CHANNELS.sftpSecretDelete, key) as Promise<{ ok: boolean }>
+  },
   dialog: {
     openFile: (options?: DialogOpenFileOptions): Promise<DialogOpenFileResult> =>
       ipcRenderer.invoke(IPC_CHANNELS.dialogOpenFile, options) as Promise<DialogOpenFileResult>,

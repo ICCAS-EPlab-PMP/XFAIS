@@ -19,6 +19,12 @@
             :model-value="sourceFolder"
             @update:model-value="onSourceFolderChange"
           />
+          <RemotePickerButton mode="folder" @picked-folder="dir => onSourceFolderChange(dir)" />
+          <ServerPickerButton
+            v-if="!transport.isDesktop()"
+            mode="folder"
+            @picked-folder="dir => onSourceFolderChange(dir)"
+          />
           <FileDialogButton
             mode="openFolder"
             :label="t('pngGenerate.folders.output')"
@@ -339,6 +345,8 @@ import { testIds } from '@/lib/testIds'
 import { downloadText } from '@/lib/download'
 
 import FileDialogButton from '@/components/business/FileDialogButton.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
 import NumberField from '@/components/common/NumberField.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'
 import ResultSummary from '@/components/business/ResultSummary.vue'

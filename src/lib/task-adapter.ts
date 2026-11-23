@@ -697,6 +697,20 @@ export const normalizeTaskParams = (command: string, params: Record<string, unkn
         },
       }
     }
+    case 'compress': {
+      // v0.5.0 lossless compression wizard: probe / trial / batch / cancel.
+      // v0.5.0 数据无损压缩向导：probe / trial / batch / cancel。
+      return {
+        action: asString(params.action) ?? 'probe',
+        input_dir: asString(params.inputDir) ?? asString(params.input_dir) ?? '',
+        files: Array.isArray(params.files)
+          ? params.files.filter((f): f is string => typeof f === 'string')
+          : [],
+        recursive: asBoolean(params.recursive ?? true, true),
+        output_dir: asString(params.outputDir) ?? asString(params.output_dir) ?? '',
+        max_workers: asOptionalNumber(params.maxWorkers),
+      }
+    }
     default:
       return params
   }
@@ -1022,6 +1036,86 @@ export const adaptTaskResult = (command: string, rawResult: unknown): AdaptedTas
           }),
           total: typeof result.total === 'number' ? result.total : 0,
         }
+      }
+    }
+    case 'compress': {
+      // Probe / trial / batch share one report envelope; the view switches on
+      // `action`. Numeric fields are sanitized so the UI never renders NaN.
+      // 三个动作共用一份报告外壳，视图按 action 分支；数值字段统一净化。
+      const fileRows = Array.isArray(result.files)
+        ? result.files.map((entry) => {
+          const item = asRecord(entry)
+          return {
+            path: asString(item.path) ?? '',
+            outputPath: asString(item.outputPath) ?? '',
+            kind: asString(item.kind) ?? '',
+            algorithm: asString(item.algorithm) ?? '',
+            originalBytes: typeof item.originalBytes === 'number' ? item.originalBytes : 0,
+            compressedBytes: typeof item.compressedBytes === 'number' ? item.compressedBytes : 0,
+            ratio: typeof item.ratio === 'number' ? item.ratio : 0,
+            status: asString(item.status) ?? 'failed',
+            checks: asRecord(item.checks),
+            message: asString(item.message) ?? '',
+          }
+        })
+        : []
+      const sampleRows = Array.isArray(result.sample)
+        ? result.sample.map((entry) => {
+          const item = asRecord(entry)
+          return {
+            path: asString(item.path) ?? '',
+            name: asString(item.name) ?? '',
+            kind: asString(item.kind) ?? '',
+            size: typeof item.size === 'number' ? item.size : 0,
+          }
+        })
+        : []
+      const failures = Array.isArray(result.failures)
+        ? result.failures.map((entry) => {
+          const item = asRecord(entry)
+          return { path: asString(item.path) ?? '', reason: asString(item.reason) ?? '' }
+        })
+        : []
+      return {
+        kind: 'result',
+        data: {
+          action: asString(result.action) ?? 'probe',
+          status: asString(result.status) ?? 'ok',
+          message: asString(result.message),
+          // probe
+          stats: asRecord(result.stats),
+          sample: sampleRows,
+          truncated: result.truncated === true,
+          skippedCount: typeof result.skippedCount === 'number' ? result.skippedCount : 0,
+          // trial
+          path: asString(result.path) ?? '',
+          outputPath: asString(result.outputPath) ?? '',
+          fileKind: asString(result.kind) ?? '',
+          algorithm: asString(result.algorithm) ?? '',
+          originalBytes: typeof result.originalBytes === 'number' ? result.originalBytes : 0,
+          compressedBytes: typeof result.compressedBytes === 'number' ? result.compressedBytes : 0,
+          ratio: typeof result.ratio === 'number' ? result.ratio : 0,
+          verified: result.verified === true,
+          checks: asRecord(result.checks),
+          note: asString(result.note) ?? '',
+          checkedFile: asString(result.checkedFile) ?? '',
+          sourceCount: typeof result.sourceCount === 'number' ? result.sourceCount : 0,
+          pages: typeof result.pages === 'number' ? result.pages : 0,
+          compressedDatasets: typeof result.compressedDatasets === 'number' ? result.compressedDatasets : 0,
+          // batch
+          outputDir: asString(result.outputDir) ?? '',
+          total: typeof result.total === 'number' ? result.total : 0,
+          success: typeof result.success === 'number' ? result.success : 0,
+          failed: typeof result.failed === 'number' ? result.failed : 0,
+          skipped: typeof result.skipped === 'number' ? result.skipped : 0,
+          savedBytes: typeof result.savedBytes === 'number' ? result.savedBytes : 0,
+          elapsed: typeof result.elapsed === 'number' ? result.elapsed : 0,
+          files: fileRows,
+          filesOmitted: typeof result.filesOmitted === 'number' ? result.filesOmitted : 0,
+          failures,
+          cancelled: result.cancelled === true,
+          hdf5ReaderNote: asString(result.hdf5ReaderNote) ?? '',
+        },
       }
     }
     default:

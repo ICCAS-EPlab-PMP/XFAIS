@@ -371,6 +371,12 @@
             >
               {{ t('business.fileSelection.importFolder') }}
             </button>
+            <RemotePickerButton mode="files" @picked="paths => applySelectedFilePaths(paths)" />
+            <ServerPickerButton
+              v-if="!transport.isDesktop()"
+              mode="files"
+              @picked="paths => applySelectedFilePaths(paths)"
+            />
             <label class="fib-toggle">
               <input v-model="isRecursive" type="checkbox" />
               <span class="fib-toggle-label">{{ t('business.fileSelection.recursive') }}</span>
@@ -950,6 +956,8 @@ import NumberField from '@/components/common/NumberField.vue'
 import type { MaskConfig } from '@/components/business/MaskBuilderForm.vue'
 import type { ExportFormat, ExportMode } from '@/components/business/ExportDialog.vue'
 import GeometryForm from '@/components/business/GeometryForm.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
 import MaskBuilderForm from '@/components/business/MaskBuilderForm.vue'
 import PolarizationForm from '@/components/business/PolarizationForm.vue'
 import TaskProgressBar from '@/components/business/TaskProgressBar.vue'

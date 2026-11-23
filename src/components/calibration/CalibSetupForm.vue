@@ -73,6 +73,12 @@
         >
           {{ transport.isDesktop() ? t('calibration.setup.selectImage') : t('calibration.setup.uploadImage') }}
         </button>
+        <!-- 桌面：从远端数据服务器取图（SFTP→临时目录）；web 下自动置灰走上传 -->
+        <RemotePickerButton
+          mode="files"
+          :extensions="['edf', 'tif', 'tiff', 'h5', 'hdf5', 'cbf']"
+          @picked="paths => paths[0] && onRemoteImage(paths[0])"
+        />
         <input
           v-model="model.imagePath"
           type="text"
@@ -333,6 +339,17 @@
     >
       {{ t('calibration.setup.seedFromPoni') }}
     </button>
+    <ServerPickerButton
+      v-if="!transport.isDesktop()"
+      mode="files"
+      :extensions="['poni']"
+      @picked="paths => paths[0] && emit('seed', paths[0])"
+    />
+    <RemotePickerButton
+      mode="files"
+      :extensions="['poni']"
+      @picked="paths => paths[0] && emit('seed', paths[0])"
+    />
 
     <!-- Load / 加载 -->
     <button
@@ -361,6 +378,8 @@ import { useRouter } from 'vue-router'
 import { useTransport } from '@/lib/transport'
 import { useToast } from '@/lib/toast'
 import NumberField from '@/components/common/NumberField.vue'
+import ServerPickerButton from '@/components/business/ServerPickerButton.vue'
+import RemotePickerButton from '@/components/business/RemotePickerButton.vue'
 
 /** Wizard mode: 'calibrant' = classic 标样校正; 'internal' = 内标定标 (one
  *  known ring computes the geometry, no calibrant / no refinement);
@@ -759,6 +778,17 @@ async function chooseImage(): Promise<void> {
   } catch (error) {
     reportPickFailure(t('calibration.setup.uploadImage'), error)
   }
+}
+
+/** 远端选择（SFTP→临时目录）：下载后的本地路径回填图像输入框并触发探测。
+ *  与 chooseImage 的显式选图同语义（绕过去重允许重试）；直通光定心的
+ *  「换图」复用同一入口，远端图同样适用。
+ *  Remote pick (SFTP → temp): fill the downloaded local path and probe,
+ *  same semantics as an explicit dialog pick. */
+function onRemoteImage(path: string): void {
+  patch({ imagePath: path })
+  lastProbedPath = ''
+  emitProbed(path)
 }
 
 async function chooseCalibrantFile(): Promise<void> {
